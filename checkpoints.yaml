@@ -1,0 +1,55 @@
+# The ordered, cumulative checkpoint stream. Each is applied on top of the
+# committed result of the previous one. Nearly all land, if implemented naively,
+# in the Owner create/update path (Spring: addOwner/updateOwner; OfficeFloor: a
+# new function wired into owners.POST.yml / owners/{id}.PUT.yml).
+#
+# For each checkpoint N you must have one acceptance test class present at the
+# base ref, named CpNNTests and tagged @Tag("cpNN"), with methods prefixed
+# core.../error.../functionality... (Functionality = hidden exhaustive;
+# Core = spec-stated; Error = failure modes). They fail until the checkpoint is
+# implemented. A ready-made suite is in acceptance/. See README.
+#
+# `spec` is the neutral product-owner instruction handed to the agent. Keep the
+# ordering fixed across all arms and chains.
+
+checkpoints:
+  - id: telephone-required
+    spec: "When creating or updating an owner, the telephone number is required. Reject a blank or missing telephone with 400 and a clear message."
+  - id: telephone-format
+    spec: "The telephone number must be 6 to 15 digits. Reject anything else with 400."
+  - id: telephone-normalise
+    spec: "Before saving an owner, normalise the telephone number by removing spaces, dashes and parentheses."
+  - id: names-required-trimmed
+    spec: "First name and last name are required. Trim surrounding whitespace before saving."
+  - id: names-max-length
+    spec: "First and last name may be at most 50 characters. Reject longer values with 400."
+  - id: city-titlecase
+    spec: "City is required. Store it title-cased (e.g. 'new york' becomes 'New York')."
+  - id: address-non-blank
+    spec: "Address is required. Reject an address that is only whitespace with 400."
+  - id: telephone-unique-create
+    spec: "Reject creating an owner whose telephone number already belongs to another owner, with 409."
+  - id: audit-create
+    spec: "Write an AUDIT log entry whenever an owner is created, recording the authenticated user and the new owner id."
+  - id: audit-update
+    spec: "Write an AUDIT log entry whenever an owner is updated, listing which fields changed."
+  - id: registration-date
+    spec: "On create, if no registration date is supplied, default it to today's date."
+  - id: email-optional-format
+    spec: "Owners may have an optional email address. If present, it must be a valid email format; otherwise reject with 400."
+  - id: email-unique
+    spec: "If an email is present, it must be unique across all owners. Reject duplicates with 409."
+  - id: telephone-unique-update
+    spec: "On update, reject changing the telephone to one already used by another owner, with 409."
+  - id: names-collapse-whitespace
+    spec: "Collapse repeated internal whitespace in first and last names before saving ('Jon   Doe' becomes 'Jon Doe')."
+  - id: names-no-digits
+    spec: "Reject owner names that contain digits or control characters, with 400."
+  - id: postcode-optional
+    spec: "Owners may have an optional postcode. If present, validate it against a simple alphanumeric pattern; otherwise reject with 400."
+  - id: pet-cap
+    spec: "An owner may have at most 6 pets. Reject adding a pet beyond that cap with 400."
+  - id: pet-name-unique
+    spec: "An owner cannot have two pets with the same name. Reject adding or renaming a pet to a duplicate name with 400."
+  - id: display-name
+    spec: "Whenever an owner is created or changed, compute and persist a derived display name of the form 'Lastname, Firstname'."

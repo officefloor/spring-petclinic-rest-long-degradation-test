@@ -1,0 +1,48 @@
+# Starter ast-grep rules that flag "wasteful" Java patterns for the Verbosity
+# metric (SlopCodeBench uses 137 such rules; these are a seed set - extend them).
+# Each matched line range is unioned with clone lines and divided by Java LOC.
+# Run standalone to sanity-check:  sg scan --json -r astgrep-rules src/main/java
+
+id: redundant-boolean-literal-compare
+language: java
+rule:
+  any:
+    - pattern: $X == true
+    - pattern: $X == false
+    - pattern: $X != true
+    - pattern: $X != false
+message: redundant comparison to boolean literal
+
+---
+id: empty-catch-block
+language: java
+rule:
+  pattern: |
+    catch ($TYPE $E) { }
+message: empty catch block swallows the exception
+
+---
+id: unnecessary-else-after-return
+language: java
+rule:
+  pattern: |
+    if ($C) { return $R; } else { $$$BODY }
+message: else after a returning if is unnecessary
+
+---
+id: redundant-local-then-return
+language: java
+rule:
+  pattern: |
+    $T $V = $E;
+    return $V;
+message: variable is assigned and immediately returned
+
+---
+id: string-concat-empty
+language: java
+rule:
+  any:
+    - pattern: "\"\" + $X"
+    - pattern: $X + "\"\""
+message: concatenation with empty string to coerce to String
