@@ -16,24 +16,88 @@ hotspot method erodes (complexity concentrates, per-change comprehension cost
 climbs) while OfficeFloor stays flat (each change is a new small function, so
 existing units never grow). **Erosion slope is the decisive statistic.**
 
-## What it does per checkpoint
+## How a run executes (start to finish)
 
-Each `(arm, strategy, chain)` runs the 20 checkpoints cumulatively in an
-isolated git worktree branched from the arm's base branch. Per checkpoint:
+There are two phases, invoked separately: `run_experiment` (drives the agent and
+commits results onto branches) and `analyze` (reconstructs the data from those
+branches and reports). File references point at `harness/`.
 
-1. Runs a **fresh** headless `claude -p` with only the checkpoint spec (no
-   carried conversation — the SlopCodeBench condition that makes this a test of
-   the code as a self-describing index).
-2. Pins the leveling docs (restores `CLAUDE.md` to its base version, recording
-   whether the agent tried to edit it), then commits the change.
-3. Gates on `build + accumulated acceptance suite cp01..cpK`.
-4. Scores correctness (Strict / ISO / Core, Normalized Change, regressions).
-5. Computes **Erosion**, **Verbosity**, hotspot / function-package size, and
-   blast radius over **Java production source only** (YAML counted separately).
-6. At each phase boundary runs a read-only **cold-reader probe**.
+### Startup (`run_experiment.py:main`)
 
-At the end of the chain it makes a final `results:` commit on the evolve branch
-(see *Where results live*).
+1. Compute a `run_id` (`--run-id`, else `YYYYMMDDHHMM`).
+2. Load `config.yaml`. Every path is passed through `expand_path()`
+   (`harness/__init__.py`): it expands `${HOME}`/`$VAR`/`~` and **fails fast**
+   with a clear message if a variable is undefined; relative paths are then
+   anchored to the config-file directory so the tree is movable.
+3. Load `checkpoints.yaml` and number the checkpoints 1..N.
+4. Open the per-run log CSV at `results/<run_id>/records.csv`, then loop over
+   `arm × chain` (respecting `--arm` / `--strategy` / `--chain`).
+
+### Per chain (`run_chain`)
+
+`make_worktree` runs `git worktree add -b evolve/<strategy>/<arm>/chain<n>/<run_id>
+<wt> <base_ref>`: a fresh checkout on a **new** branch started from the base
+branch. The base branch is only ever read — never checked out, never committed
+to (a guard refuses any branch not under `evolve/`).
+
+Then, for each checkpoint `k` (1→N), in this exact order:
+
+0. **Inject** `CpKTests.java` (plus the shared test infra at k=1). The agent
+   now sees cp01..cpK tests and never future requirements.
+1. **Agent turn** — a **fresh** headless `claude -p` with only the checkpoint
+   spec, no `--continue`/`--resume` (SlopCodeBench's no-carried-context
+   condition). Cost, tokens, `duration_api_ms` etc. are captured.
+2. **Pin `CLAUDE.md`** — if the agent edited it, record `pinned_touched` and
+   restore the base version *before* committing, so the leveling doc can never
+   become cross-checkpoint memory.
+3. **Detect** acceptance-test edits (read-only) → record `acceptance_touched`.
+   The edits are **left in place** so the commit preserves them.
+4. **Commit** — one commit per checkpoint, `cpNN <id>`, capturing the agent's
+   code **and** any acceptance-test edits it made (kept for review).
+5. **Reset** the acceptance tests to the authored version — *after* the commit
+   (so the agent's edits stay in history) but *before* the gate, so a weakened
+   test can never produce a false pass. The reset stays **uncommitted** and folds
+   into the *next* checkpoint's commit, so the agent must also satisfy the real
+   (reset) test at step k+1.
+6. **Gate** (`correctness.run_tests`) — compile, run `-Dgroups=cp01..cpK` on the
+   authored tests, parse Surefire XML. Classify by class (`CpNNTests`) and method
+   prefix (`core`/`error`/`functionality`); cp&lt;K counts as **Regression**.
+   Produce Strict / ISO / Core, **Normalized Change** (SWE-CI), and regression count.
+7. **Structural metrics** (Java production source only): `lizard` gives
+   per-function CC/SLOC; `erosion_detail` returns erosion **and its terms**
+   (`high_mass`, `total_mass`, over-threshold count); `verbosity` returns the
+   score **and** its clone/pattern/union line counts; plus hotspot,
+   function-package size, and blast radius (which excludes the injected tests via
+   a git pathspec). All of this goes into the row, and the full per-function raw
+   inputs are stashed for the results commit.
+8. **Cold-reader probe** at each phase boundary — a read-only `claude -p` asks a
+   fixed comprehension question; cost/tokens/recall go in the row, the full text
+   is stashed.
+9. Append the row to the run CSV.
+
+### End of chain (`commit_chain_results`)
+
+A final `results:` commit on the evolve branch writes `evolve-results/`:
+`records.csv` (this chain's rows), `summary.md` (headline + per-checkpoint
+table), `probes/cpNN.md` (probe transcripts), and `metrics/cpNN.json` (every
+function's CC/SLOC/mass and the erosion/verbosity intermediates — so each number
+is reproducible by hand). So each branch = N checkpoint commits + 1 results
+commit. Nothing is written to the harness repo.
+
+### Analysis (`analyze.py`, run separately)
+
+`load_from_branches` harvests `evolve-results/records.csv` from every evolve
+branch across both arm repos (the branches are the single source of truth — no
+local CSV is read), selects the run, and writes gitignored output to
+`results/<run_id>/analysis/`: degradation slope `m` with bootstrap CIs, phase
+means, EvoScore, Zero-Regression Rate, the pinned-doc touch rate, the
+acceptance-tamper rate, and PNG plots.
+
+> Note on the reset (step 5): the commit at step 4 preserves the agent's
+> acceptance-test edits for review, but the gate at step 6 runs on the authored
+> (reset) tests — so a weakened test can never produce a false pass. Edits are
+> still flagged in `acceptance_touched`, and the reset also carries the real test
+> forward into step k+1.
 
 ## Prerequisites
 
@@ -159,11 +223,14 @@ The **evolve branches are the single source of truth.** Each
 
 - 20 checkpoint commits (`cpNN <id>`) — the code progression and diffs.
 - 1 final `results:` commit adding `evolve-results/`:
-  - `records.csv` — that chain's full metric rows.
+  - `records.csv` — that chain's full metric rows (final numbers plus the
+    erosion/verbosity intermediates).
   - `summary.md` — headline (strict pass, regressions, erosion start→final, cost,
     CLAUDE.md touch count) and a per-checkpoint table.
-  - `probes/cpNN.md` — the cold-reader probe answers (the one artifact not
-    derivable from the CSV; kept so recall can be re-graded later).
+  - `probes/cpNN.md` — the cold-reader probe answers (kept so recall can be
+    re-graded later; not derivable from the CSV).
+  - `metrics/cpNN.json` — the raw metric inputs: every function's CC/SLOC/mass
+    and the erosion/verbosity terms, so each number can be recomputed by hand.
 
 Nothing is written to **this** (harness) repo: the base branches stay pristine,
 and the local `results/`, `work/`, `.venv/` are gitignored.

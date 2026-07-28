@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import math
 import os
 import shutil
 import subprocess
@@ -43,8 +45,10 @@ CSV_FIELDS = [
     "build_ok", "total_selected", "strict_pass", "iso_pass", "core_pass",
     "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
     "regr_p", "regr_t", "regressions", "normalized_change",
-    # structure
-    "erosion", "verbosity", "java_loc", "yaml_loc",
+    # structure (final numbers + the intermediates they are computed from)
+    "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",
+    "verbosity", "verbosity_clone_lines", "verbosity_pattern_lines", "verbosity_union_lines",
+    "java_loc", "yaml_loc",
     "hotspot_nloc", "hotspot_cc", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
     "diff_added", "diff_removed", "files_touched",
     # probe (nullable)
@@ -136,11 +140,14 @@ def inject_checkpoint_tests(wt: str, cfg: dict, k: int) -> list[str]:
     return copied
 
 
-def restore_acceptance_tests(wt: str, cfg: dict, k: int) -> list[str]:
-    """Detect and undo any agent edits to the experimenter-owned acceptance tests
-    (cp01..cpK + shared infra). Returns the list of files the agent changed or
-    deleted; the authored version is rewritten so a weakened test can never let a
-    checkpoint pass.
+def restore_acceptance_tests(wt: str, cfg: dict, k: int, write: bool = True) -> list[str]:
+    """Compare the experimenter-owned acceptance tests (cp01..cpK + shared infra)
+    against the authored source. Returns the files the agent changed or deleted.
+
+    With write=False it only DETECTS (used before the commit, so the agent's edit
+    stays visible in that commit). With write=True it also rewrites the authored
+    version (used AFTER the commit + gate, so the reset test folds into the next
+    checkpoint's commit and the agent must satisfy it at the next step).
     """
     acc = cfg.get("acceptance")
     if not acc:
@@ -157,14 +164,16 @@ def restore_acceptance_tests(wt: str, cfg: dict, k: int) -> list[str]:
         current = open(dst, "rb").read() if os.path.isfile(dst) else None
         if current != authored:
             tampered.append(fn)
-            os.makedirs(dest, exist_ok=True)
-            with open(dst, "wb") as fh:
-                fh.write(authored)
+            if write:
+                os.makedirs(dest, exist_ok=True)
+                with open(dst, "wb") as fh:
+                    fh.write(authored)
     return tampered
 
 
 def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: str,
-                         chain: int, rows: list[dict], probe_texts: list[dict] | None = None) -> None:
+                         chain: int, rows: list[dict], probe_texts: list[dict] | None = None,
+                         metrics_details: list[dict] | None = None) -> None:
     """Write this chain's results into the worktree and make a final commit on
     the evolve branch, so the branch is a self-contained record: the 20
     checkpoint commits followed by one 'results:' commit. Nothing is written to
@@ -225,6 +234,15 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
             fh.write(f"# Cold-reader probe @ cp{cp:02d} ({p.get('phase')})\n\n"
                      f"keyword recall: {p.get('recall')}\n\n---\n\n{p.get('text', '')}\n")
 
+    # Raw metric inputs + intermediates per checkpoint, so every erosion/verbosity
+    # number can be recomputed by hand from the per-function CC/SLOC and the line
+    # counts recorded here.
+    for d in (metrics_details or []):
+        mdir = os.path.join(out_dir, "metrics")
+        os.makedirs(mdir, exist_ok=True)
+        with open(os.path.join(mdir, f"cp{int(d.get('checkpoint', 0)):02d}.json"), "w") as fh:
+            json.dump(d, fh, indent=2)
+
     subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
     msg = (f"results: {arm}/{strategy}/chain{chain} - run {run_id}\n\n"
            f"checkpoints={n} strict_pass={strict}/{n} regressions={regr} "
@@ -256,6 +274,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     prior_passing: set[str] = set()
     chain_rows: list[dict] = []
     probe_texts: list[dict] = []
+    metrics_details: list[dict] = []
 
     limit = max_cp or n
     for cp in checkpoints[:limit]:
@@ -302,18 +321,26 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                     os.remove(fpath)
         row["pinned_touched"] = ",".join(touched_pins)
 
-        # 1c. Acceptance tests are experimenter-owned. Report if the agent edited
-        # any and restore the authored version BEFORE the gate/commit, so a
-        # weakened test can never let a checkpoint pass.
-        row["acceptance_touched"] = ",".join(restore_acceptance_tests(wt, cfg, k))
+        # 1c. Detect (do NOT yet undo) any agent edits to the experimenter-owned
+        # acceptance tests, so the commit below preserves exactly what the agent
+        # changed about them.
+        row["acceptance_touched"] = ",".join(restore_acceptance_tests(wt, cfg, k, write=False))
 
-        # 2. one commit per checkpoint: the injected test + the agent's code.
+        # 2. one commit per checkpoint: the injected test + the agent's code,
+        # including any acceptance-test edits the agent made (kept for review).
         git(["-C", wt, "add", "-A"])
         commit = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} {cp['id']}"],
                                 capture_output=True, text=True)
         committed = commit.returncode == 0
 
-        # 3. correctness gate
+        # 3. Reset the acceptance tests to the authored version -- AFTER the commit
+        # (so the agent's edits stay in history) but BEFORE the gate, so a weakened
+        # test can never produce a false pass. The reset stays uncommitted and
+        # folds into the NEXT checkpoint's commit, so the agent must also satisfy
+        # the real (reset) test at the next step.
+        restore_acceptance_tests(wt, cfg, k, write=True)
+
+        # 4. correctness gate (runs on the authored tests)
         outcome = correctness.run_tests(wt, k, cfg)
         row.update({
             "build_ok": outcome.build_ok, "total_selected": outcome.total_selected,
@@ -333,19 +360,26 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row["regressions"] = correctness.count_regressions(prior_passing, outcome.passing)
         prior_passing = outcome.passing
 
-        # 4. structural metrics (Java production source only)
+        # 5. structural metrics (Java production source only)
         fns = metrics.functions(wt, arm_cfg["source_globs"])
         loc = metrics.total_java_loc(fns)
-        vscore, _ = metrics.verbosity(wt, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
-                                      loc, cfg["tools"])
+        ed = metrics.erosion_detail(fns)
+        vscore, vdetail = metrics.verbosity(wt, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
+                                            loc, cfg["tools"])
         hs = metrics.hotspot_stats(fns, (arm_cfg.get("hotspot") or {}).get("file", ""),
                                    (arm_cfg.get("hotspot") or {}).get("methods", []))
         fp = metrics.function_package_stats(wt, arm_cfg.get("function_package_glob"))
         br = metrics.blast_radius(wt, "HEAD~1" if committed else "HEAD", "HEAD",
                                   exclude=cfg.get("acceptance", {}).get("dest_subpath"))
         row.update({
-            "erosion": round(metrics.erosion(fns), 4),
+            "erosion": ed["erosion"],
+            "erosion_high_mass": ed["high_mass"],
+            "erosion_total_mass": ed["total_mass"],
+            "erosion_hot_fns": ed["over_threshold"],
             "verbosity": ("" if vscore != vscore else round(vscore, 4)),  # NaN -> blank
+            "verbosity_clone_lines": vdetail.get("clone_lines", ""),
+            "verbosity_pattern_lines": vdetail.get("pattern_lines", ""),
+            "verbosity_union_lines": vdetail.get("union_lines", ""),
             "java_loc": loc,
             "yaml_loc": yaml_loc(wt, arm_cfg.get("yaml_globs", [])),
         })
@@ -353,7 +387,21 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(fp)
         row.update(br)
 
-        # 5. cold-reader probe at each phase boundary (first checkpoint of a phase)
+        # Full raw inputs for this checkpoint (written into the results commit),
+        # so erosion/verbosity can be recomputed by hand from per-function CC/SLOC
+        # and their masses, and from the clone/pattern/union line counts.
+        metrics_details.append({
+            "checkpoint": k,
+            "erosion": ed,
+            "verbosity": {"value": (None if vscore != vscore else round(vscore, 4)),
+                          **vdetail, "java_loc": loc},
+            "hotspot": hs,
+            "function_package": fp,
+            "blast_radius": br,
+            "functions": [{**f, "mass": round(metrics.function_mass(f), 4)} for f in fns],
+        })
+
+        # 6. cold-reader probe at each phase boundary (first checkpoint of a phase)
         is_boundary = (k == 1) or (phase_for(k - 1, n) != phase)
         if cfg.get("probe", {}).get("enabled", True) and is_boundary:
             pr = agent.probe(cfg["probe"]["question"], cwd=wt, model=model,
@@ -375,7 +423,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
 
     # Final commit on the evolve branch: capture this chain's results alongside
     # the code progression it describes (nothing goes to the harness repo).
-    commit_chain_results(wt, branch, run_id, arm, strategy, chain, chain_rows, probe_texts)
+    commit_chain_results(wt, branch, run_id, arm, strategy, chain, chain_rows,
+                         probe_texts, metrics_details)
 
 
 def main() -> int:

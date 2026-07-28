@@ -59,12 +59,38 @@ def _mass(fn: dict) -> float:
     return fn["cc"] * math.sqrt(max(fn["nloc"], 1))
 
 
+def function_mass(fn: dict) -> float:
+    """Public: complexity mass CC * sqrt(SLOC) for one function (Eq. 2)."""
+    return _mass(fn)
+
+
 def erosion(fns: list[dict], cc_threshold: int = CC_THRESHOLD) -> float:
     total = sum(_mass(f) for f in fns)
     if total <= 0:
         return 0.0
     high = sum(_mass(f) for f in fns if f["cc"] > cc_threshold)
     return high / total
+
+
+def erosion_detail(fns: list[dict], cc_threshold: int = CC_THRESHOLD) -> dict:
+    """Erosion plus the intermediate terms, so the ratio is reproducible:
+    erosion = high_mass / total_mass over functions with CC > threshold."""
+    total = high = 0.0
+    over = 0
+    for f in fns:
+        m = _mass(f)
+        total += m
+        if f["cc"] > cc_threshold:
+            high += m
+            over += 1
+    return {
+        "erosion": round(high / total, 4) if total > 0 else 0.0,
+        "high_mass": round(high, 4),
+        "total_mass": round(total, 4),
+        "over_threshold": over,
+        "cc_threshold": cc_threshold,
+        "n_functions": len(fns),
+    }
 
 
 def total_java_loc(fns: list[dict]) -> int:
