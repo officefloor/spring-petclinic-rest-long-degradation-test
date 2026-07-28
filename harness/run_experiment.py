@@ -284,6 +284,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update({"run_id": run_id, "branch": branch,
                     "arm": arm, "strategy": strategy, "chain": chain,
                     "checkpoint": k, "checkpoint_id": cp["id"], "phase": phase})
+        print(f"\n--- cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
 
         # 0. Inject ONLY this checkpoint's acceptance test (+ shared infra at
         # cp01). The agent then sees cp01..cpK, never future requirements. It is
