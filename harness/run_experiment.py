@@ -31,7 +31,7 @@ from datetime import datetime
 
 import yaml
 
-from . import agent, correctness, metrics
+from . import agent, correctness, expand_path, metrics
 
 CSV_FIELDS = [
     "run_id", "branch",
@@ -400,7 +400,13 @@ def main() -> int:
     cfg_dir = os.path.dirname(os.path.abspath(args.config))
 
     def resolve(p):
-        return p if (p is None or os.path.isabs(p)) else os.path.join(cfg_dir, p)
+        if p is None:
+            return p
+        p = expand_path(p)  # ${HOME}, $VAR, ~ (raises if a var is undefined)
+        return p if os.path.isabs(p) else os.path.join(cfg_dir, p)
+
+    for name, arm_cfg in cfg["arms"].items():
+        arm_cfg["repo"] = expand_path(arm_cfg["repo"], f"arms.{name}.repo")
 
     cfg["checkpoints_file"] = resolve(cfg["checkpoints_file"])
     cfg["paths"]["work_root"] = resolve(cfg["paths"]["work_root"])

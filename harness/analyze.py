@@ -23,6 +23,8 @@ from collections import defaultdict
 import numpy as np
 import yaml
 
+from . import expand_path
+
 try:
     import matplotlib
     matplotlib.use("Agg")
@@ -223,6 +225,8 @@ def main() -> int:
 
     # Single source of truth: harvest every chain's results from the evolve
     # branches across the arm repos, then select the run to analyze.
+    for name, arm_cfg in cfg["arms"].items():
+        arm_cfg["repo"] = expand_path(arm_cfg["repo"], f"arms.{name}.repo")
     all_rows, branches = load_from_branches(cfg)
     if not all_rows:
         raise SystemExit("no evolve-results found on any branch; run the experiment first")
@@ -236,7 +240,7 @@ def main() -> int:
 
     # Analysis outputs are local, derived, and gitignored (never committed to the
     # harness repo). A concatenated CSV is written for transparency.
-    results_csv = cfg["paths"]["results_csv"]
+    results_csv = expand_path(cfg["paths"]["results_csv"], "paths.results_csv")
     if not os.path.isabs(results_csv):
         results_csv = os.path.join(os.path.dirname(os.path.abspath(args.config)), results_csv)
     out_root = os.path.join(os.path.dirname(results_csv), str(run_id))

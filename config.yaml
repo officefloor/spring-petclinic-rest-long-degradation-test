@@ -22,7 +22,7 @@ acceptance:
 
 arms:
   spring:
-    repo: /home/daniel/compare/spring
+    repo: ${HOME}/compare/spring       # ${VARS} and ~ are expanded from the environment
     base_ref: spring-compare
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
@@ -33,7 +33,7 @@ arms:
     function_package_glob: null          # N/A for Spring
 
   officefloor:
-    repo: /home/daniel/compare/officefloor
+    repo: ${HOME}/compare/officefloor
     base_ref: officefloor-compare
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]

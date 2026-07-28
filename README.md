@@ -57,12 +57,19 @@ At the end of the chain it makes a final `results:` commit on the evolve branch
 
 ## One-time repo setup (the experimenter's job)
 
-The two arms are **separate repos**, configured in `config.yaml`:
+The two arms are **separate repos**, configured in `config.yaml`. Repo paths may
+use `${HOME}`, `$VAR`, and `~` (expanded from the environment at load time), so
+the defaults are portable:
 
 | arm | repo | base_ref (branch) |
 |---|---|---|
-| spring | `/home/daniel/compare/spring` | `spring-compare` |
-| officefloor | `/home/daniel/compare/officefloor` | `officefloor-compare` |
+| spring | `${HOME}/compare/spring` | `spring-compare` |
+| officefloor | `${HOME}/compare/officefloor` | `officefloor-compare` |
+
+**Quick start** — `./setup.sh` clones both arm repos to `${HOME}/compare/{spring,
+officefloor}` on the right branches and installs the Python deps into `.venv`
+(override the source with `PETCLINIC_FORK=<url>` or the location with
+`COMPARE_DIR=<dir>`). Then activate the venv and dry-run.
 
 The base branch is only ever **read** as a start point — it is never modified.
 
@@ -164,9 +171,9 @@ and the local `results/`, `work/`, `.venv/` are gitignored.
 Review a chain end to end:
 
 ```bash
-git -C /home/daniel/compare/spring log --oneline evolve/just-solve/spring/chain0/<run_id>
-git -C /home/daniel/compare/spring show   evolve/just-solve/spring/chain0/<run_id>:evolve-results/summary.md
-git -C /home/daniel/compare/spring diff <sha_cp05> <sha_cp15>     # any two checkpoints
+git -C ${HOME}/compare/spring log --oneline evolve/just-solve/spring/chain0/<run_id>
+git -C ${HOME}/compare/spring show   evolve/just-solve/spring/chain0/<run_id>:evolve-results/summary.md
+git -C ${HOME}/compare/spring diff <sha_cp05> <sha_cp15>     # any two checkpoints
 ```
 
 ## Reading the result
