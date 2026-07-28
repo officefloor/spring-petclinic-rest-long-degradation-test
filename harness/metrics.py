@@ -195,13 +195,18 @@ def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict) -> tuple[fl
 # Blast radius (per checkpoint), from git.
 # ---------------------------------------------------------------------------
 
-def blast_radius(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
+def blast_radius(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
+                 exclude: str | None = None) -> dict:
+    """Change size between two refs. `exclude` (a repo-relative path) is dropped
+    via a git pathspec so the injected acceptance tests don't count as agent
+    churn."""
+    pathspec = ["--", ".", f":(exclude){exclude}"] if exclude else []
     try:
         stat = subprocess.run(
-            ["git", "-C", worktree, "diff", "--shortstat", prev_ref, cur_ref],
+            ["git", "-C", worktree, "diff", "--shortstat", prev_ref, cur_ref, *pathspec],
             capture_output=True, text=True, timeout=60).stdout.strip()
         names = subprocess.run(
-            ["git", "-C", worktree, "diff", "--name-only", prev_ref, cur_ref],
+            ["git", "-C", worktree, "diff", "--name-only", prev_ref, cur_ref, *pathspec],
             capture_output=True, text=True, timeout=60).stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"diff_added": None, "diff_removed": None, "files_touched": None}

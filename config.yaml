@@ -7,27 +7,34 @@ chains: 5                     # independent runs per (arm, strategy). >=5.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600
 
-checkpoints_file: /home/daniel/compare/petclinic-evolve/checkpoints.yaml
+# Paths below that are NOT absolute are resolved relative to THIS config file's
+# directory, so the harness can be moved without editing them.
+checkpoints_file: checkpoints.yaml
+
+# Acceptance criteria are injected PER CHECKPOINT (never pre-committed to the base
+# branch), so the agent only ever sees the current + prior requirements' tests,
+# never future ones. At checkpoint K the harness copies Cp{K}Tests.java (plus the
+# shared infra at K=1) into the worktree and commits it as "test: add cpK ...".
+acceptance:
+  src_dir: acceptance/src/test/java/org/springframework/samples/petclinic/acceptance
+  dest_subpath: src/test/java/org/springframework/samples/petclinic/acceptance
+  shared: ["AcceptanceBase.java", "AuditLogCapture.java"]   # injected at checkpoint 1
 
 arms:
   spring:
-    repo: /home/daniel/spring-petclinic-rest
-    # A commit/tag on spring-compare BEFORE the 20 owner-lifecycle features,
-    # but WITH all cp01..cp20 acceptance tests already present (they fail until
-    # implemented). Create it once, e.g.:  git tag evolve-base-spring
-    base_ref: evolve-base-spring
+    repo: /home/daniel/compare/spring
+    base_ref: spring-compare
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: []                       # Spring has no endpoint YAML
-    # The method(s) new owner behaviour naturally accretes into:
     hotspot:
       file: "rest/controller/v1/OwnerRestControllerV1.java"
       methods: ["addOwner", "updateOwner"]
     function_package_glob: null          # N/A for Spring
 
   officefloor:
-    repo: /home/daniel/spring-petclinic-rest
-    base_ref: evolve-base-officefloor
+    repo: /home/daniel/compare/officefloor
+    base_ref: officefloor-compare
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: ["src/main/resources/officefloor/**/*.yml"]
@@ -69,7 +76,7 @@ build:
 tools:
   jscpd: "jscpd"     # npm i -g jscpd  (clone detection for Verbosity)
   astgrep: "sg"      # ast-grep binary  (pattern flags for Verbosity)
-  astgrep_rules: "/home/daniel/compare/petclinic-evolve/astgrep-rules"
+  astgrep_rules: "astgrep-rules"
 
 probe:
   enabled: true
@@ -85,6 +92,15 @@ probe:
     - "audit"
     - "registration date"
 
+# Kept identical at every checkpoint. CLAUDE.md is the fixed, human-authored
+# project guide (present in BOTH arms so the playing field is level: it offsets
+# Spring's training-data advantage for OfficeFloor). Pinning restores it to the
+# base_ref version after each agent turn, so it can never become accumulating
+# cross-checkpoint memory. The CSV `notes` column flags any checkpoint where the
+# agent tried to edit it.
+isolation:
+  pin_files: ["CLAUDE.md"]
+
 paths:
-  work_root: /home/daniel/compare/petclinic-evolve/work
-  results_csv: /home/daniel/compare/petclinic-evolve/results/records.csv
+  work_root: work
+  results_csv: results/records.csv
