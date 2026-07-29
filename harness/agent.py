@@ -52,9 +52,11 @@ class AgentResult:
     retryable: bool = False      # transient failure (network/overload/no-completion); short backoff then retry
 
 
-_LIMIT_PHRASES = ("session limit", "usage limit", "rate limit", "hit your limit",
-                  "reached your limit", "you've hit your", "hit your session",
-                  "usage limit reached", "limit · resets", "limit reached")
+# Specific to the quota message ("You've hit your session limit · resets 6am ..."),
+# so it won't false-match agent/test output. Matched only against the terminal
+# result / stderr, never against streamed tool output.
+_LIMIT_PHRASES = ("session limit", "usage limit", "you've hit your", "hit your session",
+                  "limit · resets", "limit resets")
 
 
 def looks_like_limit(text: str) -> bool:
@@ -63,14 +65,16 @@ def looks_like_limit(text: str) -> bool:
 
 
 # Transient failures that should be retried after a short wait (not a data outcome):
-# network drops, API overload / 5xx, short-term rate limiting.
+# API overload and network drops. Kept SPECIFIC — these are matched only against
+# the terminal error message, never against streamed tool output (a Maven/test
+# log is full of numbers and words like "503"/"timeout"/"network" that would
+# otherwise trigger false positives on a successful run).
 _RETRYABLE_PHRASES = (
     "overloaded", "service unavailable", "internal server error", "bad gateway",
-    "gateway timeout", "temporarily unavailable", "rate_limit_error", "429",
-    "500", "502", "503", "504", "529",
+    "gateway timeout", "temporarily unavailable", "rate_limit_error",
     "econnreset", "etimedout", "enotfound", "eai_again", "getaddrinfo",
-    "connection reset", "connection refused", "connection error", "network",
-    "could not resolve", "fetch failed", "socket hang up", "timeout", "timed out",
+    "connection reset by peer", "connection refused", "fetch failed",
+    "socket hang up", "could not resolve host",
 )
 
 
@@ -173,17 +177,11 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
 
     prefix = f"    [{label}]"
     result_obj: Optional[dict] = None
-    limit_seen = False
-    retry_seen = False
     try:
         for line in proc.stdout:
             line = line.strip()
             if not line:
                 continue
-            if looks_like_limit(line):
-                limit_seen = True
-            elif looks_retryable(line):
-                retry_seen = True
             try:
                 ev = json.loads(line)
             except json.JSONDecodeError:
@@ -207,13 +205,15 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     if result_obj is None:
         # Process ended without a result: crash, or the network cut mid-stream.
         err = "".join(stderr_buf)[-1000:].strip()
-        lim = limit_seen or looks_like_limit(err)
+        lim = looks_like_limit(err)
         return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}",
                            limit_reached=lim, retryable=not lim)
     res = _result_from_obj(result_obj)
-    res.limit_reached = limit_seen or looks_like_limit(res.result_text) or looks_like_limit(res.error)
-    res.retryable = (not res.limit_reached) and (
-        retry_seen or looks_retryable(res.result_text) or looks_retryable(res.error))
+    res.limit_reached = looks_like_limit(res.result_text) or looks_like_limit(res.error)
+    # Only an actual error result can be transient; a SUCCESSFUL completion never is
+    # (its summary text may contain "503"/"timeout"/etc. from the agent's test runs).
+    res.retryable = (not res.ok) and (not res.limit_reached) and (
+        looks_retryable(res.result_text) or looks_retryable(res.error))
     return res
 
 
