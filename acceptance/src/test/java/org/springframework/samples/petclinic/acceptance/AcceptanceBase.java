@@ -16,9 +16,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Experimenter-owned, black-box acceptance base for PetClinic-Evolve.
@@ -58,8 +58,20 @@ public abstract class AcceptanceBase {
 
 	// --- unique generators (avoid colliding with seed data or other tests) ---
 
+	/** Encode n as a lowercase letter string (1->a, 26->z, 27->aa), so generated
+	 *  names satisfy the base app's letters-only owner-name pattern. */
+	protected String letters(int n) {
+		StringBuilder sb = new StringBuilder();
+		for (int x = Math.max(n, 1); x > 0; x /= 26) {
+			x--;
+			sb.insert(0, (char) ('a' + x % 26));
+		}
+		return sb.toString();
+	}
+
+	/** Unique, letters-only surname (starts with "Sur"). */
 	protected String uniqueLastName() {
-		return "Sur" + seq();
+		return "Sur" + letters(seq());
 	}
 
 	protected String uniqueAddress() {
