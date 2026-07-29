@@ -7,13 +7,21 @@ chains: 5                     # independent runs per (arm, strategy). >=5.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600
 
-# Token/session-limit handling. On a limit hit the harness rolls back the current
+# Resilience. On a TOKEN/SESSION limit the harness rolls back the current
 # checkpoint, waits for the window to reopen, then retries the SAME checkpoint --
-# so a run paused overnight resumes exactly where it left off (no no-op gaps).
+# so an overnight pause resumes exactly where it left off. TRANSIENT failures
+# (internet dropping in/out, the API overloaded, no completion) are treated the
+# same way but with a short exponential backoff instead of a quota-reset wait.
 limits:
+  # token/session limit
   poll_seconds: 1800        # wait between retries when the reset time can't be parsed (30 min)
-  max_sleep_seconds: 21600  # cap on a single wait (6 h), then re-check
-  max_attempts: 200         # safety cap on limit-retries per checkpoint
+  max_sleep_seconds: 21600  # cap on a single quota-reset wait (6 h), then re-check
+  # transient failures (network / overload / no completion)
+  retry_backoff_seconds: 60     # first backoff; doubles each consecutive transient failure
+  retry_backoff_max: 900        # cap on a single transient backoff (15 min)
+  max_transient_attempts: 20    # consecutive transient failures before aborting (network truly down)
+  # overall
+  max_attempts: 500         # absolute safety cap on retries per checkpoint
 
 # Paths below that are NOT absolute are resolved relative to THIS config file's
 # directory, so the harness can be moved without editing them.

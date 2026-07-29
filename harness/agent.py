@@ -48,7 +48,8 @@ class AgentResult:
     result_text: str = ""
     raw: dict = field(default_factory=dict)
     error: str = ""
-    limit_reached: bool = False  # hit a usage/session/rate limit; caller should wait + retry
+    limit_reached: bool = False  # usage/session limit; caller waits for the quota reset then retries
+    retryable: bool = False      # transient failure (network/overload/no-completion); short backoff then retry
 
 
 _LIMIT_PHRASES = ("session limit", "usage limit", "rate limit", "hit your limit",
@@ -59,6 +60,23 @@ _LIMIT_PHRASES = ("session limit", "usage limit", "rate limit", "hit your limit"
 def looks_like_limit(text: str) -> bool:
     t = (text or "").lower()
     return any(p in t for p in _LIMIT_PHRASES)
+
+
+# Transient failures that should be retried after a short wait (not a data outcome):
+# network drops, API overload / 5xx, short-term rate limiting.
+_RETRYABLE_PHRASES = (
+    "overloaded", "service unavailable", "internal server error", "bad gateway",
+    "gateway timeout", "temporarily unavailable", "rate_limit_error", "429",
+    "500", "502", "503", "504", "529",
+    "econnreset", "etimedout", "enotfound", "eai_again", "getaddrinfo",
+    "connection reset", "connection refused", "connection error", "network",
+    "could not resolve", "fetch failed", "socket hang up", "timeout", "timed out",
+)
+
+
+def looks_retryable(text: str) -> bool:
+    t = (text or "").lower()
+    return any(p in t for p in _RETRYABLE_PHRASES)
 
 
 def _result_from_obj(data: dict) -> AgentResult:
@@ -156,6 +174,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     prefix = f"    [{label}]"
     result_obj: Optional[dict] = None
     limit_seen = False
+    retry_seen = False
     try:
         for line in proc.stdout:
             line = line.strip()
@@ -163,6 +182,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
                 continue
             if looks_like_limit(line):
                 limit_seen = True
+            elif looks_retryable(line):
+                retry_seen = True
             try:
                 ev = json.loads(line)
             except json.JSONDecodeError:
@@ -180,13 +201,19 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         drain.join(timeout=2)
 
     if timed_out["v"]:
-        return AgentResult(ok=False, error=f"agent timed out after {timeout}s (no completion)")
+        # No completion within the timeout — often an overloaded/unresponsive API.
+        return AgentResult(ok=False, error=f"agent timed out after {timeout}s (no completion)",
+                           retryable=True)
     if result_obj is None:
+        # Process ended without a result: crash, or the network cut mid-stream.
         err = "".join(stderr_buf)[-1000:].strip()
+        lim = limit_seen or looks_like_limit(err)
         return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}",
-                           limit_reached=limit_seen or looks_like_limit(err))
+                           limit_reached=lim, retryable=not lim)
     res = _result_from_obj(result_obj)
     res.limit_reached = limit_seen or looks_like_limit(res.result_text) or looks_like_limit(res.error)
+    res.retryable = (not res.limit_reached) and (
+        retry_seen or looks_retryable(res.result_text) or looks_retryable(res.error))
     return res
 
 

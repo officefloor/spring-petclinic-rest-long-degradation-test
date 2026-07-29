@@ -167,6 +167,20 @@ def wait_for_window(ar, cfg: dict) -> None:
     time.sleep(secs)
 
 
+def wait_transient(attempt: int, ar, cfg: dict) -> None:
+    """Short exponential backoff for a transient failure (network drop, API
+    overload, no completion). Doubles each consecutive attempt up to a cap."""
+    limits = cfg.get("limits", {})
+    base = limits.get("retry_backoff_seconds", 60)
+    cap = limits.get("retry_backoff_max", 900)
+    secs = min(base * (2 ** (attempt - 1)), cap)
+    resume = datetime.now() + timedelta(seconds=secs)
+    reason = (ar.error or ar.result_text or "").strip().splitlines()[0][:120] if (ar.error or ar.result_text) else "no completion"
+    print(f"    [retry] transient failure (attempt {attempt}: {reason}) — waiting {int(secs)}s "
+          f"(until ~{resume:%H:%M:%S}) then retrying the same checkpoint...", flush=True)
+    time.sleep(secs)
+
+
 def inject_checkpoint_tests(wt: str, cfg: dict, k: int) -> list[str]:
     """Copy ONLY checkpoint k's acceptance test (plus the shared infra at k=1)
     into the worktree. This is what keeps the agent from seeing future
@@ -349,24 +363,33 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         preagent_ref = git(["-C", wt, "rev-parse", "HEAD"])
         base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # = cp(K-1) commit
 
-        # 1. agent turn (fresh session, no carried context). On a token-limit hit,
-        # discard this attempt, WAIT for the window to reopen, then retry the SAME
-        # checkpoint from the reset state.
+        # 1. agent turn (fresh session, no carried context). On a token-limit OR a
+        # transient failure (network drop, API overload, no completion), discard
+        # this attempt, WAIT, then retry the SAME checkpoint from the reset state.
+        # Token limits wait for the quota reset; transient failures back off short.
         prompt = build_prompt(template, cp["spec"])
+        limits = cfg.get("limits", {})
         attempts = 0
+        transient_attempts = 0
         while True:
             ar = agent.run_agent(prompt, cwd=wt, model=model,
                                  timeout=cfg.get("agent_timeout", 3600))
-            if not ar.limit_reached:
+            if not (ar.limit_reached or ar.retryable):
                 break
             attempts += 1
-            if attempts > cfg.get("limits", {}).get("max_attempts", 200):
-                raise RuntimeError("exceeded max limit-retry attempts; aborting run")
-            print(f"    [limit] rolling back cp{k:02d} attempt {attempts}", flush=True)
+            if attempts > limits.get("max_attempts", 500):
+                raise RuntimeError("exceeded max retry attempts; aborting run")
             subprocess.run(["git", "-C", wt, "reset", "--hard", preagent_ref],
                            capture_output=True, text=True)
             subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
-            wait_for_window(ar, cfg)
+            if ar.limit_reached:
+                transient_attempts = 0
+                wait_for_window(ar, cfg)
+            else:
+                transient_attempts += 1
+                if transient_attempts > limits.get("max_transient_attempts", 20):
+                    raise RuntimeError("too many consecutive transient failures; aborting run")
+                wait_transient(transient_attempts, ar, cfg)
 
         # Undo the snapshot commit (keep its contents staged) so the real cpNN
         # commit below contains the injected test + cp(K-1) reset + the agent work.
