@@ -516,9 +516,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             "functions": [{**f, "mass": round(metrics.function_mass(f), 4)} for f in fns],
         })
 
-        # 6. cold-reader probe at each phase boundary (first checkpoint of a phase)
-        is_boundary = (k == 1) or (phase_for(k - 1, n) != phase)
-        if cfg.get("probe", {}).get("enabled", True) and is_boundary:
+        # 6. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
+        # (default: the first checkpoint of each phase).
+        probe_cfg = cfg.get("probe", {})
+        at = probe_cfg.get("at_checkpoints")
+        run_probe = (k in at) if at else ((k == 1) or (phase_for(k - 1, n) != phase))
+        if probe_cfg.get("enabled", True) and run_probe:
             pr = agent.probe(cfg["probe"]["question"], cwd=wt, model=model,
                              expected=cfg["probe"].get("expected"))
             row.update({
@@ -535,6 +538,20 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         print(f"  cp{k:02d} [{phase:5}] cost=${row['cost_usd']:<6} "
               f"strict={row['strict_pass']} erosion={row['erosion']} "
               f"regr={row['regressions']} hotspotCC={row.get('hotspot_cc')}")
+
+        # Files the agent changed this checkpoint (excluding the injected acceptance
+        # test), so progress is visible as the code evolves.
+        accept_dir = cfg.get("acceptance", {}).get("dest_subpath")
+        pathspec = ["--", ".", f":(exclude){accept_dir}"] if accept_dir else []
+        changed = subprocess.run(
+            ["git", "-C", wt, "diff", "--name-status", "HEAD~1" if committed else base_commit,
+             "HEAD", *pathspec], capture_output=True, text=True).stdout.strip()
+        if changed:
+            print("      changed:")
+            for line in changed.splitlines():
+                print(f"        {line}")
+        else:
+            print("      changed: (no production files)", flush=True)
 
     # Final commit on the evolve branch: capture this chain's results alongside
     # the code progression it describes (nothing goes to the harness repo).
@@ -591,8 +608,9 @@ def main() -> int:
     print(f"run_id = {run_id}")
 
     if args.dry_run:
-        for arm in arms:
-            for chain in chains:
+        # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1, ...
+        for chain in chains:
+            for arm in arms:
                 run_chain(cfg, arm, strategy, chain, run_id, checkpoints, None,
                           True, args.max_checkpoints)
         return 0
@@ -607,8 +625,11 @@ def main() -> int:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
         if new_file:
             writer.writeheader()
-        for arm in arms:
-            for chain in chains:
+        # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1, ...
+        # so the two arms are matched in time (no temporal confound) and a run cut
+        # short still has both arms for the chains it completed.
+        for chain in chains:
+            for arm in arms:
                 run_chain(cfg, arm, strategy, chain, run_id, checkpoints, writer,
                           args.dry_run, args.max_checkpoints)
                 fh.flush()

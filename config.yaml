@@ -3,7 +3,7 @@
 # with --dry-run and --max-checkpoints 1.
 
 model: claude-opus-4-8
-chains: 5                     # independent runs per (arm, strategy). >=5.
+chains: 10                    # independent runs per (arm, strategy). 10 = target for tight CIs.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600
 
@@ -98,17 +98,28 @@ tools:
 
 probe:
   enabled: true
+  at_checkpoints: [1, 5, 10, 15, 20]   # run the cold-reader probe at these checkpoints
   question: |
     Read the code as it currently stands and answer without changing anything.
     List, in order, every validation and side-effect that is applied when
     creating an owner via POST /api/owners.
-  # Ground-truth items for a crude recall score (grade properly offline too):
+  # Ground-truth items for a crude recall score (case-insensitive substring match;
+  # grade properly offline too). Single distinctive tokens for the create-owner
+  # rules, so casing/spacing (e.g. "displayName" vs "display name") doesn't matter.
   expected:
-    - "telephone required"
-    - "telephone digits"
-    - "duplicate telephone"
-    - "audit"
-    - "registration date"
+    - "duplicate"       # exact / household / telephone / email uniqueness (cp1-5)
+    - "telephone"       # normalisation + uniqueness (cp3, cp11)
+    - "email"           # cp4
+    - "display"         # displayName (cp6)
+    - "initials"        # cp7
+    - "registration"    # registrationDate default (cp8)
+    - "membership"      # membershipNumber + tier (cp9, cp15)
+    - "customer"        # customerCode (cp10)
+    - "city"            # canonical casing + city capacity (cp12, cp14)
+    - "namesake"        # namesakeCount (cp16)
+    - "household"       # sharesHousehold (cp17)
+    - "local"           # locality (cp18)
+    - "audit"           # audit trail + bulk-signup warning (cp19, cp20)
 
 # Kept identical at every checkpoint. CLAUDE.md is the fixed, human-authored
 # project guide (present in BOTH arms so the playing field is level: it offsets
