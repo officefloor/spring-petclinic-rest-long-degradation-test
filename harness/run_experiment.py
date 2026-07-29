@@ -56,7 +56,7 @@ CSV_FIELDS = [
     "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",
     "verbosity", "verbosity_clone_lines", "verbosity_pattern_lines", "verbosity_union_lines",
     "java_loc", "yaml_loc",
-    "hotspot_nloc", "hotspot_cc", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
+    "hotspot_nloc", "hotspot_cc", "hotspot_fn", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
     "diff_added", "diff_removed", "files_touched",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
@@ -443,8 +443,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         ed = metrics.erosion_detail(fns)
         vscore, vdetail = metrics.verbosity(wt, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
                                             loc, cfg["tools"])
-        hs = metrics.hotspot_stats(fns, (arm_cfg.get("hotspot") or {}).get("file", ""),
-                                   (arm_cfg.get("hotspot") or {}).get("methods", []))
+        hs = metrics.hotspot_stats(fns, arm_cfg.get("hotspot"))
         fp = metrics.function_package_stats(wt, arm_cfg.get("function_package_glob"))
         br = metrics.blast_radius(wt, "HEAD~1" if committed else "HEAD", "HEAD",
                                   exclude=cfg.get("acceptance", {}).get("dest_subpath"))

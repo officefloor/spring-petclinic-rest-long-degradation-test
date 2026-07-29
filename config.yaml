@@ -35,9 +35,16 @@ arms:
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: []                       # Spring has no endpoint YAML
+    # Owner/pet-lifecycle subsystem. The hotspot is the single highest-CC function
+    # among these files (the god-method indicator), reported in `hotspot_fn`. The
+    # first real run showed accretion lands in ClinicServiceImpl.saveOwner, not the
+    # controller. Leave `methods` empty to track whichever method bloats.
     hotspot:
-      file: "rest/controller/v1/OwnerRestControllerV1.java"
-      methods: ["addOwner", "updateOwner"]
+      files:
+        - "service/ClinicServiceImpl.java"
+        - "rest/controller/v1/OwnerRestControllerV1.java"
+        - "rest/controller/v1/PetRestControllerV1.java"
+      methods: []
     function_package_glob: null          # N/A for Spring
 
   officefloor:
@@ -46,7 +53,14 @@ arms:
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: ["src/main/resources/officefloor/**/*.yml"]
-    hotspot: null                        # no single hotspot; behaviour is fanned out
+    # Same shared service + controllers, so we can see the direct contrast: if
+    # OfficeFloor keeps behaviour in its wired functions, the max CC here stays low
+    # while Spring's saveOwner climbs. Its own functions are tracked separately via
+    # function_package_glob (fn_count / fn_nloc_max).
+    hotspot:
+      files:
+        - "service/ClinicServiceImpl.java"
+        - "rest/controller/v1/OwnerRestControllerV1.java"
     function_package_glob: "src/main/java/**/rest/function/**/*.java"
 
 # Prompt strategies mirror SlopCodeBench's intervention study. {spec} is replaced
