@@ -1,34 +1,33 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp17: optional postcode; if present, must match a simple alphanumeric pattern. */
+/** cp17: sharesHousehold = another owner already has the same address and city. */
 @Tag("cp17")
 class Cp17Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsInvalidPostcode() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("postcode", "!!bad!!");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
+	void coreHouseholdFlag() throws Exception {
+		String address = uniqueAddress();
+		String city = uniqueCity();
 
-	@Test
-	void functionalityAcceptsMissingPostcode() throws Exception {
-		createOwner(validOwner()).andExpect(status().is2xxSuccessful());
-	}
+		ObjectNode a = ownerNode();
+		a.put("address", address);
+		a.put("city", city);
+		boolean first = fetchOwner(createOwnerOk(a)).get("sharesHousehold").asBoolean();
 
-	@Test
-	void functionalityStoresValidPostcode() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("postcode", "AB12CD");
-		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.postcode").value("AB12CD"));
+		ObjectNode b = ownerNode(); // same address + city, own unique name/phone
+		b.put("address", address);
+		b.put("city", city);
+		boolean second = fetchOwner(createOwnerOk(b)).get("sharesHousehold").asBoolean();
+
+		assertFalse(first, "first owner at the address shares no household");
+		assertTrue(second, "second owner at the same address + city shares a household");
 	}
 }

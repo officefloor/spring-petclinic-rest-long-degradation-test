@@ -7,28 +7,31 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp05: first and last name at most 50 characters. */
+/** cp05: duplicate detection ignores case and surrounding/repeated whitespace. */
 @Tag("cp05")
 class Cp05Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsFirstNameOver50() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("firstName", "A".repeat(51));
-		createOwner(o).andExpect(status().isBadRequest());
+	void coreCaseInsensitiveHouseholdDuplicate() throws Exception {
+		ObjectNode a = ownerNode();
+		String last = a.get("lastName").asText();
+		String phone = a.get("telephone").asText();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", last.toUpperCase()); // same last name, different case
+		b.put("telephone", phone);             // same telephone -> household duplicate
+		createOwner(b).andExpect(status().isConflict());
 	}
 
 	@Test
-	void errorRejectsLastNameOver50() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("lastName", "B".repeat(51));
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityAcceptsExactly50() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("firstName", "C".repeat(50));
-		createOwner(o).andExpect(status().is2xxSuccessful());
+	void functionalityWhitespaceInsensitiveDuplicate() throws Exception {
+		ObjectNode a = ownerNode();
+		String last = a.get("lastName").asText();
+		String phone = a.get("telephone").asText();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", "  " + last + "  "); // same last name, padded whitespace
+		b.put("telephone", phone);
+		createOwner(b).andExpect(status().isConflict());
 	}
 }

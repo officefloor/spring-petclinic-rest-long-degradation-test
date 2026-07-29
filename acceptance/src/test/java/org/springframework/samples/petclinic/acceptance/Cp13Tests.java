@@ -5,30 +5,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-/** cp13: email must be unique when present (409). */
+/** cp13: reject creating an owner once 20 have already been created today. */
 @Tag("cp13")
 class Cp13Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsDuplicateEmail() throws Exception {
-		String email = uniqueEmail();
-		ObjectNode a = validOwner();
-		a.put("email", email);
-		createOwnerOk(a);
-		ObjectNode b = validOwner();
-		b.put("email", email);
-		createOwner(b).andExpect(status().isConflict());
-	}
-
-	@Test
-	void functionalityAllowsDistinctEmails() throws Exception {
-		ObjectNode a = validOwner();
-		a.put("email", uniqueEmail());
-		createOwnerOk(a);
-		ObjectNode b = validOwner();
-		b.put("email", uniqueEmail());
-		createOwner(b).andExpect(status().is2xxSuccessful());
+	void coreRejectsOverDailyCap() throws Exception {
+		for (int i = 0; i < 20; i++) {
+			createOwnerOk(ownerNode()); // distinct cities, so the per-city cap is not hit
+		}
+		createOwner(ownerNode()).andExpect(status().isBadRequest()); // 21st today
 	}
 }

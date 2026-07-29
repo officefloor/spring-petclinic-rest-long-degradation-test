@@ -1,32 +1,22 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp07: address required, not whitespace-only. */
+/** cp07: derived initials = first letters of first + last name, e.g. "J.D.". */
 @Tag("cp07")
 class Cp07Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsWhitespaceAddress() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("address", "   ");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void errorRejectsMissingAddress() throws Exception {
-		ObjectNode o = validOwner();
-		o.remove("address");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityAcceptsValidAddress() throws Exception {
-		createOwner(validOwner()).andExpect(status().is2xxSuccessful());
+	void coreInitials() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("firstName", "John");
+		o.put("lastName", "Doe" + seq());
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.initials").value("J.D."));
 	}
 }

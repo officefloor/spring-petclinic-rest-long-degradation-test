@@ -8,36 +8,33 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp04: first and last name required and trimmed. */
+/** cp04: optional email; if present it must be unique across owners (409). */
 @Tag("cp04")
 class Cp04Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsMissingFirstName() throws Exception {
-		ObjectNode o = validOwner();
-		o.remove("firstName");
-		createOwner(o).andExpect(status().isBadRequest());
+	void coreRejectsDuplicateEmail() throws Exception {
+		String email = uniqueEmail();
+		ObjectNode a = ownerNode();
+		a.put("email", email);
+		createOwnerOk(a);
+		ObjectNode b = ownerNode(); // everything else distinct
+		b.put("email", email);
+		createOwner(b).andExpect(status().isConflict());
 	}
 
 	@Test
-	void coreRejectsMissingLastName() throws Exception {
-		ObjectNode o = validOwner();
-		o.remove("lastName");
-		createOwner(o).andExpect(status().isBadRequest());
+	void functionalityAllowsMissingEmail() throws Exception {
+		createOwnerOk(ownerNode());
+		createOwner(ownerNode()).andExpect(status().is2xxSuccessful());
 	}
 
 	@Test
-	void errorRejectsBlankFirstName() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("firstName", "   ");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityTrimsNames() throws Exception {
-		ObjectNode o = validOwner("  Alice  ", "  Smith  ");
-		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.firstName").value("Alice"))
-				.andExpect(jsonPath("$.lastName").value("Smith"));
+	void functionalityStoresEmail() throws Exception {
+		String email = uniqueEmail();
+		ObjectNode a = ownerNode();
+		a.put("email", email);
+		int id = createOwnerOk(a);
+		getOwner(id).andExpect(jsonPath("$.email").value(email));
 	}
 }

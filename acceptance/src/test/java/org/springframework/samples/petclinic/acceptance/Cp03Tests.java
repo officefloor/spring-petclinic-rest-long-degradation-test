@@ -1,6 +1,5 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.Tag;
@@ -8,24 +7,22 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp03: normalise telephone (strip spaces, dashes, parentheses) before saving. */
+/** cp03: telephone must be unique across all owners (409). */
 @Tag("cp03")
 class Cp03Tests extends AcceptanceBase {
 
 	@Test
-	void coreStripsFormattingBeforeSave() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "(613) 555-0123");
-		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.telephone").value("6135550123"));
+	void coreRejectsDuplicateTelephone() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode(); // different name/address/city
+		b.put("telephone", a.get("telephone").asText());
+		createOwner(b).andExpect(status().isConflict());
 	}
 
 	@Test
-	void functionalityNormalisesOnUpdate() throws Exception {
-		int id = createOwnerOk(validOwner());
-		ObjectNode upd = validOwner();
-		upd.put("telephone", " 613 555 0124 ");
-		updateOwner(id, upd).andExpect(status().is2xxSuccessful());
-		getOwner(id).andExpect(jsonPath("$.telephone").value("6135550124"));
+	void functionalityAllowsDistinctTelephones() throws Exception {
+		createOwnerOk(ownerNode());
+		createOwner(ownerNode()).andExpect(status().is2xxSuccessful());
 	}
 }

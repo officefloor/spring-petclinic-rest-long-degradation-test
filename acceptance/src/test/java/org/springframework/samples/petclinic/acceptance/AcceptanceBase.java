@@ -2,21 +2,19 @@ package org.springframework.samples.petclinic.acceptance;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
-import java.util.Base64;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,17 +23,25 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 /**
  * Experimenter-owned, black-box acceptance base for PetClinic-Evolve.
  *
- * <p>These tests drive the REST API of the fully-booted application via
- * {@link MockMvc}, so the Spring @RestController arm and the OfficeFloor
- * YAML-composed-function arm are judged by identical externals. They contain no
- * knowledge of either implementation.
+ * <p>Every checkpoint is a business rule on the ONE endpoint {@code POST /api/owners};
+ * tests create owners and read fields back via {@code GET /api/owners/{id}}, so the
+ * Spring and OfficeFloor arms are judged by identical externals.
  *
- * <p>Security: the experiment runs with PetClinic security disabled (the repo
- * default). If you enable it, pass -Dpetclinic.test.user=... -Dpetclinic.test.password=...
- * and every request will carry HTTP Basic auth.
+ * <p>Isolation: {@code @Transactional} rolls each test back, so count/quota rules
+ * (membership number, per-day cap, per-city cap, "most common city") see only the
+ * seed data plus what the test itself creates — deterministic without polluting
+ * other tests. {@code @WithMockUser} authenticates as a fixed admin so the audit
+ * rules can assert a known user name.
+ *
+ * <p>Cumulative-safety convention: {@link #ownerNode()} returns a FULLY UNIQUE
+ * owner, which every rule accepts (no duplicate, no quota) at every checkpoint;
+ * tests then override only the fields needed to trigger a specific rule. Reject
+ * cases use data that stays rejected under all later (broader) rules.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Transactional
+@WithMockUser(username = "acceptance-admin", roles = {"OWNER_ADMIN", "VET_ADMIN", "ADMIN"})
 public abstract class AcceptanceBase {
 
 	private static final AtomicInteger SEQ = new AtomicInteger(0);
@@ -46,18 +52,51 @@ public abstract class AcceptanceBase {
 	@Autowired
 	protected ObjectMapper om;
 
-	// --- request builders --------------------------------------------------
-
-	protected MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder b) {
-		String user = System.getProperty("petclinic.test.user");
-		if (user == null) {
-			return b;
-		}
-		String pass = System.getProperty("petclinic.test.password", "");
-		String token = Base64.getEncoder()
-				.encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
-		return b.header("Authorization", "Basic " + token);
+	protected int seq() {
+		return SEQ.incrementAndGet();
 	}
+
+	// --- unique generators (avoid colliding with seed data or other tests) ---
+
+	protected String uniqueLastName() {
+		return "Sur" + seq();
+	}
+
+	protected String uniqueAddress() {
+		return seq() + " Test Street";
+	}
+
+	protected String uniqueCity() {
+		return "Town" + seq();
+	}
+
+	/** A unique 10-digit telephone starting with 2 (seed uses 6xxxxxxxxx). */
+	protected String uniqueTelephone() {
+		return String.format("2%09d", seq());
+	}
+
+	protected String uniqueEmail() {
+		return "owner" + seq() + "@example.test";
+	}
+
+	protected String today() {
+		return LocalDate.now().toString();
+	}
+
+	// --- payloads -----------------------------------------------------------
+
+	/** A fully valid, fully unique owner — accepted by every rule at every checkpoint. */
+	protected ObjectNode ownerNode() {
+		ObjectNode o = om.createObjectNode();
+		o.put("firstName", "Test");
+		o.put("lastName", uniqueLastName());
+		o.put("address", uniqueAddress());
+		o.put("city", uniqueCity());
+		o.put("telephone", uniqueTelephone());
+		return o;
+	}
+
+	// --- requests -----------------------------------------------------------
 
 	protected String json(JsonNode node) {
 		try {
@@ -69,8 +108,8 @@ public abstract class AcceptanceBase {
 	}
 
 	protected ResultActions createOwner(JsonNode body) throws Exception {
-		return mvc.perform(auth(post("/api/owners").contentType(MediaType.APPLICATION_JSON)
-				.content(json(body))));
+		return mvc.perform(post("/api/owners").contentType(MediaType.APPLICATION_JSON)
+				.content(json(body)));
 	}
 
 	protected int createOwnerOk(JsonNode body) throws Exception {
@@ -78,65 +117,15 @@ public abstract class AcceptanceBase {
 	}
 
 	protected ResultActions getOwner(int id) throws Exception {
-		return mvc.perform(auth(get("/api/owners/" + id)));
+		return mvc.perform(get("/api/owners/" + id));
 	}
 
-	protected ResultActions updateOwner(int id, JsonNode body) throws Exception {
-		return mvc.perform(auth(put("/api/owners/" + id).contentType(MediaType.APPLICATION_JSON)
-				.content(json(body))));
+	/** GET the owner and return its JSON body (asserts 2xx). */
+	protected JsonNode fetchOwner(int id) throws Exception {
+		String body = getOwner(id).andExpect(status().is2xxSuccessful())
+				.andReturn().getResponse().getContentAsString();
+		return om.readTree(body);
 	}
-
-	protected ResultActions addPet(int ownerId, JsonNode pet) throws Exception {
-		return mvc.perform(auth(post("/api/owners/" + ownerId + "/pets")
-				.contentType(MediaType.APPLICATION_JSON).content(json(pet))));
-	}
-
-	protected ResultActions updatePet(int petId, JsonNode pet) throws Exception {
-		return mvc.perform(auth(put("/api/pets/" + petId).contentType(MediaType.APPLICATION_JSON)
-				.content(json(pet))));
-	}
-
-	// --- payload builders ---------------------------------------------------
-
-	/** A fully valid owner (all base fields, a unique telephone). */
-	protected ObjectNode validOwner(String firstName, String lastName) {
-		ObjectNode o = om.createObjectNode();
-		o.put("firstName", firstName);
-		o.put("lastName", lastName);
-		o.put("address", "123 Test Street");
-		o.put("city", "London");
-		o.put("telephone", uniquePhone());
-		return o;
-	}
-
-	protected ObjectNode validOwner() {
-		return validOwner("John", "Tester");
-	}
-
-	protected ObjectNode validPet(String name) {
-		ObjectNode p = om.createObjectNode();
-		p.put("name", name);
-		p.put("birthDate", "2020-01-01");
-		ObjectNode type = om.createObjectNode();
-		type.put("id", 1); // seed PetType id 1 exists in PetClinic
-		p.set("type", type);
-		return p;
-	}
-
-	/** A unique 10-digit telephone (61 + 8 digits), safe against seed data. */
-	protected String uniquePhone() {
-		return String.format("61%08d", SEQ.incrementAndGet());
-	}
-
-	protected String uniqueEmail() {
-		return "owner" + SEQ.incrementAndGet() + "@example.com";
-	}
-
-	protected String today() {
-		return LocalDate.now().toString(); // yyyy-MM-dd
-	}
-
-	// --- helpers ------------------------------------------------------------
 
 	protected int extractId(ResultActions ra) throws Exception {
 		String body = ra.andReturn().getResponse().getContentAsString();

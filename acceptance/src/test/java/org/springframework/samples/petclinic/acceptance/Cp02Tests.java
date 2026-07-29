@@ -7,43 +7,26 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp02: telephone must be 6 to 15 digits. */
+/** cp02: reject a new owner with the same last name AND telephone as an existing one (409). */
 @Tag("cp02")
 class Cp02Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsTooShortTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "12345"); // 5 digits
-		createOwner(o).andExpect(status().isBadRequest());
+	void coreRejectsSameLastNameAndTelephone() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode(); // distinct address/city
+		b.put("lastName", a.get("lastName").asText());
+		b.put("telephone", a.get("telephone").asText());
+		createOwner(b).andExpect(status().isConflict());
 	}
 
 	@Test
-	void coreAcceptsTenDigitTelephone() throws Exception {
-		createOwner(validOwner()).andExpect(status().is2xxSuccessful()); // uniquePhone() is 10 digits
-	}
-
-	@Test
-	void errorRejectsNonDigitTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "12ab567"); // letters are never valid, even after formatting is stripped
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityRejectsTooLongTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "1234567890123456"); // 16 digits
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityAcceptsBoundaryLengths() throws Exception {
-		ObjectNode six = validOwner();
-		six.put("telephone", "123456");
-		createOwner(six).andExpect(status().is2xxSuccessful());
-		ObjectNode fifteen = validOwner();
-		fifteen.put("telephone", "123456789012345");
-		createOwner(fifteen).andExpect(status().is2xxSuccessful());
+	void functionalityAllowsSameLastNameDifferentTelephone() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode(); // same last name, its own unique telephone
+		b.put("lastName", a.get("lastName").asText());
+		createOwner(b).andExpect(status().is2xxSuccessful());
 	}
 }

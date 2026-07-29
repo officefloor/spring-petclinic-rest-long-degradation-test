@@ -1,37 +1,32 @@
 package org.springframework.samples.petclinic.acceptance;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp10: AUDIT log entry on owner update, listing changed fields. */
+/** cp10: customerCode = "<UPPERCASE_CITY>-<NNNN>", NNNN = per-city sequence. */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 
 	@Test
-	void coreLogsAuditOnUpdate() throws Exception {
-		int id = createOwnerOk(validOwner("Bob", "Jones"));
-		try (AuditLogCapture audit = new AuditLogCapture()) {
-			ObjectNode upd = validOwner("Bob", "Jones");
-			upd.put("city", "Bristol");
-			updateOwner(id, upd).andExpect(status().is2xxSuccessful());
-			assertTrue(audit.count() > 0, "expected an AUDIT entry on update; got none");
-		}
-	}
+	void coreCustomerCodePerCitySequence() throws Exception {
+		String city = "Zedton" + seq();      // a city with no existing owners
+		String prefix = city.toUpperCase() + "-";
 
-	@Test
-	void functionalityAuditMentionsChangedField() throws Exception {
-		int id = createOwnerOk(validOwner("Cara", "Lee"));
-		try (AuditLogCapture audit = new AuditLogCapture()) {
-			ObjectNode upd = validOwner("Cara", "Lee");
-			upd.put("city", "Bristol"); // change city
-			updateOwner(id, upd).andExpect(status().is2xxSuccessful());
-			assertTrue(audit.anyContains("city"),
-					"audit should name the changed field 'city'; got " + audit.messages());
-		}
+		ObjectNode a = ownerNode();
+		a.put("city", city);
+		String codeA = fetchOwner(createOwnerOk(a)).get("customerCode").asText();
+
+		ObjectNode b = ownerNode();
+		b.put("city", city);
+		String codeB = fetchOwner(createOwnerOk(b)).get("customerCode").asText();
+
+		assertTrue(codeA.startsWith(prefix), "code should start with the uppercased city: " + codeA);
+		assertEquals(prefix + "0001", codeA);
+		assertEquals(prefix + "0002", codeB);
 	}
 }

@@ -1,35 +1,28 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp16: reject names containing digits or control characters. */
+/** cp16: namesakeCount = number of other owners with the same last name at creation. */
 @Tag("cp16")
 class Cp16Tests extends AcceptanceBase {
 
-	// A BEL control character, built explicitly so nothing hides in the source.
-	private static final String CONTROL_CHAR = "Smi" + ((char) 7) + "th";
-
 	@Test
-	void coreRejectsDigitsInName() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("firstName", "John3");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
+	void coreCountsNamesakesAtCreation() throws Exception {
+		String last = uniqueLastName(); // no existing owner has this surname
+		ObjectNode a = ownerNode();
+		a.put("lastName", last);
+		int na = fetchOwner(createOwnerOk(a)).get("namesakeCount").asInt();
 
-	@Test
-	void errorRejectsControlCharInName() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("lastName", CONTROL_CHAR);
-		createOwner(o).andExpect(status().isBadRequest());
-	}
+		ObjectNode b = ownerNode(); // same surname, own unique phone/city/email
+		b.put("lastName", last);
+		int nb = fetchOwner(createOwnerOk(b)).get("namesakeCount").asInt();
 
-	@Test
-	void functionalityAcceptsHyphenAndApostrophe() throws Exception {
-		createOwner(validOwner("Anne-Marie", "O'Neill")).andExpect(status().is2xxSuccessful());
+		assertEquals(0, na, "first owner with the surname has no namesakes");
+		assertEquals(1, nb, "second owner with the surname has one namesake");
 	}
 }

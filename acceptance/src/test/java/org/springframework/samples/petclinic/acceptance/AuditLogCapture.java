@@ -53,6 +53,21 @@ public final class AuditLogCapture implements AutoCloseable {
 		});
 	}
 
+	/** True if some event at the given level (e.g. "WARN") contains all substrings. */
+	public boolean anyAtLevel(String level, String... substrings) {
+		return this.appender.list.stream()
+				.filter(e -> e.getLevel().toString().equalsIgnoreCase(level))
+				.map(ILoggingEvent::getFormattedMessage)
+				.anyMatch(m -> {
+					for (String s : substrings) {
+						if (!m.contains(s)) {
+							return false;
+						}
+					}
+					return true;
+				});
+	}
+
 	public int count() {
 		return this.appender.list.size();
 	}

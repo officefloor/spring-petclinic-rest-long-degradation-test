@@ -1,28 +1,43 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp20: persist a derived displayName "Lastname, Firstname" on any owner change. */
+/** cp20: WARN to AUDIT when a new owner's area code (first 3 digits) is shared by 5+ existing owners. */
 @Tag("cp20")
 class Cp20Tests extends AcceptanceBase {
 
-	@Test
-	void corePersistsDisplayNameOnCreate() throws Exception {
-		int id = createOwnerOk(validOwner("John", "Doe"));
-		getOwner(id).andExpect(jsonPath("$.displayName").value("Doe, John"));
+	private void createWithAreaCode(String area) throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("telephone", String.format(area + "%07d", seq())); // unique 10-digit, shared 3-digit area
+		createOwnerOk(o);
 	}
 
 	@Test
-	void functionalityUpdatesDisplayNameOnRename() throws Exception {
-		int id = createOwnerOk(validOwner("John", "Doe"));
-		ObjectNode upd = validOwner("John", "Smith"); // change last name
-		updateOwner(id, upd).andExpect(status().is2xxSuccessful());
-		getOwner(id).andExpect(jsonPath("$.displayName").value("Smith, John"));
+	void coreWarnsOnBulkAreaCode() throws Exception {
+		try (AuditLogCapture audit = new AuditLogCapture()) {
+			for (int i = 0; i < 5; i++) {
+				createWithAreaCode("571");
+			}
+			createWithAreaCode("571"); // 6th — now 5 existing share the area code
+			assertTrue(audit.anyAtLevel("WARN"),
+					"expected a WARN audit for a bulk signup; got " + audit.messages());
+		}
+	}
+
+	@Test
+	void functionalityNoWarnBelowThreshold() throws Exception {
+		try (AuditLogCapture audit = new AuditLogCapture()) {
+			createWithAreaCode("572");
+			createWithAreaCode("572");
+			createWithAreaCode("572"); // only 2 existing share the area code
+			assertFalse(audit.anyAtLevel("WARN"),
+					"no WARN expected when fewer than 5 owners share the area code");
+		}
 	}
 }

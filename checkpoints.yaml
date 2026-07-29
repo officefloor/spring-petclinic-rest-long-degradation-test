@@ -1,55 +1,69 @@
 # The ordered, cumulative checkpoint stream. Each is applied on top of the
-# committed result of the previous one. Nearly all land, if implemented naively,
-# in the Owner create/update path (Spring: addOwner/updateOwner; OfficeFloor: a
-# new function wired into owners.POST.yml / owners/{id}.PUT.yml).
+# committed result of the previous one.
 #
-# For each checkpoint N you must have one acceptance test class present at the
-# base ref, named CpNNTests and tagged @Tag("cpNN"), with methods prefixed
-# core.../error.../functionality... (Functionality = hidden exhaustive;
-# Core = spec-stated; Error = failure modes). They fail until the checkpoint is
+# DESIGN — ONE ENDPOINT, EVOLVING. Every checkpoint adds a business rule to the
+# SAME endpoint: create owner (POST /api/owners). No new endpoints. Each rule
+# requires real CODE — a cross-entity query, an aggregate/count, a date or string
+# computation, a derived field, a conditional, or a logged side-effect — so none
+# can be satisfied by a field constraint in openapi.yml (the flaw in the old
+# field-validation checkpoints, which just became @Pattern/@Size in the generated
+# DTO and never touched hand-written code).
+#
+# Because everything funnels into the one create-owner handler, the logic either
+# concentrates into a single god-method (Spring) or fans out into many wired
+# functions on the one pipeline (OfficeFloor) — which is exactly what the
+# erosion/hotspot metrics compare. Several later rules COMPOSE earlier ones
+# (5 refines 1-4; 11 refines 3; 12/14 build on the city count; 20 builds on the
+# audit of 19).
+#
+# NAMED FIELDS: every value a test must read back is given an exact JSON field
+# name (and format / allowed values) in its spec, so the agent and the acceptance
+# test agree on it. Rejection rules assert only the HTTP status; the audit rules
+# assert against the logger named AUDIT.
+#
+# For each checkpoint N there is one acceptance test class present at the base
+# ref, named CpNNTests and tagged @Tag("cpNN"), with methods prefixed
+# core.../error.../functionality... They fail until the checkpoint is
 # implemented. A ready-made suite is in acceptance/. See README.
-#
-# `spec` is the neutral product-owner instruction handed to the agent. Keep the
-# ordering fixed across all arms and chains.
 
 checkpoints:
-  - id: telephone-required
-    spec: "When creating or updating an owner, the telephone number is required. Reject a blank or missing telephone with 400 and a clear message."
-  - id: telephone-format
-    spec: "The telephone number must be 6 to 15 digits. Reject anything else with 400."
-  - id: telephone-normalise
-    spec: "Before saving an owner, normalise the telephone number by removing spaces, dashes and parentheses."
-  - id: names-required-trimmed
-    spec: "First name and last name are required. Trim surrounding whitespace before saving."
-  - id: names-max-length
-    spec: "First and last name may be at most 50 characters. Reject longer values with 400."
-  - id: city-titlecase
-    spec: "City is required. Store it title-cased (e.g. 'new york' becomes 'New York')."
-  - id: address-non-blank
-    spec: "Address is required. Reject an address that is only whitespace with 400."
-  - id: telephone-unique-create
-    spec: "Reject creating an owner whose telephone number already belongs to another owner, with 409."
-  - id: audit-create
-    spec: "Write an AUDIT log entry whenever an owner is created, recording the authenticated user and the new owner id."
-  - id: audit-update
-    spec: "Write an AUDIT log entry whenever an owner is updated, listing which fields changed."
-  - id: registration-date
-    spec: "On create, if no registration date is supplied, default it to today's date."
-  - id: email-optional-format
-    spec: "Owners may have an optional email address. If present, it must be a valid email format; otherwise reject with 400."
+  - id: exact-duplicate
+    spec: "Reject creating an owner when an identical owner already exists (same first name, last name, address, city and telephone). Respond with 409."
+  - id: household-duplicate
+    spec: "Reject creating an owner when another owner already has the same last name and the same telephone number. Respond with 409."
+  - id: telephone-unique
+    spec: "Reject creating an owner whose telephone number is already used by any other owner. Respond with 409."
   - id: email-unique
-    spec: "If an email is present, it must be unique across all owners. Reject duplicates with 409."
-  - id: telephone-unique-update
-    spec: "On update, reject changing the telephone to one already used by another owner, with 409."
-  - id: names-collapse-whitespace
-    spec: "Collapse repeated internal whitespace in first and last names before saving ('Jon   Doe' becomes 'Jon Doe')."
-  - id: names-no-digits
-    spec: "Reject owner names that contain digits or control characters, with 400."
-  - id: postcode-optional
-    spec: "Owners may have an optional postcode. If present, validate it against a simple alphanumeric pattern; otherwise reject with 400."
-  - id: pet-cap
-    spec: "An owner may have at most 6 pets. Reject adding a pet beyond that cap with 400."
-  - id: pet-name-unique
-    spec: "An owner cannot have two pets with the same name. Reject adding or renaming a pet to a duplicate name with 400."
+    spec: "An owner may include an email address in the request field 'email'. When one is given, reject creating the owner if that email is already used by another owner (409); otherwise store it and return it as 'email' in the owner response."
+  - id: normalized-dedupe
+    spec: "The duplicate checks must ignore letter case and surrounding or repeated whitespace, so '  john   smith ' and 'John Smith' count as the same person when detecting duplicates."
   - id: display-name
-    spec: "Whenever an owner is created or changed, compute and persist a derived display name of the form 'Lastname, Firstname'."
+    spec: "When an owner is created, compute a display name and return it in the owner response as the field 'displayName', formatted exactly as 'LastName, FirstName'."
+  - id: initials
+    spec: "When an owner is created, compute the owner's initials and return them in the owner response as the field 'initials': the first letter of the first and last name, upper-cased and dot-separated with a trailing dot, e.g. 'J.S.'."
+  - id: registration-date
+    spec: "When an owner is created without a registration date, set it to today's date. Return it in the owner response as the field 'registrationDate' in ISO format (YYYY-MM-DD)."
+  - id: membership-number
+    spec: "Assign each newly created owner a sequential membership number equal to one more than the current number of owners, and return it in the owner response as the integer field 'membershipNumber'."
+  - id: city-customer-code
+    spec: "Assign each newly created owner a customer code and return it in the owner response as the field 'customerCode', formatted '<UPPERCASE_CITY>-<NNNN>' where NNNN is one more than the number of owners already in that city, zero-padded to four digits (e.g. 'LONDON-0007')."
+  - id: telephone-normalise
+    spec: "Store telephone numbers as digits only (strip spaces, dashes and parentheses); return the stored value in the 'telephone' field, and apply this normalization before the telephone-uniqueness check so '(613) 555-0100' and '6135550100' are treated as the same number."
+  - id: city-canonical-casing
+    spec: "Title-case the city when creating an owner and return it in the 'city' field, but if an owner already exists in that city, reuse that existing owner's exact spelling of the city name instead."
+  - id: daily-signup-cap
+    spec: "Reject creating an owner when 20 owners have already been created today (by registration date). Respond with 400."
+  - id: city-capacity
+    spec: "Reject creating an owner when the owner's city already contains 8 owners. Respond with 400."
+  - id: founding-tier
+    spec: "Give each newly created owner a membership tier and return it in the owner response as the field 'membershipTier': the first 100 owners ever created are 'FOUNDING' and all later owners are 'STANDARD'."
+  - id: namesake-count
+    spec: "When an owner is created, count how many other owners share the same last name at that moment and return it in the owner response as the integer field 'namesakeCount'."
+  - id: household-flag
+    spec: "When creating an owner, set the boolean field 'sharesHousehold' in the owner response to true if another owner already has the same address and city, otherwise false. Still allow the creation."
+  - id: local-flag
+    spec: "When creating an owner, return a field 'locality' in the owner response set to 'local' if their city is the single most common city among existing owners at that time, otherwise 'remote'."
+  - id: audit-trail
+    spec: "Log every successful owner creation to a dedicated logger named AUDIT, recording the authenticated user and the new owner's id and membership number."
+  - id: bulk-signup-warning
+    spec: "When a newly created owner's telephone shares its area code (first three digits) with five or more existing owners, additionally emit a WARN to the AUDIT logger flagging a possible bulk signup."

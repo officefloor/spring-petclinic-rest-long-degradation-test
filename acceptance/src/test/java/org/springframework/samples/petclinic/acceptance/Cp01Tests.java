@@ -7,33 +7,20 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp01: telephone is required. */
+/** cp01: reject creating an owner identical to an existing one (409). */
 @Tag("cp01")
 class Cp01Tests extends AcceptanceBase {
 
 	@Test
-	void coreCreatesWithValidTelephone() throws Exception {
-		createOwner(validOwner()).andExpect(status().is2xxSuccessful());
+	void coreRejectsIdenticalOwner() throws Exception {
+		ObjectNode o = ownerNode();
+		createOwnerOk(o);
+		createOwner(o).andExpect(status().isConflict()); // byte-identical -> 409
 	}
 
 	@Test
-	void errorRejectsBlankTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void errorRejectsMissingTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.remove("telephone");
-		createOwner(o).andExpect(status().isBadRequest());
-	}
-
-	@Test
-	void functionalityRejectsWhitespaceTelephone() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("telephone", "   ");
-		createOwner(o).andExpect(status().isBadRequest());
+	void functionalityAllowsTwoDistinctOwners() throws Exception {
+		createOwnerOk(ownerNode());
+		createOwner(ownerNode()).andExpect(status().is2xxSuccessful());
 	}
 }

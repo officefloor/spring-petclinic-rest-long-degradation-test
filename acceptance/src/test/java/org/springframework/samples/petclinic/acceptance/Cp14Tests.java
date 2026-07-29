@@ -7,30 +7,20 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp14: on update, reject changing telephone to one already used (409). */
+/** cp14: reject creating an owner once their city already contains 8 owners. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsUpdateToExistingTelephone() throws Exception {
-		String p1 = uniquePhone();
-		ObjectNode a = validOwner();
-		a.put("telephone", p1);
-		createOwnerOk(a);
-
-		int idB = createOwnerOk(validOwner()); // owner B with its own unique phone
-		ObjectNode upd = validOwner();
-		upd.put("telephone", p1); // collide with owner A
-		updateOwner(idB, upd).andExpect(status().isConflict());
-	}
-
-	@Test
-	void functionalityAllowsKeepingOwnTelephone() throws Exception {
-		ObjectNode b = validOwner();
-		String own = b.get("telephone").asText();
-		int idB = createOwnerOk(b);
-		ObjectNode upd = validOwner();
-		upd.put("telephone", own); // same number the owner already has -> not a conflict
-		updateOwner(idB, upd).andExpect(status().is2xxSuccessful());
+	void coreRejectsOverCityCap() throws Exception {
+		String city = "Capville" + seq(); // fresh city, no existing owners
+		for (int i = 0; i < 8; i++) {
+			ObjectNode o = ownerNode();
+			o.put("city", city);
+			createOwnerOk(o);
+		}
+		ObjectNode ninth = ownerNode();
+		ninth.put("city", city);
+		createOwner(ninth).andExpect(status().isBadRequest());
 	}
 }

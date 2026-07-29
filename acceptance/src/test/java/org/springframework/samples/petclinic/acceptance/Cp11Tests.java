@@ -1,30 +1,38 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.hamcrest.Matchers.containsString;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** cp11: default registrationDate to today when not supplied. */
+/** cp11: telephone stored digits-only, and normalized before the uniqueness check. */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 
-	@Test
-	void coreDefaultsRegistrationDateToToday() throws Exception {
-		int id = createOwnerOk(validOwner());
-		getOwner(id).andExpect(jsonPath("$.registrationDate").exists())
-				.andExpect(content().string(containsString(today())));
+	private String formatted(String digits) {
+		return "(" + digits.substring(0, 3) + ") " + digits.substring(3, 6) + "-" + digits.substring(6);
 	}
 
 	@Test
-	void functionalityKeepsSuppliedRegistrationDate() throws Exception {
-		ObjectNode o = validOwner();
-		o.put("registrationDate", "2001-02-03");
+	void coreStoresDigitsOnly() throws Exception {
+		String digits = uniqueTelephone();
+		ObjectNode o = ownerNode();
+		o.put("telephone", formatted(digits));
 		int id = createOwnerOk(o);
-		getOwner(id).andExpect(content().string(containsString("2001-02-03")));
+		getOwner(id).andExpect(jsonPath("$.telephone").value(digits));
+	}
+
+	@Test
+	void functionalityNormalisedDuplicateRejected() throws Exception {
+		String digits = uniqueTelephone();
+		ObjectNode a = ownerNode();
+		a.put("telephone", digits);
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("telephone", formatted(digits)); // same digits, punctuation added
+		createOwner(b).andExpect(status().isConflict());
 	}
 }
