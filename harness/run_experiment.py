@@ -535,9 +535,28 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
 
         writer.writerow(row)
         chain_rows.append(dict(row))
-        print(f"  cp{k:02d} [{phase:5}] cost=${row['cost_usd']:<6} "
-              f"strict={row['strict_pass']} erosion={row['erosion']} "
-              f"regr={row['regressions']} hotspotCC={row.get('hotspot_cc')}")
+
+        # Key metrics for this checkpoint, so progress is visible in the logs.
+        api_s = round((row.get("duration_api_ms") or 0) / 1000)
+        cache_k = (row.get("cache_read_tokens") or 0) // 1000
+        print(f"  == cp{k:02d} [{phase}] {cp['id']} ==")
+        print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
+              f"regressions={row['regressions']} norm_change={row['normalized_change']} "
+              f"build_ok={row['build_ok']} selected={row['total_selected']}")
+        print(f"    struct : erosion={row['erosion']} scoped={row['erosion_scoped']} "
+              f"hotspot=CC{row.get('hotspot_cc')}/{row.get('hotspot_nloc')}nloc@{row.get('hotspot_fn')} "
+              f"java_loc={row['java_loc']}")
+        print(f"    churn  : +{row['diff_added']}/-{row['diff_removed']} lines, {row['files_touched']} files")
+        print(f"    proc   : cost=${row['cost_usd']} api={api_s}s cache_read={cache_k}k turns={row['num_turns']}")
+        flags = []
+        if str(row.get("pinned_touched", "")).strip():
+            flags.append(f"pinned_touched={row['pinned_touched']}")
+        if str(row.get("acceptance_touched", "")).strip():
+            flags.append(f"acceptance_touched={row['acceptance_touched']}")
+        if str(row.get("notes", "")).strip():
+            flags.append(f"notes={str(row['notes'])[:100]}")
+        if flags:
+            print("    flags  : " + "  ".join(flags))
 
         # Files the agent changed this checkpoint (excluding the injected acceptance
         # test), so progress is visible as the code evolves.
@@ -547,11 +566,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             ["git", "-C", wt, "diff", "--name-status", "HEAD~1" if committed else base_commit,
              "HEAD", *pathspec], capture_output=True, text=True).stdout.strip()
         if changed:
-            print("      changed:")
+            print("    changed:")
             for line in changed.splitlines():
-                print(f"        {line}")
+                print(f"      {line}")
         else:
-            print("      changed: (no production files)", flush=True)
+            print("    changed: (no production files)")
+        print(flush=True)
 
     # Final commit on the evolve branch: capture this chain's results alongside
     # the code progression it describes (nothing goes to the harness repo).
