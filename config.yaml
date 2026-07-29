@@ -7,6 +7,14 @@ chains: 5                     # independent runs per (arm, strategy). >=5.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600
 
+# Token/session-limit handling. On a limit hit the harness rolls back the current
+# checkpoint, waits for the window to reopen, then retries the SAME checkpoint --
+# so a run paused overnight resumes exactly where it left off (no no-op gaps).
+limits:
+  poll_seconds: 1800        # wait between retries when the reset time can't be parsed (30 min)
+  max_sleep_seconds: 21600  # cap on a single wait (6 h), then re-check
+  max_attempts: 200         # safety cap on limit-retries per checkpoint
+
 # Paths below that are NOT absolute are resolved relative to THIS config file's
 # directory, so the harness can be moved without editing them.
 checkpoints_file: checkpoints.yaml

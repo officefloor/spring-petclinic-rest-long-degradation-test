@@ -48,6 +48,17 @@ class AgentResult:
     result_text: str = ""
     raw: dict = field(default_factory=dict)
     error: str = ""
+    limit_reached: bool = False  # hit a usage/session/rate limit; caller should wait + retry
+
+
+_LIMIT_PHRASES = ("session limit", "usage limit", "rate limit", "hit your limit",
+                  "reached your limit", "you've hit your", "hit your session",
+                  "usage limit reached", "limit · resets", "limit reached")
+
+
+def looks_like_limit(text: str) -> bool:
+    t = (text or "").lower()
+    return any(p in t for p in _LIMIT_PHRASES)
 
 
 def _result_from_obj(data: dict) -> AgentResult:
@@ -144,11 +155,14 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
 
     prefix = f"    [{label}]"
     result_obj: Optional[dict] = None
+    limit_seen = False
     try:
         for line in proc.stdout:
             line = line.strip()
             if not line:
                 continue
+            if looks_like_limit(line):
+                limit_seen = True
             try:
                 ev = json.loads(line)
             except json.JSONDecodeError:
@@ -169,8 +183,11 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         return AgentResult(ok=False, error=f"agent timed out after {timeout}s (no completion)")
     if result_obj is None:
         err = "".join(stderr_buf)[-1000:].strip()
-        return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}")
-    return _result_from_obj(result_obj)
+        return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}",
+                           limit_reached=limit_seen or looks_like_limit(err))
+    res = _result_from_obj(result_obj)
+    res.limit_reached = limit_seen or looks_like_limit(res.result_text) or looks_like_limit(res.error)
+    return res
 
 
 def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = None,

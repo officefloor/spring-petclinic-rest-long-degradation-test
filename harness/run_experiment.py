@@ -26,12 +26,19 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 import yaml
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
 
 from . import agent, correctness, expand_path, metrics
 
@@ -117,6 +124,46 @@ def make_worktree(arm_cfg: dict, work_root: str, arm: str, strategy: str,
 
 def build_prompt(strategy_template: str, spec: str) -> str:
     return strategy_template.replace("{spec}", spec)
+
+
+def _seconds_until_reset(text: str) -> float | None:
+    """Best-effort parse of a reset time like 'resets 6am (Australia/Perth)' into
+    seconds from now. Returns None if it can't be parsed."""
+    if not text or ZoneInfo is None:
+        return None
+    m = re.search(r"reset[s]?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?",
+                  text, re.I)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+    try:
+        tz = ZoneInfo(m.group(4)) if m.group(4) else None
+    except Exception:
+        tz = None
+    now = datetime.now(tz)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds() + 60  # small buffer past the reset
+
+
+def wait_for_window(ar, cfg: dict) -> None:
+    """Sleep until the token window is expected to reopen, then return so the
+    caller can retry. Uses the parsed reset time when available, else a poll
+    interval; capped so a single wait can't run away."""
+    limits = cfg.get("limits", {})
+    secs = _seconds_until_reset(ar.result_text or ar.error)
+    secs = secs if secs is not None else limits.get("poll_seconds", 1800)
+    secs = max(60, min(secs, limits.get("max_sleep_seconds", 6 * 3600)))
+    resume = datetime.now() + timedelta(seconds=secs)
+    print(f"    [limit] token limit reached — waiting {int(secs)}s "
+          f"(until ~{resume:%H:%M:%S}) then retrying the same checkpoint...", flush=True)
+    time.sleep(secs)
 
 
 def inject_checkpoint_tests(wt: str, cfg: dict, k: int) -> list[str]:
@@ -291,10 +338,39 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # NOT a separate commit -- it folds into this checkpoint's single commit.
         inject_checkpoint_tests(wt, cfg, k)
 
-        # 1. agent turn (fresh session, no carried context)
+        # Snapshot the pre-agent state (prior commits + the uncommitted cp(K-1)
+        # acceptance reset + the just-injected cpK test) as a throwaway commit, so
+        # a token-limit-interrupted attempt can be rolled back and retried cleanly.
+        git(["-C", wt, "add", "-A"])
+        subprocess.run(["git", "-C", wt, "commit", "-q", "--allow-empty",
+                        "-m", f"__preagent_cp{k:02d}__"], capture_output=True, text=True)
+        preagent_ref = git(["-C", wt, "rev-parse", "HEAD"])
+        base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # = cp(K-1) commit
+
+        # 1. agent turn (fresh session, no carried context). On a token-limit hit,
+        # discard this attempt, WAIT for the window to reopen, then retry the SAME
+        # checkpoint from the reset state.
         prompt = build_prompt(template, cp["spec"])
-        ar = agent.run_agent(prompt, cwd=wt, model=model,
-                             timeout=cfg.get("agent_timeout", 3600))
+        attempts = 0
+        while True:
+            ar = agent.run_agent(prompt, cwd=wt, model=model,
+                                 timeout=cfg.get("agent_timeout", 3600))
+            if not ar.limit_reached:
+                break
+            attempts += 1
+            if attempts > cfg.get("limits", {}).get("max_attempts", 200):
+                raise RuntimeError("exceeded max limit-retry attempts; aborting run")
+            print(f"    [limit] rolling back cp{k:02d} attempt {attempts}", flush=True)
+            subprocess.run(["git", "-C", wt, "reset", "--hard", preagent_ref],
+                           capture_output=True, text=True)
+            subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
+            wait_for_window(ar, cfg)
+
+        # Undo the snapshot commit (keep its contents staged) so the real cpNN
+        # commit below contains the injected test + cp(K-1) reset + the agent work.
+        subprocess.run(["git", "-C", wt, "reset", "--soft", base_for_cp],
+                       capture_output=True, text=True)
+
         row.update({"agent_ok": ar.ok, "cost_usd": round(ar.cost_usd, 4),
                     "input_tokens": ar.input_tokens, "cache_read_tokens": ar.cache_read_tokens,
                     "output_tokens": ar.output_tokens, "num_turns": ar.num_turns,

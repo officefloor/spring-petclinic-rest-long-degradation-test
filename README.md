@@ -46,7 +46,12 @@ Then, for each checkpoint `k` (1→N), in this exact order:
    now sees cp01..cpK tests and never future requirements.
 1. **Agent turn** — a **fresh** headless `claude -p` with only the checkpoint
    spec, no `--continue`/`--resume` (SlopCodeBench's no-carried-context
-   condition). Cost, tokens, `duration_api_ms` etc. are captured.
+   condition). Cost, tokens, `duration_api_ms` etc. are captured. If the agent
+   hits a **token/session limit**, the harness snapshots the pre-agent state,
+   rolls back the interrupted attempt, **waits for the window to reopen** (parsed
+   from the reset time, else `limits.poll_seconds`), and retries the *same*
+   checkpoint — so an overnight pause resumes exactly where it left off, with no
+   no-op gaps in the data.
 2. **Pin `CLAUDE.md`** — if the agent edited it, record `pinned_touched` and
    restore the base version *before* committing, so the leveling doc can never
    become cross-checkpoint memory.
