@@ -35,16 +35,9 @@ arms:
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: []                       # Spring has no endpoint YAML
-    # Owner/pet-lifecycle subsystem. The hotspot is the single highest-CC function
-    # among these files (the god-method indicator), reported in `hotspot_fn`. The
-    # first real run showed accretion lands in ClinicServiceImpl.saveOwner, not the
-    # controller. Leave `methods` empty to track whichever method bloats.
-    hotspot:
-      files:
-        - "service/ClinicServiceImpl.java"
-        - "rest/controller/v1/OwnerRestControllerV1.java"
-        - "rest/controller/v1/PetRestControllerV1.java"
-      methods: []
+    # Hotspot + scoped erosion use a DYNAMIC subsystem: the production-Java files
+    # changed since base_ref (cumulative). A new class the agent creates is in
+    # that diff, so it can't hide — no fixed hotspot config needed.
     function_package_glob: null          # N/A for Spring
 
   officefloor:
@@ -53,14 +46,9 @@ arms:
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: ["src/main/resources/officefloor/**/*.yml"]
-    # Same shared service + controllers, so we can see the direct contrast: if
-    # OfficeFloor keeps behaviour in its wired functions, the max CC here stays low
-    # while Spring's saveOwner climbs. Its own functions are tracked separately via
-    # function_package_glob (fn_count / fn_nloc_max).
-    hotspot:
-      files:
-        - "service/ClinicServiceImpl.java"
-        - "rest/controller/v1/OwnerRestControllerV1.java"
+    # Same dynamic touched-file subsystem as Spring (so the hotspot catches any
+    # bloat wherever it lands). OfficeFloor's own wired functions are also tracked
+    # separately via function_package_glob (fn_count / fn_nloc_max).
     function_package_glob: "src/main/java/**/rest/function/**/*.java"
 
 # Prompt strategies mirror SlopCodeBench's intervention study. {spec} is replaced

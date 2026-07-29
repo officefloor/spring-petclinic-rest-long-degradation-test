@@ -170,7 +170,8 @@ def zero_regression_rate(rows: list[dict]) -> float:
 
 
 METRICS_TO_PLOT = [
-    ("erosion", "Structural erosion (SlopCodeBench Eq.3)"),
+    ("erosion", "Structural erosion — whole app (SlopCodeBench Eq.3)"),
+    ("erosion_scoped", "Structural erosion — touched-file subsystem"),
     ("verbosity", "Verbosity (SlopCodeBench Eq.4)"),
     ("cost_usd", "Cost per checkpoint (USD)"),
     ("duration_api_ms", "API time per checkpoint (ms, model inference)"),
@@ -262,8 +263,8 @@ def main() -> int:
     lines.append("## Degradation slopes m (OLS of metric on checkpoint; 95% bootstrap CI)\n")
     lines.append("| arm/strategy | metric | slope m | CI low | CI high |")
     lines.append("|---|---|---:|---:|---:|")
-    slope_fields = ["erosion", "verbosity", "cost_usd", "cache_read_tokens",
-                    "duration_api_ms", "hotspot_cc"]
+    slope_fields = ["erosion", "erosion_scoped", "verbosity", "cost_usd",
+                    "cache_read_tokens", "duration_api_ms", "hotspot_cc"]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)

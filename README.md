@@ -69,12 +69,18 @@ Then, for each checkpoint `k` (1→N), in this exact order:
    prefix (`core`/`error`/`functionality`); cp&lt;K counts as **Regression**.
    Produce Strict / ISO / Core, **Normalized Change** (SWE-CI), and regression count.
 7. **Structural metrics** (Java production source only): `lizard` gives
-   per-function CC/SLOC; `erosion_detail` returns erosion **and its terms**
-   (`high_mass`, `total_mass`, over-threshold count); `verbosity` returns the
-   score **and** its clone/pattern/union line counts; plus hotspot,
-   function-package size, and blast radius (which excludes the injected tests via
-   a git pathspec). All of this goes into the row, and the full per-function raw
-   inputs are stashed for the results commit.
+   per-function CC/SLOC. Erosion is reported **twice** — `erosion` over the whole
+   app (SlopCodeBench-comparable) and `erosion_scoped` over a **dynamic
+   subsystem**: the production-Java files changed since `base_ref` (cumulative
+   `git diff`). Scoping stops one god method being diluted across ~280 unrelated
+   functions, and because the subsystem is the touched-file set, a **new class
+   the agent creates is automatically included** (no fixed-glob blind spot). The
+   **hotspot** (single highest-CC function, with its name in `hotspot_fn`) is
+   taken over that same subsystem. Both erosions carry their `high_mass`/
+   `total_mass` terms; `verbosity` carries its clone/pattern/union line counts;
+   plus function-package size and blast radius (which excludes the injected tests
+   via a git pathspec). The results commit also records the exact
+   `subsystem_files` set so every number is reproducible.
 8. **Cold-reader probe** at each phase boundary — a read-only `claude -p` asks a
    fixed comprehension question; cost/tokens/recall go in the row, the full text
    is stashed.

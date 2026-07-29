@@ -53,7 +53,8 @@ CSV_FIELDS = [
     "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
     "regr_p", "regr_t", "regressions", "normalized_change",
     # structure (final numbers + the intermediates they are computed from)
-    "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",
+    "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",  # whole app
+    "erosion_scoped", "erosion_scoped_high_mass", "erosion_scoped_total_mass", "subsystem_nfns",  # touched-file subsystem
     "verbosity", "verbosity_clone_lines", "verbosity_pattern_lines", "verbosity_union_lines",
     "java_loc", "yaml_loc",
     "hotspot_nloc", "hotspot_cc", "hotspot_fn", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
@@ -316,6 +317,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         return
 
     wt, branch = make_worktree(arm_cfg, cfg["paths"]["work_root"], arm, strategy, chain, run_id)
+    base_commit = git(["-C", wt, "rev-parse", "HEAD"])  # base_ref commit; subsystem = files changed since
     print(f"\n=== {arm}/{strategy}/chain{chain}  branch={branch}  worktree={wt} ===")
 
     prior_passing: set[str] = set()
@@ -440,10 +442,18 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # 5. structural metrics (Java production source only)
         fns = metrics.functions(wt, arm_cfg["source_globs"])
         loc = metrics.total_java_loc(fns)
-        ed = metrics.erosion_detail(fns)
+
+        # Dynamic subsystem: production-Java functions in files changed since base.
+        # A new class the agent creates shows up in this diff, so neither the
+        # scoped erosion nor the hotspot can miss it.
+        touched = set(git(["-C", wt, "diff", "--name-only", base_commit, "HEAD"]).splitlines())
+        touched_fns = [f for f in fns if f["file"] in touched]
+
+        ed = metrics.erosion_detail(fns)           # whole app (SlopCodeBench-comparable)
+        eds = metrics.erosion_detail(touched_fns)  # scoped to the evolving footprint
         vscore, vdetail = metrics.verbosity(wt, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
                                             loc, cfg["tools"])
-        hs = metrics.hotspot_stats(fns, arm_cfg.get("hotspot"))
+        hs = metrics.hotspot_stats(touched_fns)     # worst function in the footprint
         fp = metrics.function_package_stats(wt, arm_cfg.get("function_package_glob"))
         br = metrics.blast_radius(wt, "HEAD~1" if committed else "HEAD", "HEAD",
                                   exclude=cfg.get("acceptance", {}).get("dest_subpath"))
@@ -452,6 +462,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             "erosion_high_mass": ed["high_mass"],
             "erosion_total_mass": ed["total_mass"],
             "erosion_hot_fns": ed["over_threshold"],
+            "erosion_scoped": eds["erosion"],
+            "erosion_scoped_high_mass": eds["high_mass"],
+            "erosion_scoped_total_mass": eds["total_mass"],
+            "subsystem_nfns": eds["n_functions"],
             "verbosity": ("" if vscore != vscore else round(vscore, 4)),  # NaN -> blank
             "verbosity_clone_lines": vdetail.get("clone_lines", ""),
             "verbosity_pattern_lines": vdetail.get("pattern_lines", ""),
@@ -464,11 +478,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(br)
 
         # Full raw inputs for this checkpoint (written into the results commit),
-        # so erosion/verbosity can be recomputed by hand from per-function CC/SLOC
-        # and their masses, and from the clone/pattern/union line counts.
+        # so every number can be recomputed by hand: per-function CC/SLOC + mass,
+        # the erosion terms (whole + scoped), and the exact subsystem file set.
         metrics_details.append({
             "checkpoint": k,
             "erosion": ed,
+            "erosion_scoped": eds,
+            "subsystem_files": sorted({f["file"] for f in touched_fns}),
             "verbosity": {"value": (None if vscore != vscore else round(vscore, 4)),
                           **vdetail, "java_loc": loc},
             "hotspot": hs,

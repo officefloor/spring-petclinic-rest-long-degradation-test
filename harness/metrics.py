@@ -97,31 +97,14 @@ def total_java_loc(fns: list[dict]) -> int:
     return sum(f["nloc"] for f in fns)
 
 
-def hotspot_stats(fns: list[dict], hotspot_cfg: Optional[dict]) -> dict:
-    """Track the "god-method" indicator for a subsystem: the single
-    highest-cyclomatic-complexity function among the configured files, reported
-    with its name so you can see WHERE behaviour is accreting.
-
-    Config (per arm): {files: [path-substrings], methods: [names] (optional)}.
-    `methods` matches on the method-name suffix, so it works with lizard's
-    Java `Class::method` naming (the bug that previously left this always None).
-    A legacy {file: "...", methods: [...]} shape is still accepted.
-    """
-    empty = {"hotspot_nloc": None, "hotspot_cc": None, "hotspot_fn": None}
-    if not hotspot_cfg:
-        return empty
-    files = hotspot_cfg.get("files") or ([hotspot_cfg["file"]] if hotspot_cfg.get("file") else [])
-    methods = hotspot_cfg.get("methods") or []
-    cand = []
-    for f in fns:
-        if files and not any(sub in f["file"] for sub in files):
-            continue
-        if methods and f["name"].split("::")[-1] not in methods:
-            continue
-        cand.append(f)
-    if not cand:
-        return empty
-    worst = max(cand, key=lambda f: (f["cc"], f["nloc"]))
+def hotspot_stats(fns: list[dict]) -> dict:
+    """God-method indicator: the single highest-cyclomatic-complexity function in
+    the given set, named so you can see WHERE complexity concentrates. Pass the
+    dynamically-scoped subsystem (production-Java functions in files changed since
+    base) so a new class the agent creates is included and can't hide."""
+    if not fns:
+        return {"hotspot_nloc": None, "hotspot_cc": None, "hotspot_fn": None}
+    worst = max(fns, key=lambda f: (f["cc"], f["nloc"]))
     return {
         "hotspot_nloc": worst["nloc"],
         "hotspot_cc": worst["cc"],
