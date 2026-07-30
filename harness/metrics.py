@@ -244,3 +244,99 @@ def blast_radius(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
         removed = int(m_del.group(1))
     files = [f for f in names.splitlines() if f.strip()]
     return {"diff_added": added, "diff_removed": removed, "files_touched": len(files)}
+
+
+def _is_prod_java(path: str) -> bool:
+    """Production Java only: excludes tests (so the injected acceptance suite and
+    the app's own unit tests never count as blast radius)."""
+    return path.endswith(".java") and "test" not in path.lower()
+
+
+def _changed_ranges(worktree: str, prev_ref: str, cur_ref: str, path: str) -> list[tuple[int, int]]:
+    """New-file line ranges the diff touched, from `git diff -U0` hunk headers."""
+    import re
+    txt = subprocess.run(
+        ["git", "-C", worktree, "diff", "-U0", prev_ref, cur_ref, "--", path],
+        capture_output=True, text=True, timeout=60).stdout
+    ranges: list[tuple[int, int]] = []
+    for m in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", txt, re.M):
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else 1
+        if b == 0:  # pure deletion anchors to one line
+            b = 1
+        ranges.append((a, a + b - 1))
+    return ranges
+
+
+def _funcs_touched(worktree: str, cur_ref: str, path: str,
+                   ranges: list[tuple[int, int]]) -> int:
+    """How many functions in `path`@cur_ref overlap any changed line range."""
+    if not ranges:
+        return 0
+    try:
+        code = subprocess.run(
+            ["git", "-C", worktree, "show", f"{cur_ref}:{path}"],
+            capture_output=True, text=True, timeout=60).stdout
+    except subprocess.SubprocessError:
+        return 0
+    try:
+        analysis = lizard.analyze_file.analyze_source_code(path, code)
+    except Exception:
+        return 0
+    n = 0
+    for fn in analysis.function_list:
+        s, e = fn.start_line, fn.end_line
+        if any(not (e < a or s > b) for a, b in ranges):
+            n += 1
+    return n
+
+
+def blast_radius_detail(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
+    """Isolation metric: how much PRE-EXISTING code a checkpoint disturbs.
+
+    A new rule can land two ways. It can be inserted into functions that already
+    exist (high blast radius, the change reaches into working code), or it can be
+    added as a new wired unit (low blast radius, existing code is left alone).
+
+    Returns, over production Java only:
+      existing_fns_modified - functions in already-present files whose body the
+                              diff touched (the blast radius proper),
+      files_modified        - already-present files the diff touched,
+      files_created         - new production files added to hold the rule,
+      churn_added/removed   - production line churn.
+    """
+    try:
+        ns = subprocess.run(
+            ["git", "-C", worktree, "diff", "--name-status", "-M", prev_ref, cur_ref],
+            capture_output=True, text=True, timeout=60).stdout
+        numstat = subprocess.run(
+            ["git", "-C", worktree, "diff", "--numstat", prev_ref, cur_ref],
+            capture_output=True, text=True, timeout=60).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"existing_fns_modified": None, "files_modified": None,
+                "files_created": None, "churn_added": None, "churn_removed": None}
+    modified, created = [], []
+    for line in ns.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status, path = parts[0], parts[-1]
+        if not _is_prod_java(path):
+            continue
+        (created if status.startswith("A") else modified).append(path)  # M/R -> modified
+    fns = sum(_funcs_touched(worktree, cur_ref, f,
+                             _changed_ranges(worktree, prev_ref, cur_ref, f))
+              for f in modified)
+    added = removed = 0
+    for line in numstat.splitlines():
+        p = line.split("\t")
+        if len(p) == 3 and _is_prod_java(p[2]) and p[0] != "-":
+            added += int(p[0])
+            removed += int(p[1])
+    return {
+        "existing_fns_modified": fns,
+        "files_modified": len(modified),
+        "files_created": len(created),
+        "churn_added": added,
+        "churn_removed": removed,
+    }

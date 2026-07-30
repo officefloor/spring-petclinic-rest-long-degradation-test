@@ -178,6 +178,8 @@ METRICS_TO_PLOT = [
     ("cache_read_tokens", "Cache-read tokens (comprehension proxy)"),
     ("hotspot_cc", "Hotspot cyclomatic complexity"),
     ("fn_nloc_max", "Max composed-function size (OfficeFloor)"),
+    ("existing_fns_modified", "Blast radius — pre-existing functions modified per rule"),
+    ("files_created", "New production files created per rule"),
 ]
 
 
@@ -264,7 +266,8 @@ def main() -> int:
     lines.append("| arm/strategy | metric | slope m | CI low | CI high |")
     lines.append("|---|---|---:|---:|---:|")
     slope_fields = ["erosion", "erosion_scoped", "verbosity", "cost_usd",
-                    "cache_read_tokens", "duration_api_ms", "hotspot_cc"]
+                    "cache_read_tokens", "duration_api_ms", "hotspot_cc",
+                    "existing_fns_modified", "files_created"]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)
@@ -328,6 +331,30 @@ def main() -> int:
         t = sum(1 for r in grp if str(r.get("acceptance_touched", "")).strip())
         rate = t / len(grp) if grp else float("nan")
         lines.append(f"| {gk[0]}/{gk[1]} | {rate:.3f} | {t}/{len(grp)} |")
+    lines.append("")
+
+    # Blast radius: how much PRE-EXISTING code each new rule disturbs. The
+    # isolation signal. Low existing-fns-modified with rules landing as new files
+    # means a requirement is added by ADDITION, not by editing working code. A
+    # "zero-blast" checkpoint touched no existing function at all.
+    def _num(r, f):
+        v = _f(r.get(f))
+        return 0.0 if math.isnan(v) else v
+
+    lines.append("## Blast radius (pre-existing code disturbed per rule)\n")
+    lines.append("| arm/strategy | existing-fns-modified /chain | zero-blast cps | new-files /chain | churn +/- /chain |")
+    lines.append("|---|---:|---:|---:|---:|")
+    for gk, grp in sorted(groups.items()):
+        nch = len({int(r["chain"]) for r in grp}) or 1
+        fns = sum(_num(r, "existing_fns_modified") for r in grp)
+        newf = sum(_num(r, "files_created") for r in grp)
+        add = sum(_num(r, "churn_added") for r in grp)
+        rem = sum(_num(r, "churn_removed") for r in grp)
+        zero = sum(1 for r in grp
+                   if str(r.get("existing_fns_modified", "")).strip() != ""
+                   and _num(r, "existing_fns_modified") == 0)
+        lines.append(f"| {gk[0]}/{gk[1]} | {fns / nch:.1f} | {zero}/{len(grp)} | "
+                     f"{newf / nch:.1f} | +{add / nch:.0f}/-{rem / nch:.0f} |")
     lines.append("")
 
     # Plots

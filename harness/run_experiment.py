@@ -59,6 +59,8 @@ CSV_FIELDS = [
     "java_loc", "yaml_loc",
     "hotspot_nloc", "hotspot_cc", "hotspot_fn", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
     "diff_added", "diff_removed", "files_touched",
+    # blast radius: how much PRE-EXISTING code the rule disturbs vs. adds anew
+    "existing_fns_modified", "files_modified", "files_created", "churn_added", "churn_removed",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
@@ -478,8 +480,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                                             loc, cfg["tools"])
         hs = metrics.hotspot_stats(touched_fns)     # worst function in the footprint
         fp = metrics.function_package_stats(wt, arm_cfg.get("function_package_glob"))
-        br = metrics.blast_radius(wt, "HEAD~1" if committed else "HEAD", "HEAD",
+        prev_ref = "HEAD~1" if committed else "HEAD"
+        br = metrics.blast_radius(wt, prev_ref, "HEAD",
                                   exclude=cfg.get("acceptance", {}).get("dest_subpath"))
+        brd = metrics.blast_radius_detail(wt, prev_ref, "HEAD")
         row.update({
             "erosion": ed["erosion"],
             "erosion_high_mass": ed["high_mass"],
@@ -499,6 +503,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(hs)
         row.update(fp)
         row.update(br)
+        row.update(brd)
 
         # Full raw inputs for this checkpoint (written into the results commit),
         # so every number can be recomputed by hand: per-function CC/SLOC + mass,
@@ -513,6 +518,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             "hotspot": hs,
             "function_package": fp,
             "blast_radius": br,
+            "blast_radius_detail": brd,
             "functions": [{**f, "mass": round(metrics.function_mass(f), 4)} for f in fns],
         })
 
@@ -547,6 +553,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
               f"hotspot=CC{row.get('hotspot_cc')}/{row.get('hotspot_nloc')}nloc@{row.get('hotspot_fn')} "
               f"java_loc={row['java_loc']}")
         print(f"    churn  : +{row['diff_added']}/-{row['diff_removed']} lines, {row['files_touched']} files")
+        print(f"    blast  : {row.get('existing_fns_modified')} existing fns modified, "
+              f"{row.get('files_created')} new files, {row.get('files_modified')} modified")
         print(f"    proc   : cost=${row['cost_usd']} api={api_s}s cache_read={cache_k}k turns={row['num_turns']}")
         flags = []
         if str(row.get("pinned_touched", "")).strip():
