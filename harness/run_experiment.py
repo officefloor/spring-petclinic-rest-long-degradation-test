@@ -61,6 +61,10 @@ CSV_FIELDS = [
     "diff_added", "diff_removed", "files_touched",
     # blast radius: how much PRE-EXISTING code the rule disturbs vs. adds anew
     "existing_fns_modified", "files_modified", "files_created", "churn_added", "churn_removed",
+    # god-class (WMC), entry-handler bloat, package reach, temporal coupling
+    "wmc_max", "wmc_max_class", "wmc_max_methods", "wmc_max_nloc",
+    "entry_cc", "entry_nloc", "entry_fn", "packages_touched",
+    "reedit_body_lines", "reedit_prior_lines", "reedit_rate",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
@@ -484,6 +488,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         br = metrics.blast_radius(wt, prev_ref, "HEAD",
                                   exclude=cfg.get("acceptance", {}).get("dest_subpath"))
         brd = metrics.blast_radius_detail(wt, prev_ref, "HEAD")
+        wmc = metrics.wmc_stats(touched_fns)                    # god-class over the subsystem
+        eh = metrics.entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: find it even when unchanged
+        spread = metrics.change_spread(wt, prev_ref, "HEAD")
+        reedit = metrics.reedit_stats(wt, base_commit, prev_ref, "HEAD")  # temporal coupling vs chain base
         row.update({
             "erosion": ed["erosion"],
             "erosion_high_mass": ed["high_mass"],
@@ -504,6 +512,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(fp)
         row.update(br)
         row.update(brd)
+        row.update(wmc)
+        row.update(eh)
+        row.update(spread)
+        row.update(reedit)
 
         # Full raw inputs for this checkpoint (written into the results commit),
         # so every number can be recomputed by hand: per-function CC/SLOC + mass,
@@ -519,6 +531,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             "function_package": fp,
             "blast_radius": br,
             "blast_radius_detail": brd,
+            "wmc": wmc,
+            "entry_handler": eh,
+            "change_spread": spread,
+            "reedit": reedit,
             "functions": [{**f, "mass": round(metrics.function_mass(f), 4)} for f in fns],
         })
 
@@ -555,6 +571,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         print(f"    churn  : +{row['diff_added']}/-{row['diff_removed']} lines, {row['files_touched']} files")
         print(f"    blast  : {row.get('existing_fns_modified')} existing fns modified, "
               f"{row.get('files_created')} new files, {row.get('files_modified')} modified")
+        print(f"    class  : WMC_max={row.get('wmc_max')}@{row.get('wmc_max_class')} "
+              f"entry=CC{row.get('entry_cc')}/{row.get('entry_nloc')}nloc@{row.get('entry_fn')} "
+              f"pkgs={row.get('packages_touched')} reedit={row.get('reedit_rate')} "
+              f"({row.get('reedit_prior_lines')}/{row.get('reedit_body_lines')} body lines)")
         print(f"    proc   : cost=${row['cost_usd']} api={api_s}s cache_read={cache_k}k turns={row['num_turns']}")
         flags = []
         if str(row.get("pinned_touched", "")).strip():

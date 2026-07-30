@@ -180,6 +180,10 @@ METRICS_TO_PLOT = [
     ("fn_nloc_max", "Max composed-function size (OfficeFloor)"),
     ("existing_fns_modified", "Blast radius — pre-existing functions modified per rule"),
     ("files_created", "New production files created per rule"),
+    ("wmc_max", "God-class — max Weighted Methods per Class (WMC)"),
+    ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
+    ("packages_touched", "Change spread — packages touched per rule"),
+    ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
 ]
 
 
@@ -267,7 +271,8 @@ def main() -> int:
     lines.append("|---|---|---:|---:|---:|")
     slope_fields = ["erosion", "erosion_scoped", "verbosity", "cost_usd",
                     "cache_read_tokens", "duration_api_ms", "hotspot_cc",
-                    "existing_fns_modified", "files_created"]
+                    "existing_fns_modified", "files_created",
+                    "wmc_max", "entry_cc", "packages_touched", "reedit_rate"]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)
@@ -355,6 +360,33 @@ def main() -> int:
                    and _num(r, "existing_fns_modified") == 0)
         lines.append(f"| {gk[0]}/{gk[1]} | {fns / nch:.1f} | {zero}/{len(grp)} | "
                      f"{newf / nch:.1f} | +{add / nch:.0f}/-{rem / nch:.0f} |")
+    lines.append("")
+
+    # God-class, entry-handler bloat, package reach, and temporal coupling. The
+    # "final" columns are the last checkpoint's value averaged across chains; the
+    # slope table above shows whether each climbs over the chain.
+    def _final_mean(grp, field):
+        by_chain = {}
+        for r in grp:
+            by_chain[int(r["chain"])] = r  # rows arrive in checkpoint order; keep last
+        vals = [_f(r.get(field)) for r in by_chain.values()]
+        vals = [v for v in vals if not math.isnan(v)]
+        return float(np.mean(vals)) if vals else math.nan
+
+    lines.append("## God-class, entry-handler, spread, temporal coupling\n")
+    lines.append("| arm/strategy | final WMC_max | final entry CC | mean pkgs/rule | mean re-edit rate |")
+    lines.append("|---|---:|---:|---:|---:|")
+    for gk, grp in sorted(groups.items()):
+        wmc_f = _final_mean(grp, "wmc_max")
+        ecc_f = _final_mean(grp, "entry_cc")
+        pk = [_f(r.get("packages_touched")) for r in grp]
+        pk = [v for v in pk if not math.isnan(v)]
+        rr = [_f(r.get("reedit_rate")) for r in grp]
+        rr = [v for v in rr if not math.isnan(v)]
+        cell = lambda v: "" if math.isnan(v) else f"{v:.3g}"
+        pk_m = f"{np.mean(pk):.2f}" if pk else ""
+        rr_m = f"{np.mean(rr):.3f}" if rr else ""
+        lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(ecc_f)} | {pk_m} | {rr_m} |")
     lines.append("")
 
     # Plots

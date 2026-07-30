@@ -47,6 +47,9 @@ arms:
     # changed since base_ref (cumulative). A new class the agent creates is in
     # that diff, so it can't hide — no fixed hotspot config needed.
     function_package_glob: null          # N/A for Spring
+    # Entry-handler trajectory (#4): the ONE function POST /api/owners routes
+    # through. Regex over '<file>::<name>'. Spring's single handler can bloat.
+    entry_handler: "OwnerRestControllerV1::addOwner"
 
   officefloor:
     repo: ${HOME}/compare/officefloor
@@ -58,6 +61,9 @@ arms:
     # bloat wherever it lands). OfficeFloor's own wired functions are also tracked
     # separately via function_package_glob (fn_count / fn_nloc_max).
     function_package_glob: "src/main/java/**/rest/function/**/*.java"
+    # Designated create-entry function of the owner pipeline. Expected to stay
+    # flat: new rules attach as NEW wired functions, not by growing this one.
+    entry_handler: "BuildOwner::service"
 
 # Prompt strategies mirror SlopCodeBench's intervention study. {spec} is replaced
 # with the checkpoint specification. Keep them neutral: never mention the

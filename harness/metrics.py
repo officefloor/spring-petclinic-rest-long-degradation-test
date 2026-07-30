@@ -18,7 +18,9 @@ import glob
 import json
 import math
 import os
+import re
 import subprocess
+from collections import defaultdict
 from typing import Optional
 
 import lizard
@@ -339,4 +341,164 @@ def blast_radius_detail(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> 
         "files_created": len(created),
         "churn_added": added,
         "churn_removed": removed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# #1 Weighted Methods per Class (WMC): the god-CLASS metric.
+# ---------------------------------------------------------------------------
+
+def wmc_stats(fns: list[dict]) -> dict:
+    """God-class indicator (Chidamber-Kemerer WMC = sum of method CC per class).
+
+    Groups functions by file (one top-level class per Java file) and reports the
+    single class with the highest WMC in the given set. This catches what erosion
+    (a per-METHOD threshold) cannot: a controller that stays tidy method-by-method
+    while accumulating twenty rules' worth of methods becomes a god class, and its
+    WMC climbs even though no single method ever crosses CC 10. Pass the touched-
+    file subsystem so a new class the agent creates is included."""
+    if not fns:
+        return {"wmc_max": None, "wmc_max_class": None,
+                "wmc_max_methods": None, "wmc_max_nloc": None}
+    by_file: dict[str, list[dict]] = defaultdict(list)
+    for f in fns:
+        by_file[f["file"]].append(f)
+    worst_file = max(by_file, key=lambda p: sum(g["cc"] for g in by_file[p]))
+    grp = by_file[worst_file]
+    return {
+        "wmc_max": sum(g["cc"] for g in grp),
+        "wmc_max_class": worst_file.split("/")[-1],
+        "wmc_max_methods": len(grp),
+        "wmc_max_nloc": sum(g["nloc"] for g in grp),
+    }
+
+
+# ---------------------------------------------------------------------------
+# #4 Entry-handler trajectory: does the endpoint's front door bloat?
+# ---------------------------------------------------------------------------
+
+def entry_handler_stats(fns: list[dict], pattern: Optional[str]) -> dict:
+    """CC/NLOC over time of the ONE function the create endpoint routes through.
+
+    `pattern` is an arm-specific regex matched against '<file>::<name>', because
+    the entry point is architecture-specific: Spring routes POST /api/owners
+    through a single handler (addOwner) that can bloat, whereas OfficeFloor routes
+    it through a pipeline, so we track its designated create-entry function, which
+    is expected to stay flat as new rules attach as new functions. A null/absent
+    pattern (or no match) yields blanks."""
+    if not pattern:
+        return {"entry_cc": None, "entry_nloc": None, "entry_fn": None}
+    rx = re.compile(pattern)
+    hits = [f for f in fns if rx.search(f"{f['file']}::{f['name']}")]
+    if not hits:
+        return {"entry_cc": None, "entry_nloc": None, "entry_fn": None}
+    h = max(hits, key=lambda f: (f["cc"], f["nloc"]))
+    return {
+        "entry_cc": h["cc"],
+        "entry_nloc": h["nloc"],
+        "entry_fn": f"{h['file'].split('/')[-1]}::{h['name'].split('::')[-1]}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# #3 Change spread: how many packages a rule's diff reaches into.
+# ---------------------------------------------------------------------------
+
+def change_spread(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
+    """Architectural reach: distinct packages (source directories) the checkpoint's
+    production-Java diff touches. A sibling to blast radius that measures spread
+    across the package tree rather than count of functions."""
+    try:
+        names = subprocess.run(
+            ["git", "-C", worktree, "diff", "--name-only", prev_ref, cur_ref],
+            capture_output=True, text=True, timeout=60).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"packages_touched": None}
+    pkgs = {os.path.dirname(f) for f in names.splitlines() if _is_prod_java(f)}
+    return {"packages_touched": len(pkgs)}
+
+
+# ---------------------------------------------------------------------------
+# #2 Re-edit rate (temporal coupling): does a new rule reopen prior rules' code?
+# ---------------------------------------------------------------------------
+
+def _blame_line_commits(worktree: str, ref: str, path: str) -> dict[int, str]:
+    """line number -> commit sha that last touched it, as of `ref`."""
+    out = subprocess.run(
+        ["git", "-C", worktree, "blame", "--line-porcelain", ref, "--", path],
+        capture_output=True, text=True, timeout=120).stdout
+    m: dict[int, str] = {}
+    for line in out.splitlines():
+        mt = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", line)
+        if mt:
+            m[int(mt.group(2))] = mt.group(1)
+    return m
+
+
+def reedit_stats(worktree: str, base_ref: str, prev_ref: str,
+                 cur_ref: str = "HEAD") -> dict:
+    """Temporal coupling: when this checkpoint edits an already-existing function,
+    how much of that function's body was authored by EARLIER checkpoints?
+
+    For every function the checkpoint modifies, blame its body at cur_ref and bin
+    each line by author era: original app (ancestor of base_ref), an earlier
+    checkpoint (post-base, not this commit), or this checkpoint (cur_ref itself).
+    The rate = earlier-checkpoint lines / total body lines of the edited functions.
+
+    High => new rules keep piling into functions that earlier rules grew (Spring's
+    addOwner). Low/None => the checkpoint added new units instead of reopening
+    accumulated ones (OfficeFloor). Counting whole bodies (not just changed lines)
+    is deliberate: it catches a one-line insertion into a large shared method,
+    which line-of-diff blame would miss because both arms are near-purely additive."""
+    try:
+        ns = subprocess.run(
+            ["git", "-C", worktree, "diff", "--name-status", "-M", prev_ref, cur_ref],
+            capture_output=True, text=True, timeout=60).stdout
+        cur_sha = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", cur_ref],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"reedit_body_lines": None, "reedit_prior_lines": None, "reedit_rate": None}
+    modified = [p.split("\t")[-1] for p in ns.splitlines()
+                if len(p.split("\t")) >= 2 and not p.split("\t")[0].startswith("A")
+                and _is_prod_java(p.split("\t")[-1])]
+    anc: dict[str, bool] = {}
+
+    def is_original(sha: str) -> bool:
+        if sha not in anc:
+            rc = subprocess.run(
+                ["git", "-C", worktree, "merge-base", "--is-ancestor", sha, base_ref],
+                capture_output=True, text=True).returncode
+            anc[sha] = (rc == 0)
+        return anc[sha]
+
+    body_total = prior = 0
+    for f in modified:
+        ranges = _changed_ranges(worktree, prev_ref, cur_ref, f)  # new-side edited regions
+        if not ranges:
+            continue
+        try:
+            code = subprocess.run(["git", "-C", worktree, "show", f"{cur_ref}:{f}"],
+                                  capture_output=True, text=True, timeout=60).stdout
+            fns = lizard.analyze_file.analyze_source_code(f, code).function_list
+        except Exception:
+            continue
+        edited = [fn for fn in fns
+                  if any(not (fn.end_line < a or fn.start_line > b) for a, b in ranges)]
+        if not edited:
+            continue
+        blame = _blame_line_commits(worktree, cur_ref, f)
+        for fn in edited:
+            for ln in range(fn.start_line, fn.end_line + 1):
+                sha = blame.get(ln)
+                if not sha:
+                    continue
+                body_total += 1
+                if sha != cur_sha and not is_original(sha):
+                    prior += 1
+    rate = (prior / body_total) if body_total else None
+    return {
+        "reedit_body_lines": body_total,
+        "reedit_prior_lines": prior,
+        "reedit_rate": (round(rate, 4) if rate is not None else None),
     }
