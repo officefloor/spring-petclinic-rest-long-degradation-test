@@ -105,12 +105,12 @@ def make_worktree(arm_cfg: dict, work_root: str, arm: str, strategy: str,
 
     The base branch (e.g. spring-compare) is only ever READ as a start point; it
     is never checked out here and never has commits added to it. All checkpoint
-    commits land on the new `evolve/<strategy>/<arm>/chain<n>/<run_id>` branch,
+    commits land on the new `evolve/<run_id>/<strategy>/<arm>/chain<n>` branch,
     which is kept after the run so reviewers can walk the progression.
     """
     repo = arm_cfg["repo"]
     base_ref = arm_cfg["base_ref"]
-    branch = f"evolve/{strategy}/{arm}/chain{chain}/{run_id}"
+    branch = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
     if branch == base_ref or not branch.startswith("evolve/"):
         raise RuntimeError(f"refusing to write to non-evolve branch {branch!r}")
     wt = os.path.join(work_root, run_id, f"{arm}-{strategy}-chain{chain}")
@@ -327,7 +327,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     model = cfg["model"]
     n = len(checkpoints)
     template = cfg["prompt_strategies"][strategy]
-    branch_preview = f"evolve/{strategy}/{arm}/chain{chain}/{run_id}"
+    branch_preview = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
 
     if dry_run:
         print(f"[dry-run] {arm}/{strategy}/chain{chain}: {n} checkpoints from "
@@ -682,7 +682,7 @@ def main() -> int:
                           args.dry_run, args.max_checkpoints)
                 fh.flush()
     print(f"\nWrote results to {csv_path}")
-    print(f"Branches (kept for review): evolve/{strategy}/<arm>/chain<n>/{run_id} in each repo")
+    print(f"Branches (kept for review): evolve/{run_id}/{strategy}/<arm>/chain<n> in each repo")
     print(f"Next: python -m harness.analyze --config {args.config} --run-id {run_id}")
     return 0
 

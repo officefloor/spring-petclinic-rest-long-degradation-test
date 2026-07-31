@@ -242,7 +242,7 @@ def main() -> int:
     rows = [r for r in all_rows if r.get("run_id") == run_id]
     if not rows:
         raise SystemExit(f"no rows for run_id {run_id!r}; runs found on branches: {runs}")
-    run_branches = sorted({b for _, b in branches if b.rstrip("/").endswith("/" + str(run_id))})
+    run_branches = sorted({b for _, b in branches if b.startswith(f"evolve/{run_id}/")})
     print(f"run_id {run_id}: {len(rows)} rows harvested from {len(run_branches)} branches")
 
     # Analysis outputs are local, derived, and gitignored (never committed to the
