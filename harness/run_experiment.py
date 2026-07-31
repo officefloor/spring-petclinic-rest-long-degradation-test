@@ -353,7 +353,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update({"run_id": run_id, "branch": branch,
                     "arm": arm, "strategy": strategy, "chain": chain,
                     "checkpoint": k, "checkpoint_id": cp["id"], "phase": phase})
-        print(f"\n--- cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
+        where = f"run {run_id} | {arm}/{strategy} chain{chain}"
+        print(f"\n--- {where} | cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
 
         # 0. Inject ONLY this checkpoint's acceptance test (+ shared infra at
         # cp01). The agent then sees cp01..cpK, never future requirements. It is
@@ -561,7 +562,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # Key metrics for this checkpoint, so progress is visible in the logs.
         api_s = round((row.get("duration_api_ms") or 0) / 1000)
         cache_k = (row.get("cache_read_tokens") or 0) // 1000
-        print(f"  == cp{k:02d} [{phase}] {cp['id']} ==")
+        print(f"  == {where} | cp{k:02d} [{phase}] {cp['id']} ==")
         print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
               f"regressions={row['regressions']} norm_change={row['normalized_change']} "
               f"build_ok={row['build_ok']} selected={row['total_selected']}")
