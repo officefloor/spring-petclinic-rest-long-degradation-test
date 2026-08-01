@@ -169,7 +169,6 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
         "base_sha": shas.get("base"),
         "agent": {
             "ok": ar.ok,
-            "is_error": not ar.ok,
             "cost_usd": ar.cost_usd,
             "input_tokens": ar.input_tokens,
             "output_tokens": ar.output_tokens,

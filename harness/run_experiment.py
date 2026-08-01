@@ -294,7 +294,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # are never persisted. The branch stores raw capture; analyze recomputes.
     prior_passing: set[str] = set()
     captures: list[dict] = []
-    log_rows: list[dict] = []
+    strict_count = regr_count = 0  # running tallies for the results commit headline
 
     limit = max_cp or n
     for cp in checkpoints[:limit]:
@@ -386,18 +386,17 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # preserve exactly what the agent did (incl. any CLAUDE.md edit or
         # acceptance-test tamper). Normalisation happens in COMMIT 2 below.
         touched_pins = [pf for pf in cfg.get("isolation", {}).get("pin_files", [])
-                        if subprocess.run(["git", "-C", wt, "status", "--porcelain", "--", pf],
-                                          capture_output=True, text=True).stdout.strip()]
+                        if git(["-C", wt, "status", "--porcelain", "--", pf], check=False)]
+        acceptance_touched = restore_acceptance_tests(wt, cfg, k, write=False)
         row["pinned_touched"] = ",".join(touched_pins)
-        row["acceptance_touched"] = ",".join(restore_acceptance_tests(wt, cfg, k, write=False))
+        row["acceptance_touched"] = ",".join(acceptance_touched)
 
         # 2. COMMIT 1 — the AGENT commit: `git show` on it is EXACTLY the agent's
         # change for this checkpoint. An empty commit (no changes) => no-op checkpoint.
         git(["-C", wt, "add", "-A"])
         c1 = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} agent {cp['id']}"],
                             capture_output=True, text=True)
-        agent_committed = c1.returncode == 0
-        agent_sha = git(["-C", wt, "rev-parse", "HEAD"]) if agent_committed else ""
+        agent_sha = git(["-C", wt, "rev-parse", "HEAD"]) if c1.returncode == 0 else ""
 
         # 3. Normalise for the next run: restore the pinned docs to base (CLAUDE.md
         # must be identical at every checkpoint — it can never become accumulating
@@ -423,23 +422,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             build_log_file = f"cp{k:02d}.build.log"
             with open(os.path.join(cap_dir, build_log_file), "w") as fh:
                 fh.write(outcome.console[:500_000])
-        row.update({
-            "build_ok": outcome.build_ok, "total_selected": outcome.total_selected,
-            "strict_pass": outcome.all_pass, "iso_pass": outcome.iso_pass,
-            "core_pass": outcome.core_all_pass,
-            "core_p": outcome.core_pass, "core_t": outcome.core_total,
-            "error_p": outcome.error_pass, "error_t": outcome.error_total,
-            "func_p": outcome.func_pass, "func_t": outcome.func_total,
-            "regr_p": outcome.regr_pass, "regr_t": outcome.regr_total,
-        })
+        row.update(correctness.outcome_row(outcome, prior_passing))
+        prior_passing = outcome.passing
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
-
-        target_total = outcome.total_selected
-        row["normalized_change"] = round(
-            correctness.normalized_change(prior_passing, outcome.passing, target_total), 4)
-        row["regressions"] = correctness.count_regressions(prior_passing, outcome.passing)
-        prior_passing = outcome.passing
 
         # 5. COMMIT 2 — the RESET commit: the harness normalisation (pinned docs +
         # acceptance reset) plus the NEXT checkpoint's injected test — the content
@@ -462,7 +448,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(mrow)
         shutil.rmtree(os.path.join(wt, ".jscpd-report"), ignore_errors=True)
 
-        # 6. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
+        # 7. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
         # (default: the first checkpoint of each phase).
         probe_cfg = cfg.get("probe", {})
         at = probe_cfg.get("at_checkpoints")
@@ -487,13 +473,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             k, cp["id"], phase,
             {"commit": agent_sha, "reset": reset_sha, "preagent": preagent_ref,
              "prev": base_for_cp, "base": base_commit},
-            ar, outcome, probe_record, touched_pins,
-            row["acceptance_touched"].split(",") if row["acceptance_touched"] else [],
+            ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
             attempts=attempt_log, spec=cp["spec"], prompt=prompt)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
         captures.append(rec)
-        log_rows.append(dict(row))
+        strict_count += 1 if row["strict_pass"] is True else 0
+        regr_count += int(row["regressions"] or 0)
 
         # Key metrics for this checkpoint, so progress is visible in the logs.
         api_s = round((row.get("duration_api_ms") or 0) / 1000)
@@ -546,10 +532,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
         "checkpoint_shas": {c["checkpoint"]: c["commit_sha"] for c in captures},
     })
-    n_done = len(log_rows)
-    strict = sum(1 for r in log_rows if r.get("strict_pass") is True)
-    regr = sum(int(r.get("regressions") or 0) for r in log_rows)
-    headline = f"checkpoints={n_done} strict_pass={strict}/{n_done} regressions={regr} (derived numbers recomputed by analyze)"
+    n_done = len(captures)
+    headline = (f"checkpoints={n_done} strict_pass={strict_count}/{n_done} "
+                f"regressions={regr_count} (derived numbers recomputed by analyze)")
     commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline,
                          snapshot=cfg.get("_snapshot"))
 

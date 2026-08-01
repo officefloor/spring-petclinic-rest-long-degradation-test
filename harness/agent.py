@@ -222,8 +222,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
             elif et == "assistant":
                 captured["model"] = (ev.get("message") or {}).get("model") or captured["model"]
             elif et == "result":
-                result_obj = ev
-                captured["session_id"] = ev.get("session_id") or captured["session_id"]
+                result_obj = ev  # session_id/model extracted by _result_from_obj
             if stream:
                 _print_event(ev, prefix)
         proc.wait()

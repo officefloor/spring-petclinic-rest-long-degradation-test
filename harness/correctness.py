@@ -202,3 +202,23 @@ def normalized_change(prior_passing: set[str], now_passing: set[str],
 def count_regressions(prior_passing: set[str], now_passing: set[str]) -> int:
     """Tests green before this checkpoint that are red after it."""
     return len(prior_passing - now_passing)
+
+
+def outcome_row(outcome: "TestOutcome", prior_passing: set[str]) -> dict:
+    """Map a scored TestOutcome to the flat correctness row fields (incl. Normalized
+    Change + regressions vs prior_passing). One definition, called by both the
+    runner (run time) and analyze (recompute), so the schema lives in one place."""
+    return {
+        "build_ok": outcome.build_ok,
+        "total_selected": outcome.total_selected,
+        "strict_pass": outcome.all_pass,
+        "iso_pass": outcome.iso_pass,
+        "core_pass": outcome.core_all_pass,
+        "core_p": outcome.core_pass, "core_t": outcome.core_total,
+        "error_p": outcome.error_pass, "error_t": outcome.error_total,
+        "func_p": outcome.func_pass, "func_t": outcome.func_total,
+        "regr_p": outcome.regr_pass, "regr_t": outcome.regr_total,
+        "normalized_change": round(
+            normalized_change(prior_passing, outcome.passing, outcome.total_selected), 4),
+        "regressions": count_regressions(prior_passing, outcome.passing),
+    }

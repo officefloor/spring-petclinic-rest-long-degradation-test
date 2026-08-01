@@ -20,13 +20,12 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from collections import defaultdict
 
 import numpy as np
 import yaml
 
-from . import correctness, expand_path, metrics
+from . import correctness, expand_path, git_out, metrics
 from .run_experiment import CSV_FIELDS, phase_for
 
 try:
@@ -63,9 +62,8 @@ def _evolve_branches(cfg: dict, run_id: str | None = None):
     """Yield (repo, branch, arm, strategy, chain) across the arm repos."""
     out = []
     for repo in sorted({ac["repo"] for ac in cfg["arms"].values()}):
-        refs = subprocess.run(
-            ["git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/evolve"],
-            capture_output=True, text=True).stdout.splitlines()
+        refs = git_out(repo, ["for-each-ref", "--format=%(refname:short)",
+                              "refs/heads/evolve"]).splitlines()
         for br in (r.strip() for r in refs if r.strip()):
             m = _BRANCH_RE.match(br)
             if not m:
@@ -78,17 +76,33 @@ def _evolve_branches(cfg: dict, run_id: str | None = None):
 
 
 def _latest_run_id(cfg: dict) -> str | None:
-    ids = sorted({t[0] for repo, br, *_ in _evolve_branches(cfg)
-                  for t in [(_BRANCH_RE.match(br).group(1),)]})
-    return ids[-1] if ids else None
+    ids = {_BRANCH_RE.match(br).group(1) for _, br, *_ in _evolve_branches(cfg)}
+    return max(ids) if ids else None
+
+
+def _read_blob(repo: str, ref: str, path: str) -> str | None:
+    """Content of ``<ref>:<path>``, or None if the path is absent at that ref."""
+    p = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"],
+                       capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else None
+
+
+def _read_json_blob(repo: str, ref: str, path: str) -> dict | None:
+    """Parse ``<ref>:<path>`` as JSON, or None if absent/unparseable."""
+    txt = _read_blob(repo, ref, path)
+    if txt is None:
+        return None
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        return None
 
 
 def _cp_commits(repo: str, branch: str) -> dict[int, str]:
     """checkpoint number -> AGENT commit sha, parsed from commit messages (fallback
     for runs without provenance). Prefers the two-commit format's 'cpNN agent ...'
     commit; falls back to the legacy single 'cpNN <id>' commit."""
-    out = subprocess.run(["git", "-C", repo, "log", "--format=%H %s", branch],
-                         capture_output=True, text=True).stdout
+    out = git_out(repo, ["log", "--format=%H %s", branch])
     agent_m: dict[int, str] = {}
     legacy_m: dict[int, str] = {}
     for line in out.splitlines():
@@ -107,34 +121,21 @@ def _read_captures(repo: str, branch: str) -> dict[int, dict]:
     """checkpoint -> capture record, from evolve-results/capture/cpNN.json on the
     branch (empty for pre-capture runs)."""
     caps: dict[int, dict] = {}
-    ls = subprocess.run(
-        ["git", "-C", repo, "ls-tree", "-r", "--name-only", branch, "evolve-results/capture/"],
-        capture_output=True, text=True).stdout
+    ls = git_out(repo, ["ls-tree", "-r", "--name-only", branch, "evolve-results/capture/"])
     for path in ls.splitlines():
         mt = re.search(r"cp0*(\d+)\.json$", path)
         if not mt:
             continue
-        blob = subprocess.run(["git", "-C", repo, "show", f"{branch}:{path}"],
-                              capture_output=True, text=True)
-        if blob.returncode == 0:
-            try:
-                caps[int(mt.group(1))] = json.loads(blob.stdout)
-            except json.JSONDecodeError:
-                pass
+        rec = _read_json_blob(repo, branch, path)
+        if rec is not None:
+            caps[int(mt.group(1))] = rec
     return caps
 
 
 def _read_provenance(repo: str, branch: str) -> dict:
     """The chain's provenance.json (base_commit + checkpoint_shas + versions).
     Empty for pre-provenance runs."""
-    blob = subprocess.run(["git", "-C", repo, "show", f"{branch}:evolve-results/provenance.json"],
-                          capture_output=True, text=True)
-    if blob.returncode != 0:
-        return {}
-    try:
-        return json.loads(blob.stdout)
-    except json.JSONDecodeError:
-        return {}
+    return _read_json_blob(repo, branch, "evolve-results/provenance.json") or {}
 
 
 def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
@@ -147,13 +148,11 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     if not branches:
         return live_cfg
     repo, branch = branches[0][0], branches[0][1]
-    blob = subprocess.run(
-        ["git", "-C", repo, "show", f"{branch}:evolve-results/config/config.yaml"],
-        capture_output=True, text=True)
-    if blob.returncode != 0:
+    snap = _read_blob(repo, branch, "evolve-results/config/config.yaml")
+    if snap is None:
         print("  (no per-run config snapshot; deriving with the live config.yaml)")
         return live_cfg
-    run_cfg = yaml.safe_load(blob.stdout)
+    run_cfg = yaml.safe_load(snap)
     # Repos are filesystem locations — take them from the live environment (matched
     # by arm name), not from the snapshot.
     for name, arm in run_cfg.get("arms", {}).items():
@@ -162,8 +161,7 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     # Extract the snapshotted ast-grep rules so Verbosity's pattern component
     # matches the run; if none were snapshotted, fall back to the live rules path.
     rel = "evolve-results/config/astgrep-rules"
-    listing = subprocess.run(["git", "-C", repo, "ls-tree", branch, rel],
-                             capture_output=True, text=True).stdout.strip()
+    listing = git_out(repo, ["ls-tree", branch, rel]).strip()
     run_cfg.setdefault("tools", {})
     if listing:
         arch = subprocess.run(["git", "-C", repo, "archive", branch, rel], capture_output=True)
@@ -211,9 +209,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         n = len(ks)
         if not base_commit:
             first_real = next((shas[k] for k in ks if shas[k]), "")
-            base_commit = subprocess.run(
-                ["git", "-C", repo, "rev-parse", f"{first_real}~1"],
-                capture_output=True, text=True).stdout.strip() if first_real else ""
+            base_commit = git_out(repo, ["rev-parse", f"{first_real}~1"]).strip() if first_real else ""
         if not base_commit:
             print(f"    ! {branch}: cannot determine base commit; skipping")
             continue
@@ -221,6 +217,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         prior_passing: set[str] = set()
         prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
         n_noop = 0
+        subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
         for k in ks:
             real = shas.get(k) or ""     # AGENT commit sha; "" => no-op checkpoint
             tree = real or prev_tree     # a no-op reuses the previous checkpoint's tree
@@ -245,8 +242,6 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             # checkpoint is zero — exactly right.
             wt = os.path.join(rc_root, f"{arm}_{strat}_c{chain}_cp{k:02d}")
             shutil.rmtree(wt, ignore_errors=True)
-            subprocess.run(["git", "-C", repo, "worktree", "prune"],
-                           capture_output=True, text=True)
             add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, tree],
                                  capture_output=True, text=True)
             try:
@@ -263,24 +258,16 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 shutil.rmtree(wt, ignore_errors=True)
             prev_tree = tree
 
-            # DERIVE: correctness from the RAW captured test-result map.
+            # DERIVE: correctness from the RAW captured test-result map, via the
+            # same outcome->row mapping the runner uses. build_ok comes from the
+            # capture (a build failure leaves results empty, which score_results
+            # can't otherwise distinguish).
             tests = cap.get("tests") or {}
             results = tests.get("results")
             if results is not None:
                 outcome = correctness.score_results(results, k)
-                row.update({
-                    "build_ok": tests.get("build_ok"),
-                    "total_selected": outcome.total_selected,
-                    "strict_pass": outcome.all_pass, "iso_pass": outcome.iso_pass,
-                    "core_pass": outcome.core_all_pass,
-                    "core_p": outcome.core_pass, "core_t": outcome.core_total,
-                    "error_p": outcome.error_pass, "error_t": outcome.error_total,
-                    "func_p": outcome.func_pass, "func_t": outcome.func_total,
-                    "regr_p": outcome.regr_pass, "regr_t": outcome.regr_total,
-                    "normalized_change": round(correctness.normalized_change(
-                        prior_passing, outcome.passing, outcome.total_selected), 4),
-                    "regressions": correctness.count_regressions(prior_passing, outcome.passing),
-                })
+                outcome.build_ok = tests.get("build_ok", True)
+                row.update(correctness.outcome_row(outcome, prior_passing))
                 prior_passing = outcome.passing
 
             # Ephemera straight from capture (irreproducible; never recomputed).

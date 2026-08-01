@@ -8,8 +8,25 @@ measurement methods of SlopCodeBench (arXiv:2603.24755) and SWE-CI
 
 import os
 import re
+import subprocess
 
 _UNEXPANDED = re.compile(r"\$\{?\w+\}?")
+
+
+def git_out(cwd: str, args: list[str], check: bool = False, timeout: int = 60) -> str:
+    """Run ``git -C <cwd> <args>`` and return stdout. Swallows errors (returns "")
+    unless ``check`` is set, in which case a non-zero exit raises. The one shared
+    git-stdout helper for the harness."""
+    try:
+        proc = subprocess.run(["git", "-C", cwd, *args],
+                              capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        if check:
+            raise
+        return ""
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc.stdout
 
 
 def expand_path(value: str | None, key: str = "path") -> str | None:

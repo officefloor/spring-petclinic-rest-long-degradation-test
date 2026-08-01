@@ -25,6 +25,8 @@ from typing import Optional
 
 import lizard
 
+from . import git_out
+
 CC_THRESHOLD = 10  # Radon standard, as used by SlopCodeBench
 
 
@@ -435,14 +437,6 @@ def _blame_line_commits(worktree: str, ref: str, path: str) -> dict[int, str]:
     return m
 
 
-def _git_out(worktree: str, args: list[str], timeout: int = 60) -> str:
-    try:
-        return subprocess.run(["git", "-C", worktree, *args],
-                              capture_output=True, text=True, timeout=timeout).stdout
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ""
-
-
 def yaml_loc(root: str, globs: list[str]) -> int:
     """Non-blank, non-comment YAML lines under `globs` (reported separately from
     Java LOC — never mixed into the erosion/verbosity denominators)."""
@@ -477,7 +471,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     # Dynamic subsystem: production-Java functions in files changed since base.
     # A new class the agent creates shows up in this diff, so neither the scoped
     # erosion nor the hotspot can miss it.
-    touched = set(_git_out(worktree, ["diff", "--name-only", base_commit, cur_ref]).splitlines())
+    touched = set(git_out(worktree, ["diff", "--name-only", base_commit, cur_ref]).splitlines())
     touched_fns = [f for f in fns if f["file"] in touched]
 
     ed = erosion_detail(fns)            # whole app (SlopCodeBench-comparable)
