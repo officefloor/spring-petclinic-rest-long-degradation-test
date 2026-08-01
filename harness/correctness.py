@@ -33,7 +33,10 @@ CAT_RE = re.compile(r"(core|error|functionality)", re.IGNORECASE)
 class TestOutcome:
     build_ok: bool = False
     error: str = ""
+    build_output: str = ""                             # compiler output (kept on failure)
     passing: set[str] = field(default_factory=set)     # "class#method" that passed
+    results: dict[str, bool] = field(default_factory=dict)  # RAW {test_id: passed} — the atom
+    detail: list[dict] = field(default_factory=list)   # per-test time + failure text
     total_selected: int = 0                            # tests actually run
     # category pass/total at the *current* checkpoint
     core_pass: int = 0
@@ -79,9 +82,12 @@ def _clear_surefire(worktree: str, cfg: dict) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _parse_surefire(worktree: str, cfg: dict) -> dict[str, bool]:
-    """Return {test_id: passed} across all TEST-*.xml reports."""
+def _parse_surefire(worktree: str, cfg: dict) -> tuple[dict[str, bool], list[dict]]:
+    """Return ({test_id: passed}, detail) across all TEST-*.xml reports, where
+    detail carries per-test timing + failure text (captured because the XML is a
+    build artifact that does not survive into the checkpoint commit)."""
     results: dict[str, bool] = {}
+    detail: list[dict] = []
     pattern = os.path.join(worktree, cfg["build"]["surefire_dir"], "TEST-*.xml")
     for report in glob.glob(pattern):
         try:
@@ -95,32 +101,28 @@ def _parse_surefire(worktree: str, cfg: dict) -> dict[str, bool]:
             skipped = any(c.tag == "skipped" for c in case)
             if skipped:
                 continue
-            failed = any(c.tag in ("failure", "error") for c in case)
-            results[test_id] = not failed
-    return results
+            fail_el = next((c for c in case if c.tag in ("failure", "error")), None)
+            passed = fail_el is None
+            results[test_id] = passed
+            detail.append({
+                "test_id": test_id,
+                "passed": passed,
+                "time": float(case.get("time", 0) or 0),
+                "failure": None if passed else
+                (f"{fail_el.get('type', '')}: {fail_el.get('message', '')}".strip()[:500]),
+            })
+    return results, detail
 
 
-def run_tests(worktree: str, checkpoint_k: int, cfg: dict) -> TestOutcome:
-    """Run the accumulated suite cp01..cpK and score by category."""
-    ok, err = build(worktree, cfg)
-    if not ok:
-        return TestOutcome(build_ok=False, error=err)
-
-    _clear_surefire(worktree, cfg)
-    tags = ",".join(f"cp{str(i).zfill(2)}" for i in range(1, checkpoint_k + 1))
-    tmpl = cfg["build"]["test_cmd_template"]
-    cmd = [part.replace("{tags}", tags) for part in tmpl]
-    try:
-        subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
-                       timeout=cfg["build"].get("test_timeout", 3600))
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return TestOutcome(build_ok=True, error=f"test run failed to launch/timed out: {exc}")
-
-    results = _parse_surefire(worktree, cfg)
+def score_results(results: dict[str, bool], checkpoint_k: int) -> TestOutcome:
+    """Categorise a raw {test_id: passed} map into a TestOutcome (Core/Error/Func/
+    Regression), independent of HOW the map was obtained. Called by run_tests at
+    run time AND by analyze --recompute from the captured raw results, so the
+    scoring rule is defined once."""
     outcome = TestOutcome(build_ok=True)
+    outcome.results = dict(results)
     outcome.total_selected = len(results)
     outcome.passing = {tid for tid, ok in results.items() if ok}
-
     for test_id, passed in results.items():
         cls_part, _, method = test_id.partition("#")
         cls = cls_part.split(".")[-1]
@@ -142,6 +144,28 @@ def run_tests(worktree: str, checkpoint_k: int, cfg: dict) -> TestOutcome:
         else:
             outcome.func_total += 1
             outcome.func_pass += int(passed)
+    return outcome
+
+
+def run_tests(worktree: str, checkpoint_k: int, cfg: dict) -> TestOutcome:
+    """Run the accumulated suite cp01..cpK and score by category."""
+    ok, err = build(worktree, cfg)
+    if not ok:
+        return TestOutcome(build_ok=False, error=err, build_output=err)
+
+    _clear_surefire(worktree, cfg)
+    tags = ",".join(f"cp{str(i).zfill(2)}" for i in range(1, checkpoint_k + 1))
+    tmpl = cfg["build"]["test_cmd_template"]
+    cmd = [part.replace("{tags}", tags) for part in tmpl]
+    try:
+        subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
+                       timeout=cfg["build"].get("test_timeout", 3600))
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return TestOutcome(build_ok=True, error=f"test run failed to launch/timed out: {exc}")
+
+    results, detail = _parse_surefire(worktree, cfg)
+    outcome = score_results(results, checkpoint_k)
+    outcome.detail = detail
     return outcome
 
 

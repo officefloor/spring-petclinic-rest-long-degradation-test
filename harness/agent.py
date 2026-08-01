@@ -41,10 +41,14 @@ class AgentResult:
     cost_usd: float = 0.0
     input_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     output_tokens: int = 0
     num_turns: int = 0
     duration_ms: int = 0        # wall: model + tools + approval waits
     duration_api_ms: int = 0    # API: model inference only (the clean metric)
+    model: str = ""             # exact model id the run resolved to
+    session_id: str = ""
+    stop_reason: str = ""       # result subtype: success / error_max_turns / ...
     result_text: str = ""
     raw: dict = field(default_factory=dict)
     error: str = ""
@@ -91,10 +95,13 @@ def _result_from_obj(data: dict) -> AgentResult:
         cost_usd=float(data.get("total_cost_usd", data.get("cost_usd", 0.0)) or 0.0),
         input_tokens=int(usage.get("input_tokens", 0) or 0),
         cache_read_tokens=int(usage.get("cache_read_input_tokens", usage.get("cache_read_tokens", 0)) or 0),
+        cache_creation_tokens=int(usage.get("cache_creation_input_tokens", usage.get("cache_creation_tokens", 0)) or 0),
         output_tokens=int(usage.get("output_tokens", 0) or 0),
         num_turns=int(data.get("num_turns", 0) or 0),
         duration_ms=int(data.get("duration_ms", 0) or 0),
         duration_api_ms=int(data.get("duration_api_ms", 0) or 0),
+        session_id=str(data.get("session_id", "") or ""),
+        stop_reason=str(data.get("subtype", "") or ""),
         result_text=str(data.get("result", "") or ""),
         raw=data,
     )
@@ -142,10 +149,15 @@ def _print_event(ev: dict, prefix: str) -> None:
 
 def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
               allowed_tools: Optional[str] = None, stream: bool = True,
-              label: str = "claude") -> AgentResult:
+              label: str = "claude", capture_path: Optional[str] = None) -> AgentResult:
     """Run one fresh headless agent turn in `cwd`, streaming events to the
     console. No session is resumed. Returns the parsed terminal result, or an
-    error result on timeout / missing completion."""
+    error result on timeout / missing completion.
+
+    If `capture_path` is set, every raw stream event is written there verbatim
+    (overwritten per call, so a retried checkpoint keeps only the successful
+    attempt's stream). This is the agent's full behaviour trace — tool calls,
+    files read, commands run — which is irreproducible and lost otherwise."""
     cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json", "--verbose",
@@ -177,17 +189,34 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
 
     prefix = f"    [{label}]"
     result_obj: Optional[dict] = None
+    captured = {"model": "", "session_id": ""}
+    cap_fh = None
+    if capture_path:
+        try:
+            os.makedirs(os.path.dirname(capture_path) or ".", exist_ok=True)
+            cap_fh = open(capture_path, "w")
+        except OSError:
+            cap_fh = None
     try:
-        for line in proc.stdout:
-            line = line.strip()
+        for raw in proc.stdout:
+            if cap_fh:
+                cap_fh.write(raw)
+            line = raw.strip()
             if not line:
                 continue
             try:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if ev.get("type") == "result":
+            et = ev.get("type")
+            if et == "system" and ev.get("subtype") == "init":
+                captured["model"] = ev.get("model") or captured["model"]
+                captured["session_id"] = ev.get("session_id") or captured["session_id"]
+            elif et == "assistant":
+                captured["model"] = (ev.get("message") or {}).get("model") or captured["model"]
+            elif et == "result":
                 result_obj = ev
+                captured["session_id"] = ev.get("session_id") or captured["session_id"]
             if stream:
                 _print_event(ev, prefix)
         proc.wait()
@@ -197,6 +226,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     finally:
         watchdog.cancel()
         drain.join(timeout=2)
+        if cap_fh:
+            cap_fh.close()
 
     if timed_out["v"]:
         # No completion within the timeout — often an overloaded/unresponsive API.
@@ -209,6 +240,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}",
                            limit_reached=lim, retryable=not lim)
     res = _result_from_obj(result_obj)
+    res.model = res.model or captured["model"] or model
+    res.session_id = res.session_id or captured["session_id"]
     res.limit_reached = looks_like_limit(res.result_text) or looks_like_limit(res.error)
     # Only an actual error result can be transient; a SUCCESSFUL completion never is
     # (its summary text may contain "503"/"timeout"/etc. from the agent's test runs).
@@ -218,7 +251,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
 
 
 def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = None,
-          timeout: int = 900) -> dict:
+          timeout: int = 900, capture_path: Optional[str] = None) -> dict:
     """Cold-reader comprehension probe (read-only).
 
     Re-asked verbatim at each phase boundary. As the Spring hotspot method
@@ -227,7 +260,8 @@ def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = N
     Recall is a crude keyword hit-rate; grade properly offline for the paper.
     """
     res = run_agent(question, cwd=cwd, model=model, timeout=timeout,
-                    allowed_tools="Read,Grep,Glob,Bash", label="probe")
+                    allowed_tools="Read,Grep,Glob,Bash", label="probe",
+                    capture_path=capture_path)
     recall = None
     if expected:
         text = res.result_text.lower()

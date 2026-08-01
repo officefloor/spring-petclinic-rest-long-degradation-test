@@ -435,6 +435,108 @@ def _blame_line_commits(worktree: str, ref: str, path: str) -> dict[int, str]:
     return m
 
 
+def _git_out(worktree: str, args: list[str], timeout: int = 60) -> str:
+    try:
+        return subprocess.run(["git", "-C", worktree, *args],
+                              capture_output=True, text=True, timeout=timeout).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def yaml_loc(root: str, globs: list[str]) -> int:
+    """Non-blank, non-comment YAML lines under `globs` (reported separately from
+    Java LOC — never mixed into the erosion/verbosity denominators)."""
+    total = 0
+    for g in globs or []:
+        for path in glob.glob(os.path.join(root, g), recursive=True):
+            if path.endswith((".yml", ".yaml")) and os.path.isfile(path):
+                with open(path, errors="ignore") as fh:
+                    total += sum(1 for line in fh
+                                 if line.strip() and not line.strip().startswith("#"))
+    return total
+
+
+def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
+                prev_ref: str, cur_ref: str = "HEAD", exclude: str | None = None
+                ) -> tuple[dict, dict]:
+    """The complete structural-metric suite for ONE checkpoint state.
+
+    This is a pure function of the worktree's files at `cur_ref` plus git history
+    (`base_commit` = the chain's pre-feature base; `prev_ref` = the previous
+    checkpoint commit). It is the single definition of every structural number,
+    called BOTH by the runner at run time and by `analyze --recompute` over a
+    checked-out historical commit — so a metric lives in one place and can be
+    re-derived on OLD runs without re-invoking the (expensive) agent.
+
+    Returns (row_updates, details): the flat CSV fields, and the full per-function
+    raw inputs + intermediates so every number is reproducible by hand.
+    """
+    fns = functions(worktree, arm_cfg["source_globs"])
+    loc = total_java_loc(fns)
+
+    # Dynamic subsystem: production-Java functions in files changed since base.
+    # A new class the agent creates shows up in this diff, so neither the scoped
+    # erosion nor the hotspot can miss it.
+    touched = set(_git_out(worktree, ["diff", "--name-only", base_commit, cur_ref]).splitlines())
+    touched_fns = [f for f in fns if f["file"] in touched]
+
+    ed = erosion_detail(fns)            # whole app (SlopCodeBench-comparable)
+    eds = erosion_detail(touched_fns)   # scoped to the evolving footprint
+    vscore, vdetail = verbosity(worktree, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
+                                loc, tools)
+    hs = hotspot_stats(touched_fns)                          # worst fn in the footprint
+    fp = function_package_stats(worktree, arm_cfg.get("function_package_glob"))
+    br = blast_radius(worktree, prev_ref, cur_ref, exclude=exclude)
+    brd = blast_radius_detail(worktree, prev_ref, cur_ref)
+    wmc = wmc_stats(touched_fns)                             # god-class over the subsystem
+    eh = entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: found even if unchanged
+    spread = change_spread(worktree, prev_ref, cur_ref)
+    reedit = reedit_stats(worktree, base_commit, prev_ref, cur_ref)  # temporal coupling vs base
+
+    row = {
+        "erosion": ed["erosion"],
+        "erosion_high_mass": ed["high_mass"],
+        "erosion_total_mass": ed["total_mass"],
+        "erosion_hot_fns": ed["over_threshold"],
+        "erosion_scoped": eds["erosion"],
+        "erosion_scoped_high_mass": eds["high_mass"],
+        "erosion_scoped_total_mass": eds["total_mass"],
+        "subsystem_nfns": eds["n_functions"],
+        "verbosity": ("" if vscore != vscore else round(vscore, 4)),  # NaN -> blank
+        "verbosity_clone_lines": vdetail.get("clone_lines", ""),
+        "verbosity_pattern_lines": vdetail.get("pattern_lines", ""),
+        "verbosity_union_lines": vdetail.get("union_lines", ""),
+        "java_loc": loc,
+        "yaml_loc": yaml_loc(worktree, arm_cfg.get("yaml_globs", [])),
+    }
+    row.update(hs)
+    row.update(fp)
+    row.update(br)
+    row.update(brd)
+    row.update(wmc)
+    row.update(eh)
+    row.update(spread)
+    row.update(reedit)
+
+    details = {
+        "erosion": ed,
+        "erosion_scoped": eds,
+        "subsystem_files": sorted({f["file"] for f in touched_fns}),
+        "verbosity": {"value": (None if vscore != vscore else round(vscore, 4)),
+                      **vdetail, "java_loc": loc},
+        "hotspot": hs,
+        "function_package": fp,
+        "blast_radius": br,
+        "blast_radius_detail": brd,
+        "wmc": wmc,
+        "entry_handler": eh,
+        "change_spread": spread,
+        "reedit": reedit,
+        "functions": [{**f, "mass": round(function_mass(f), 4)} for f in fns],
+    }
+    return row, details
+
+
 def reedit_stats(worktree: str, base_ref: str, prev_ref: str,
                  cur_ref: str = "HEAD") -> dict:
     """Temporal coupling: when this checkpoint edits an already-existing function,

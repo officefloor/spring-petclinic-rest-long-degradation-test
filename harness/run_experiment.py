@@ -7,11 +7,14 @@ checkpoint it:
   1. runs a FRESH headless agent with only the checkpoint spec (no carried
      context) -- SlopCodeBench's iterative-extension condition;
   2. commits, then gates on build + the accumulated acceptance suite cp01..cpK;
-  3. scores correctness (Strict/ISO/Core, Normalized Change, regressions);
-  4. computes structural metrics (Erosion, Verbosity, hotspot/fn-package,
-     blast radius) over Java production source only;
-  5. at phase boundaries, runs the read-only cold-reader probe;
-  6. appends one row to the results CSV.
+  3. at phase boundaries, runs the read-only cold-reader probe;
+  4. writes the checkpoint's RAW capture (agent envelope + event stream, the raw
+     test-result map, the pre-normalisation agent diff, SHAs).
+
+The run persists ONLY raw capture onto the evolve branches -- never any derived
+number. Correctness scores and structural metrics (Erosion, Verbosity, hotspot,
+blast radius, coupling, ...) ARE computed each checkpoint, but purely to narrate
+progress in the log; analyze.py recomputes them from the commits + capture.
 
 Usage:
   python -m harness.run_experiment --config config.yaml
@@ -22,9 +25,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import math
 import os
 import re
 import shutil
@@ -40,7 +40,9 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-from . import agent, correctness, expand_path, metrics
+from . import agent, capture, correctness, expand_path, metrics
+
+HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CSV_FIELDS = [
     "run_id", "branch",
@@ -86,17 +88,6 @@ def git(args: list[str], cwd: str | None = None, check: bool = True) -> str:
     if check and proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
-
-
-def yaml_loc(root: str, globs: list[str]) -> int:
-    import glob as _glob
-    total = 0
-    for g in globs:
-        for path in _glob.glob(os.path.join(root, g), recursive=True):
-            if path.endswith((".yml", ".yaml")) and os.path.isfile(path):
-                with open(path, errors="ignore") as fh:
-                    total += sum(1 for line in fh if line.strip() and not line.strip().startswith("#"))
-    return total
 
 
 def make_worktree(arm_cfg: dict, work_root: str, arm: str, strategy: str,
@@ -240,81 +231,25 @@ def restore_acceptance_tests(wt: str, cfg: dict, k: int, write: bool = True) -> 
 
 
 def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: str,
-                         chain: int, rows: list[dict], probe_texts: list[dict] | None = None,
-                         metrics_details: list[dict] | None = None) -> None:
-    """Write this chain's results into the worktree and make a final commit on
-    the evolve branch, so the branch is a self-contained record: the 20
-    checkpoint commits followed by one 'results:' commit. Nothing is written to
-    the harness repo; everything lives with the code progression it describes.
+                         chain: int, cap_dir: str | None, provenance: dict | None,
+                         headline: str = "") -> None:
+    """Final 'results:' commit on the evolve branch. It persists ONLY the raw,
+    irreproducible capture (`capture/`) + the run `provenance.json` — never any
+    derived numbers. Every metric (erosion, verbosity, correctness, coupling, ...)
+    is recomputed from the checkpoint commits + this capture by `analyze`, so the
+    branch stays the single source of truth without duplicating derived data.
+    `headline` is a human-readable one-liner for the commit message only.
     """
-    if not rows:
-        return
-
-    def fnum(x):
-        try:
-            return float(x)
-        except (TypeError, ValueError):
-            return 0.0
-
     out_dir = os.path.join(wt, "evolve-results")
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "records.csv"), "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
-    n = len(rows)
-    strict = sum(1 for r in rows if r.get("strict_pass") is True)
-    regr = sum(int(fnum(r.get("regressions"))) for r in rows)
-    cost = sum(fnum(r.get("cost_usd")) for r in rows)
-    eros = [fnum(r.get("erosion")) for r in rows if str(r.get("erosion")).strip() != ""]
-    e0, ef = (eros[0], eros[-1]) if eros else (float("nan"), float("nan"))
-    touched = sum(1 for r in rows if str(r.get("pinned_touched", "")).strip())
-
-    md = [
-        f"# Results — {arm}/{strategy}/chain{chain}", "",
-        f"- run_id: `{run_id}`",
-        f"- branch: `{branch}`",
-        f"- checkpoints: {n}",
-        f"- strict pass: {strict}/{n}",
-        f"- regressions (total): {regr}",
-        f"- erosion: {e0:.4g} -> {ef:.4g} (delta {ef - e0:+.4g})",
-        f"- cost: ${cost:.2f}",
-        f"- CLAUDE.md touched: {touched}/{n} checkpoints", "",
-        "| cp | phase | strict | erosion | cost | regr | pinned_touched |",
-        "|---|---|---|---|---|---|---|",
-    ]
-    for r in rows:
-        md.append(f"| {r.get('checkpoint')} | {r.get('phase')} | {r.get('strict_pass')} "
-                  f"| {r.get('erosion')} | {r.get('cost_usd')} | {r.get('regressions')} "
-                  f"| {r.get('pinned_touched')} |")
-    with open(os.path.join(out_dir, "summary.md"), "w") as fh:
-        fh.write("\n".join(md) + "\n")
-
-    # Preserve the cold-reader probe answers (the one artifact not derivable from
-    # the CSV) so recall can be re-graded later from the branch alone.
-    for p in (probe_texts or []):
-        pdir = os.path.join(out_dir, "probes")
-        os.makedirs(pdir, exist_ok=True)
-        cp = int(p.get("checkpoint", 0))
-        with open(os.path.join(pdir, f"cp{cp:02d}.md"), "w") as fh:
-            fh.write(f"# Cold-reader probe @ cp{cp:02d} ({p.get('phase')})\n\n"
-                     f"keyword recall: {p.get('recall')}\n\n---\n\n{p.get('text', '')}\n")
-
-    # Raw metric inputs + intermediates per checkpoint, so every erosion/verbosity
-    # number can be recomputed by hand from the per-function CC/SLOC and the line
-    # counts recorded here.
-    for d in (metrics_details or []):
-        mdir = os.path.join(out_dir, "metrics")
-        os.makedirs(mdir, exist_ok=True)
-        with open(os.path.join(mdir, f"cp{int(d.get('checkpoint', 0)):02d}.json"), "w") as fh:
-            json.dump(d, fh, indent=2)
+    capture.assemble_into(cap_dir, out_dir)
+    if provenance is not None:
+        capture.write_json(os.path.join(out_dir, "provenance.json"), provenance)
 
     subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
-    msg = (f"results: {arm}/{strategy}/chain{chain} - run {run_id}\n\n"
-           f"checkpoints={n} strict_pass={strict}/{n} regressions={regr} "
-           f"erosion {e0:.4g}->{ef:.4g} cost ${cost:.2f} claude_md_touched={touched}/{n}")
+    msg = f"results: {arm}/{strategy}/chain{chain} - run {run_id} (raw capture)"
+    if headline:
+        msg += "\n\n" + headline
     c = subprocess.run(["git", "-C", wt, "commit", "-m", msg, "--", "evolve-results"],
                        capture_output=True, text=True)
     print(f"  results commit on {branch}: "
@@ -322,7 +257,7 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
 
 
 def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
-              checkpoints: list[dict], writer, dry_run: bool, max_cp: int | None) -> None:
+              checkpoints: list[dict], dry_run: bool, max_cp: int | None) -> None:
     arm_cfg = cfg["arms"][arm]
     model = cfg["model"]
     n = len(checkpoints)
@@ -340,10 +275,19 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     base_commit = git(["-C", wt, "rev-parse", "HEAD"])  # base_ref commit; subsystem = files changed since
     print(f"\n=== {arm}/{strategy}/chain{chain}  branch={branch}  worktree={wt} ===")
 
+    # Capture artifacts are staged HERE (a sibling of the worktree) during the
+    # chain, then copied into evolve-results/capture/ at the results commit — so
+    # they never enter the per-checkpoint code commits or the diffs derived from
+    # them. Cleared on an idempotent re-run of the same run_id.
+    cap_dir = wt + "-capture"
+    shutil.rmtree(cap_dir, ignore_errors=True)
+    os.makedirs(cap_dir, exist_ok=True)
+
+    # Derived numbers below are computed ONLY to narrate progress in the log — they
+    # are never persisted. The branch stores raw capture; analyze recomputes.
     prior_passing: set[str] = set()
-    chain_rows: list[dict] = []
-    probe_texts: list[dict] = []
-    metrics_details: list[dict] = []
+    captures: list[dict] = []
+    log_rows: list[dict] = []
 
     limit = max_cp or n
     for cp in checkpoints[:limit]:
@@ -378,9 +322,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         limits = cfg.get("limits", {})
         attempts = 0
         transient_attempts = 0
+        stream_file = f"cp{k:02d}.agent.jsonl"
         while True:
             ar = agent.run_agent(prompt, cwd=wt, model=model,
-                                 timeout=cfg.get("agent_timeout", 3600))
+                                 timeout=cfg.get("agent_timeout", 3600),
+                                 capture_path=os.path.join(cap_dir, stream_file))
             if not (ar.limit_reached or ar.retryable):
                 break
             attempts += 1
@@ -402,6 +348,18 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # commit below contains the injected test + cp(K-1) reset + the agent work.
         subprocess.run(["git", "-C", wt, "reset", "--soft", base_for_cp],
                        capture_output=True, text=True)
+
+        # Capture the TRUE agent delta NOW — diffed against the pre-agent baseline
+        # (prior commits + cp(K-1) reset + injected cpK test), BEFORE we pin
+        # CLAUDE.md back and reset the acceptance tests. This is the one view the
+        # committed history can't reconstruct: the committed diff is normalised
+        # (pinned doc reverted, acceptance reset folded in), whereas this preserves
+        # exactly what the agent did, including any reverted CLAUDE.md edit.
+        diff_file = f"cp{k:02d}.agent.diff"
+        agent_diff = subprocess.run(["git", "-C", wt, "diff", preagent_ref],
+                                    capture_output=True, text=True).stdout
+        with open(os.path.join(cap_dir, diff_file), "w") as fh:
+            fh.write(agent_diff)
 
         row.update({"agent_ok": ar.ok, "cost_usd": round(ar.cost_usd, 4),
                     "input_tokens": ar.input_tokens, "cache_read_tokens": ar.cache_read_tokens,
@@ -441,6 +399,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         commit = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} {cp['id']}"],
                                 capture_output=True, text=True)
         committed = commit.returncode == 0
+        cp_sha = git(["-C", wt, "rev-parse", "HEAD"]) if committed else ""
 
         # 3. Reset the acceptance tests to the authored version -- AFTER the commit
         # (so the agent's edits stay in history) but BEFORE the gate, so a weakened
@@ -469,95 +428,46 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row["regressions"] = correctness.count_regressions(prior_passing, outcome.passing)
         prior_passing = outcome.passing
 
-        # 5. structural metrics (Java production source only)
-        fns = metrics.functions(wt, arm_cfg["source_globs"])
-        loc = metrics.total_java_loc(fns)
-
-        # Dynamic subsystem: production-Java functions in files changed since base.
-        # A new class the agent creates shows up in this diff, so neither the
-        # scoped erosion nor the hotspot can miss it.
-        touched = set(git(["-C", wt, "diff", "--name-only", base_commit, "HEAD"]).splitlines())
-        touched_fns = [f for f in fns if f["file"] in touched]
-
-        ed = metrics.erosion_detail(fns)           # whole app (SlopCodeBench-comparable)
-        eds = metrics.erosion_detail(touched_fns)  # scoped to the evolving footprint
-        vscore, vdetail = metrics.verbosity(wt, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
-                                            loc, cfg["tools"])
-        hs = metrics.hotspot_stats(touched_fns)     # worst function in the footprint
-        fp = metrics.function_package_stats(wt, arm_cfg.get("function_package_glob"))
+        # 5. structural metrics — computed here ONLY to show live progress; they
+        # are NOT persisted. They are a pure function of the committed source + git
+        # history, so analyze recomputes them from the checkpoint commits (the same
+        # metrics.compute_all), which is the single source of every derived number.
         prev_ref = "HEAD~1" if committed else "HEAD"
-        br = metrics.blast_radius(wt, prev_ref, "HEAD",
-                                  exclude=cfg.get("acceptance", {}).get("dest_subpath"))
-        brd = metrics.blast_radius_detail(wt, prev_ref, "HEAD")
-        wmc = metrics.wmc_stats(touched_fns)                    # god-class over the subsystem
-        eh = metrics.entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: find it even when unchanged
-        spread = metrics.change_spread(wt, prev_ref, "HEAD")
-        reedit = metrics.reedit_stats(wt, base_commit, prev_ref, "HEAD")  # temporal coupling vs chain base
-        row.update({
-            "erosion": ed["erosion"],
-            "erosion_high_mass": ed["high_mass"],
-            "erosion_total_mass": ed["total_mass"],
-            "erosion_hot_fns": ed["over_threshold"],
-            "erosion_scoped": eds["erosion"],
-            "erosion_scoped_high_mass": eds["high_mass"],
-            "erosion_scoped_total_mass": eds["total_mass"],
-            "subsystem_nfns": eds["n_functions"],
-            "verbosity": ("" if vscore != vscore else round(vscore, 4)),  # NaN -> blank
-            "verbosity_clone_lines": vdetail.get("clone_lines", ""),
-            "verbosity_pattern_lines": vdetail.get("pattern_lines", ""),
-            "verbosity_union_lines": vdetail.get("union_lines", ""),
-            "java_loc": loc,
-            "yaml_loc": yaml_loc(wt, arm_cfg.get("yaml_globs", [])),
-        })
-        row.update(hs)
-        row.update(fp)
-        row.update(br)
-        row.update(brd)
-        row.update(wmc)
-        row.update(eh)
-        row.update(spread)
-        row.update(reedit)
-
-        # Full raw inputs for this checkpoint (written into the results commit),
-        # so every number can be recomputed by hand: per-function CC/SLOC + mass,
-        # the erosion terms (whole + scoped), and the exact subsystem file set.
-        metrics_details.append({
-            "checkpoint": k,
-            "erosion": ed,
-            "erosion_scoped": eds,
-            "subsystem_files": sorted({f["file"] for f in touched_fns}),
-            "verbosity": {"value": (None if vscore != vscore else round(vscore, 4)),
-                          **vdetail, "java_loc": loc},
-            "hotspot": hs,
-            "function_package": fp,
-            "blast_radius": br,
-            "blast_radius_detail": brd,
-            "wmc": wmc,
-            "entry_handler": eh,
-            "change_spread": spread,
-            "reedit": reedit,
-            "functions": [{**f, "mass": round(metrics.function_mass(f), 4)} for f in fns],
-        })
+        mrow, _ = metrics.compute_all(
+            wt, arm_cfg, cfg["tools"], base_commit, prev_ref, "HEAD",
+            exclude=cfg.get("acceptance", {}).get("dest_subpath"))
+        row.update(mrow)
 
         # 6. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
         # (default: the first checkpoint of each phase).
         probe_cfg = cfg.get("probe", {})
         at = probe_cfg.get("at_checkpoints")
         run_probe = (k in at) if at else ((k == 1) or (phase_for(k - 1, n) != phase))
+        probe_record = None
         if probe_cfg.get("enabled", True) and run_probe:
             pr = agent.probe(cfg["probe"]["question"], cwd=wt, model=model,
-                             expected=cfg["probe"].get("expected"))
+                             expected=cfg["probe"].get("expected"),
+                             capture_path=os.path.join(cap_dir, f"cp{k:02d}.probe.jsonl"))
             row.update({
                 "probe_cost_usd": round(pr["probe_cost_usd"], 4),
                 "probe_input_tokens": pr["probe_input_tokens"],
                 "probe_cache_read_tokens": pr["probe_cache_read_tokens"],
                 "probe_recall": ("" if pr["probe_recall"] is None else round(pr["probe_recall"], 3)),
             })
-            probe_texts.append({"checkpoint": k, "phase": phase,
-                                "recall": pr["probe_recall"], "text": pr.get("probe_text", "")})
+            probe_record = pr  # raw probe (text/cost/tokens) goes into the capture record
 
-        writer.writerow(row)
-        chain_rows.append(dict(row))
+        # RAW capture for this checkpoint: the irreproducible half (agent envelope,
+        # the raw test-result map, build output, pinned/acceptance flags, commit
+        # SHAs) referencing the stream + agent-diff files already written to cap_dir.
+        rec = capture.checkpoint_record(
+            k, cp["id"], phase,
+            {"commit": cp_sha, "preagent": preagent_ref, "prev": base_for_cp, "base": base_commit},
+            ar, outcome, probe_record, touched_pins,
+            row["acceptance_touched"].split(",") if row["acceptance_touched"] else [],
+            stream_file, diff_file)
+        capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
+        captures.append(rec)
+        log_rows.append(dict(row))
 
         # Key metrics for this checkpoint, so progress is visible in the logs.
         api_s = round((row.get("duration_api_ms") or 0) / 1000)
@@ -602,10 +512,19 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             print("    changed: (no production files)")
         print(flush=True)
 
-    # Final commit on the evolve branch: capture this chain's results alongside
-    # the code progression it describes (nothing goes to the harness repo).
-    commit_chain_results(wt, branch, run_id, arm, strategy, chain, chain_rows,
-                         probe_texts, metrics_details)
+    # Final commit on the evolve branch: persist ONLY the raw capture + provenance
+    # (nothing derived, nothing goes to the harness repo). The commit message
+    # carries a derived one-liner for at-a-glance history — text only, not data.
+    prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra={
+        "arm": arm, "strategy": strategy, "chain": chain, "branch": branch,
+        "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
+        "checkpoint_shas": {c["checkpoint"]: c["commit_sha"] for c in captures},
+    })
+    n_done = len(log_rows)
+    strict = sum(1 for r in log_rows if r.get("strict_pass") is True)
+    regr = sum(int(r.get("regressions") or 0) for r in log_rows)
+    headline = f"checkpoints={n_done} strict_pass={strict}/{n_done} regressions={regr} (derived numbers recomputed by analyze)"
+    commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline)
 
 
 def main() -> int:
@@ -656,34 +575,18 @@ def main() -> int:
     chains = [args.chain] if args.chain is not None else range(cfg["chains"])
     print(f"run_id = {run_id}")
 
-    if args.dry_run:
-        # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1, ...
-        for chain in chains:
-            for arm in arms:
-                run_chain(cfg, arm, strategy, chain, run_id, checkpoints, None,
-                          True, args.max_checkpoints)
-        return 0
+    # The run persists NO derived CSV — only raw capture onto the evolve branches.
+    # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1,
+    # ... so the two arms are matched in time (no temporal confound) and a run cut
+    # short still has both arms for the chains it completed.
+    for chain in chains:
+        for arm in arms:
+            run_chain(cfg, arm, strategy, chain, run_id, checkpoints,
+                      args.dry_run, args.max_checkpoints)
 
-    # Results live under a per-run directory so each run's data ties to its
-    # branches: <results_dir>/<run_id>/records.csv
-    results_csv = cfg["paths"]["results_csv"]
-    csv_path = os.path.join(os.path.dirname(results_csv), run_id, os.path.basename(results_csv))
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    new_file = not os.path.isfile(csv_path)
-    with open(csv_path, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
-        if new_file:
-            writer.writeheader()
-        # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1, ...
-        # so the two arms are matched in time (no temporal confound) and a run cut
-        # short still has both arms for the chains it completed.
-        for chain in chains:
-            for arm in arms:
-                run_chain(cfg, arm, strategy, chain, run_id, checkpoints, writer,
-                          args.dry_run, args.max_checkpoints)
-                fh.flush()
-    print(f"\nWrote results to {csv_path}")
-    print(f"Branches (kept for review): evolve/{run_id}/{strategy}/<arm>/chain<n> in each repo")
+    if args.dry_run:
+        return 0
+    print(f"\nRaw capture written to branches: evolve/{run_id}/{strategy}/<arm>/chain<n> in each repo")
     print(f"Next: python -m harness.analyze --config {args.config} --run-id {run_id}")
     return 0
 

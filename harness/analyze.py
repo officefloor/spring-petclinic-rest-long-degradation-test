@@ -14,16 +14,20 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
+import json
 import math
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 from collections import defaultdict
 
 import numpy as np
 import yaml
 
-from . import expand_path
+from . import correctness, expand_path, metrics
+from .run_experiment import CSV_FIELDS, phase_for
 
 try:
     import matplotlib
@@ -45,28 +49,180 @@ def _b(x):
     return str(x).strip().lower() in ("true", "1", "yes")
 
 
-def load_from_branches(cfg: dict) -> tuple[list[dict], list[tuple[str, str]]]:
-    """Reconstruct the full dataset by harvesting evolve-results/records.csv from
-    every evolve/* branch across the arm repos. The branches are the single
-    source of truth; nothing is read from any local aggregate CSV.
+# ---------------------------------------------------------------------------
+# Re-derivation: the dataset is ALWAYS rebuilt from the checkpoint COMMITS plus
+# the raw capture (the run persists nothing derived). This is what lets a metric
+# added to metrics.compute_all be computed over OLD runs without re-invoking the
+# agent — the expensive part (the commits + capture) is reused.
+# ---------------------------------------------------------------------------
 
-    Returns (rows, branches) where branches is the list of (repo, branch) read.
-    """
-    rows: list[dict] = []
-    branches: list[tuple[str, str]] = []
-    repos = sorted({ac["repo"] for ac in cfg["arms"].values()})
-    for repo in repos:
+_BRANCH_RE = re.compile(r"^evolve/([^/]+)/([^/]+)/([^/]+)/chain(\d+)$")
+
+
+def _evolve_branches(cfg: dict, run_id: str | None = None):
+    """Yield (repo, branch, arm, strategy, chain) across the arm repos."""
+    out = []
+    for repo in sorted({ac["repo"] for ac in cfg["arms"].values()}):
         refs = subprocess.run(
             ["git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/evolve"],
             capture_output=True, text=True).stdout.splitlines()
         for br in (r.strip() for r in refs if r.strip()):
-            show = subprocess.run(["git", "-C", repo, "show", f"{br}:evolve-results/records.csv"],
-                                  capture_output=True, text=True)
-            if show.returncode != 0 or not show.stdout.strip():
-                continue  # branch without a results commit yet (e.g. crashed mid-chain)
-            rows.extend(csv.DictReader(io.StringIO(show.stdout)))
-            branches.append((repo, br))
-    return rows, branches
+            m = _BRANCH_RE.match(br)
+            if not m:
+                continue
+            rid, strat, arm, chain = m.groups()
+            if run_id and rid != run_id:
+                continue
+            out.append((repo, br, arm, strat, int(chain)))
+    return out
+
+
+def _latest_run_id(cfg: dict) -> str | None:
+    ids = sorted({t[0] for repo, br, *_ in _evolve_branches(cfg)
+                  for t in [(_BRANCH_RE.match(br).group(1),)]})
+    return ids[-1] if ids else None
+
+
+def _cp_commits(repo: str, branch: str) -> dict[int, str]:
+    """checkpoint number -> commit sha, parsed from the branch's 'cpNN id' commits
+    (works even on runs made before the capture layer existed)."""
+    out = subprocess.run(["git", "-C", repo, "log", "--format=%H %s", branch],
+                         capture_output=True, text=True).stdout
+    m: dict[int, str] = {}
+    for line in out.splitlines():
+        sha, _, subj = line.partition(" ")
+        mt = re.match(r"cp0*(\d+)\b", subj)
+        if mt:
+            m.setdefault(int(mt.group(1)), sha)  # newest listing wins; each cp once
+    return m
+
+
+def _read_captures(repo: str, branch: str) -> dict[int, dict]:
+    """checkpoint -> capture record, from evolve-results/capture/cpNN.json on the
+    branch (empty for pre-capture runs)."""
+    caps: dict[int, dict] = {}
+    ls = subprocess.run(
+        ["git", "-C", repo, "ls-tree", "-r", "--name-only", branch, "evolve-results/capture/"],
+        capture_output=True, text=True).stdout
+    for path in ls.splitlines():
+        mt = re.search(r"cp0*(\d+)\.json$", path)
+        if not mt:
+            continue
+        blob = subprocess.run(["git", "-C", repo, "show", f"{branch}:{path}"],
+                              capture_output=True, text=True)
+        if blob.returncode == 0:
+            try:
+                caps[int(mt.group(1))] = json.loads(blob.stdout)
+            except json.JSONDecodeError:
+                pass
+    return caps
+
+
+def recompute_rows(cfg: dict, run_id: str, work_root: str,
+                   exclude: str | None = None) -> list[dict]:
+    """Rebuild every checkpoint row for `run_id` from its commits + capture.
+
+    Structural metrics come from metrics.compute_all over a detached worktree at
+    each checkpoint commit; correctness + agent/probe ephemera come from the raw
+    capture. Emits rows keyed identically to run_experiment's CSV_FIELDS, so the
+    rest of this module (slopes, plots, EvoScore, ...) is unchanged."""
+    rows: list[dict] = []
+    rc_root = os.path.join(work_root, "recompute")
+    os.makedirs(rc_root, exist_ok=True)
+    for repo, branch, arm, strat, chain in _evolve_branches(cfg, run_id):
+        arm_cfg = cfg["arms"].get(arm)
+        if not arm_cfg:
+            continue
+        cpmap = _cp_commits(repo, branch)
+        if not cpmap:
+            continue
+        ks = sorted(cpmap)
+        n = len(ks)
+        base_commit = subprocess.run(
+            ["git", "-C", repo, "rev-parse", f"{cpmap[ks[0]]}~1"],
+            capture_output=True, text=True).stdout.strip()
+        caps = _read_captures(repo, branch)
+        prior_passing: set[str] = set()
+        for k in ks:
+            sha = cpmap[k]
+            prev = cpmap.get(k - 1, base_commit)
+            cap = caps.get(k) or {}
+            row = {f: "" for f in CSV_FIELDS}
+            row.update({
+                "run_id": run_id, "branch": branch, "arm": arm, "strategy": strat,
+                "chain": chain, "checkpoint": k,
+                "checkpoint_id": cap.get("checkpoint_id", ""),
+                "phase": cap.get("phase") or phase_for(k, n),
+            })
+
+            # DERIVE: structural metrics from the checkpoint commit (materialised
+            # in a throwaway detached worktree — cheap; no build/agent involved).
+            wt = os.path.join(rc_root, f"{arm}_{strat}_c{chain}_cp{k:02d}")
+            shutil.rmtree(wt, ignore_errors=True)
+            subprocess.run(["git", "-C", repo, "worktree", "prune"],
+                           capture_output=True, text=True)
+            add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, sha],
+                                 capture_output=True, text=True)
+            try:
+                if add.returncode == 0:
+                    mrow, _ = metrics.compute_all(wt, arm_cfg, cfg["tools"],
+                                                  base_commit, prev, "HEAD", exclude=exclude)
+                    row.update(mrow)
+                else:
+                    print(f"    ! worktree add failed for {branch} cp{k:02d}: "
+                          f"{add.stderr.strip()[:120]}")
+            finally:
+                subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt],
+                               capture_output=True, text=True)
+                shutil.rmtree(wt, ignore_errors=True)
+
+            # DERIVE: correctness from the RAW captured test-result map.
+            tests = cap.get("tests") or {}
+            results = tests.get("results")
+            if results is not None:
+                outcome = correctness.score_results(results, k)
+                row.update({
+                    "build_ok": tests.get("build_ok"),
+                    "total_selected": outcome.total_selected,
+                    "strict_pass": outcome.all_pass, "iso_pass": outcome.iso_pass,
+                    "core_pass": outcome.core_all_pass,
+                    "core_p": outcome.core_pass, "core_t": outcome.core_total,
+                    "error_p": outcome.error_pass, "error_t": outcome.error_total,
+                    "func_p": outcome.func_pass, "func_t": outcome.func_total,
+                    "regr_p": outcome.regr_pass, "regr_t": outcome.regr_total,
+                    "normalized_change": round(correctness.normalized_change(
+                        prior_passing, outcome.passing, outcome.total_selected), 4),
+                    "regressions": correctness.count_regressions(prior_passing, outcome.passing),
+                })
+                prior_passing = outcome.passing
+
+            # Ephemera straight from capture (irreproducible; never recomputed).
+            ag = cap.get("agent") or {}
+            if ag:
+                row.update({
+                    "agent_ok": ag.get("ok"), "cost_usd": ag.get("cost_usd"),
+                    "input_tokens": ag.get("input_tokens"),
+                    "cache_read_tokens": ag.get("cache_read_tokens"),
+                    "output_tokens": ag.get("output_tokens"),
+                    "num_turns": ag.get("num_turns"),
+                    "duration_ms": ag.get("duration_ms"),
+                    "duration_api_ms": ag.get("duration_api_ms"),
+                })
+            probe = cap.get("probe")
+            if probe:
+                pr_recall = probe.get("probe_recall")
+                row.update({
+                    "probe_cost_usd": probe.get("probe_cost_usd"),
+                    "probe_input_tokens": probe.get("probe_input_tokens"),
+                    "probe_cache_read_tokens": probe.get("probe_cache_read_tokens"),
+                    "probe_recall": ("" if pr_recall is None else round(pr_recall, 3)),
+                })
+            row["pinned_touched"] = ",".join(cap.get("pinned_touched") or [])
+            row["acceptance_touched"] = ",".join(cap.get("acceptance_touched") or [])
+            rows.append(row)
+        print(f"  recomputed {branch}: {n} checkpoints"
+              + ("" if caps else "  (no capture — structural metrics only)"))
+    return rows
 
 
 def group_key(r: dict) -> tuple[str, str]:
@@ -230,20 +386,25 @@ def main() -> int:
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
 
-    # Single source of truth: harvest every chain's results from the evolve
-    # branches across the arm repos, then select the run to analyze.
+    # Single source of truth: the checkpoint COMMITS + raw capture on the evolve
+    # branches. Every derived number is recomputed here (nothing derived is read
+    # from the branches), so a metric added to metrics.compute_all applies to every
+    # past run without re-invoking the agent.
     for name, arm_cfg in cfg["arms"].items():
         arm_cfg["repo"] = expand_path(arm_cfg["repo"], f"arms.{name}.repo")
-    all_rows, branches = load_from_branches(cfg)
-    if not all_rows:
-        raise SystemExit("no evolve-results found on any branch; run the experiment first")
-    runs = sorted({r.get("run_id", "") for r in all_rows if r.get("run_id")})
-    run_id = args.run_id or (runs[-1] if runs else None)
-    rows = [r for r in all_rows if r.get("run_id") == run_id]
+
+    work_root = expand_path(cfg["paths"]["work_root"], "paths.work_root")
+    if not os.path.isabs(work_root):
+        work_root = os.path.join(os.path.dirname(os.path.abspath(args.config)), work_root)
+
+    run_id = args.run_id or _latest_run_id(cfg)
+    if not run_id:
+        raise SystemExit("no evolve branches found; run the experiment first")
+    rows = recompute_rows(cfg, run_id, work_root,
+                          exclude=cfg.get("acceptance", {}).get("dest_subpath"))
     if not rows:
-        raise SystemExit(f"no rows for run_id {run_id!r}; runs found on branches: {runs}")
-    run_branches = sorted({b for _, b in branches if b.startswith(f"evolve/{run_id}/")})
-    print(f"run_id {run_id}: {len(rows)} rows harvested from {len(run_branches)} branches")
+        raise SystemExit(f"no checkpoint commits found for run_id {run_id!r}")
+    print(f"run_id {run_id}: recomputed {len(rows)} rows from checkpoint commits")
 
     # Analysis outputs are local, derived, and gitignored (never committed to the
     # harness repo). A concatenated CSV is written for transparency.

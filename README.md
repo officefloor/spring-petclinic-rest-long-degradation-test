@@ -68,41 +68,80 @@ Then, for each checkpoint `k` (1→N), in this exact order:
    authored tests, parse Surefire XML. Classify by class (`CpNNTests`) and method
    prefix (`core`/`error`/`functionality`); cp&lt;K counts as **Regression**.
    Produce Strict / ISO / Core, **Normalized Change** (SWE-CI), and regression count.
-7. **Structural metrics** (Java production source only): `lizard` gives
-   per-function CC/SLOC. Erosion is reported **twice** — `erosion` over the whole
-   app (SlopCodeBench-comparable) and `erosion_scoped` over a **dynamic
-   subsystem**: the production-Java files changed since `base_ref` (cumulative
-   `git diff`). Scoping stops one god method being diluted across ~280 unrelated
-   functions, and because the subsystem is the touched-file set, a **new class
-   the agent creates is automatically included** (no fixed-glob blind spot). The
-   **hotspot** (single highest-CC function, with its name in `hotspot_fn`) is
+7. **Structural metrics** (Java production source only, `metrics.compute_all`):
+   `lizard` gives per-function CC/SLOC. Erosion is reported **twice** — `erosion`
+   over the whole app (SlopCodeBench-comparable) and `erosion_scoped` over a
+   **dynamic subsystem**: the production-Java files changed since `base_ref`
+   (cumulative `git diff`). Scoping stops one god method being diluted across ~280
+   unrelated functions, and because the subsystem is the touched-file set, a **new
+   class the agent creates is automatically included** (no fixed-glob blind spot).
+   The **hotspot** (single highest-CC function, with its name in `hotspot_fn`) is
    taken over that same subsystem. Both erosions carry their `high_mass`/
    `total_mass` terms; `verbosity` carries its clone/pattern/union line counts;
    plus function-package size and blast radius (which excludes the injected tests
-   via a git pathspec). The results commit also records the exact
-   `subsystem_files` set so every number is reproducible.
+   via a git pathspec). Every structural number here is a **pure function of the
+   committed source + git history** — so it is computed **only to narrate the
+   progress log**, never persisted; `analyze` recomputes it. See *Capture vs.
+   derive* below.
 8. **Cold-reader probe** at each phase boundary — a read-only `claude -p` asks a
-   fixed comprehension question; cost/tokens/recall go in the row, the full text
-   is stashed.
-9. Append the row to the run CSV.
+   fixed comprehension question; its raw text/cost/tokens go into the capture.
+9. Write this checkpoint's **raw capture** (`capture/cpNN.json` + the agent event
+   stream + the pre-normalization agent diff). The derived correctness/structural
+   numbers are printed to the log for at-a-glance progress but **not stored**.
+
+### Capture vs. derive (the expensive part is the commits, so capture only what's lost)
+
+The agent turns are the costly, irreproducible part of a run. So the runner's job
+is split in two:
+
+- **Capture** — the per-checkpoint information that is *gone forever* if not
+  recorded at the instant the agent runs, staged outside the worktree and
+  committed into `evolve-results/capture/`:
+  - `cpNN.json` — the agent envelope (cost/tokens incl. cache-creation, model,
+    session id, stop reason, turns, durations), the **raw `{test_id: passed}`
+    map** + per-test timing/failure text (the atom behind regressions / Normalized
+    Change / Zero-Regression Rate), build output on failure, pinned/acceptance
+    flags, and the checkpoint→commit SHAs;
+  - `cpNN.agent.jsonl` — the **full agent event stream** (every tool call, file
+    read, command) — the behaviour trace, otherwise discarded;
+  - `cpNN.agent.diff` — the **true agent delta**, diffed *before* CLAUDE.md is
+    pinned back and the acceptance tests are reset, so it preserves exactly what
+    the agent did (including any reverted CLAUDE.md edit) — which the normalized
+    checkpoint commit can't reconstruct;
+  - `provenance.json` — model, harness git SHA, and tool versions, so a later
+    re-derivation is reproducible.
+- **Derive** — everything else (correctness scores, erosion, verbosity, blast
+  radius, coupling, WMC, entry-handler, …) is a pure function of the commits +
+  capture, so it is **never persisted**: `analyze` always rebuilds it from the
+  checkpoint commits (materializing each in a throwaway detached worktree and
+  calling the same `metrics.compute_all`, re-scoring correctness from the raw test
+  map). **This is what lets you add a new metric and apply it to old runs without
+  re-invoking the agent** — do many runs once, analyse them from new angles forever.
 
 ### End of chain (`commit_chain_results`)
 
-A final `results:` commit on the evolve branch writes `evolve-results/`:
-`records.csv` (this chain's rows), `summary.md` (headline + per-checkpoint
-table), `probes/cpNN.md` (probe transcripts), and `metrics/cpNN.json` (every
-function's CC/SLOC/mass and the erosion/verbosity intermediates — so each number
-is reproducible by hand). So each branch = N checkpoint commits + 1 results
-commit. Nothing is written to the harness repo.
+A final `results:` commit on the evolve branch writes `evolve-results/` — **raw
+only**: `capture/` (the per-checkpoint records + agent streams + agent diffs
+above) and `provenance.json`. No derived table is stored. So each branch = N
+checkpoint commits + 1 raw-capture commit. Nothing is written to the harness repo.
 
 ### Analysis (`analyze.py`, run separately)
 
-`load_from_branches` harvests `evolve-results/records.csv` from every evolve
-branch across both arm repos (the branches are the single source of truth — no
-local CSV is read), selects the run, and writes gitignored output to
-`results/<run_id>/analysis/`: degradation slope `m` with bootstrap CIs, phase
-means, EvoScore, Zero-Regression Rate, the pinned-doc touch rate, the
-acceptance-tamper rate, and PNG plots.
+`analyze` **always recomputes** from the branches — the single source of truth is
+the checkpoint commits + `capture/`, and nothing derived is read back. For the
+selected run it materializes each checkpoint commit, runs `metrics.compute_all`
+over its source, re-scores correctness from the captured raw test map, and writes
+gitignored output to `results/<run_id>/analysis/`: degradation slope `m` with
+bootstrap CIs, phase means, EvoScore, Zero-Regression Rate, the pinned-doc touch
+rate, the acceptance-tamper rate, and PNG plots.
+
+```
+python -m harness.analyze --config config.yaml --run-id <id>
+```
+
+Add a metric to `metrics.compute_all`, re-run this, and it applies to every past
+run — structural metrics need only the commits; correctness/agent columns come
+from `capture/` (blank for any older run recorded without it).
 
 > Note on the reset (step 5): the commit at step 4 preserves the agent's
 > acceptance-test edits for review, but the gate at step 6 runs on the authored
