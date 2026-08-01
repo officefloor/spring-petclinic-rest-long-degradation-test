@@ -150,10 +150,10 @@ def _seconds_until_reset(text: str) -> float | None:
     return (target - now).total_seconds() + 60  # small buffer past the reset
 
 
-def wait_for_window(ar, cfg: dict) -> None:
-    """Sleep until the token window is expected to reopen, then return so the
-    caller can retry. Uses the parsed reset time when available, else a poll
-    interval; capped so a single wait can't run away."""
+def wait_for_window(ar, cfg: dict) -> float:
+    """Sleep until the token window is expected to reopen, then return the number
+    of seconds slept so the caller can record it. Uses the parsed reset time when
+    available, else a poll interval; capped so a single wait can't run away."""
     limits = cfg.get("limits", {})
     secs = _seconds_until_reset(ar.result_text or ar.error)
     secs = secs if secs is not None else limits.get("poll_seconds", 1800)
@@ -162,11 +162,13 @@ def wait_for_window(ar, cfg: dict) -> None:
     print(f"    [limit] token limit reached — waiting {int(secs)}s "
           f"(until ~{resume:%H:%M:%S}) then retrying the same checkpoint...", flush=True)
     time.sleep(secs)
+    return secs
 
 
-def wait_transient(attempt: int, ar, cfg: dict) -> None:
+def wait_transient(attempt: int, ar, cfg: dict) -> float:
     """Short exponential backoff for a transient failure (network drop, API
-    overload, no completion). Doubles each consecutive attempt up to a cap."""
+    overload, no completion). Doubles each consecutive attempt up to a cap.
+    Returns the seconds slept so the caller can record it."""
     limits = cfg.get("limits", {})
     base = limits.get("retry_backoff_seconds", 60)
     cap = limits.get("retry_backoff_max", 900)
@@ -176,6 +178,7 @@ def wait_transient(attempt: int, ar, cfg: dict) -> None:
     print(f"    [retry] transient failure (attempt {attempt}: {reason}) — waiting {int(secs)}s "
           f"(until ~{resume:%H:%M:%S}) then retrying the same checkpoint...", flush=True)
     time.sleep(secs)
+    return secs
 
 
 def inject_checkpoint_tests(wt: str, cfg: dict, k: int) -> list[str]:
@@ -232,19 +235,23 @@ def restore_acceptance_tests(wt: str, cfg: dict, k: int, write: bool = True) -> 
 
 def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: str,
                          chain: int, cap_dir: str | None, provenance: dict | None,
-                         headline: str = "") -> None:
+                         headline: str = "", snapshot: dict | None = None) -> None:
     """Final 'results:' commit on the evolve branch. It persists ONLY the raw,
-    irreproducible capture (`capture/`) + the run `provenance.json` — never any
-    derived numbers. Every metric (erosion, verbosity, correctness, coupling, ...)
-    is recomputed from the checkpoint commits + this capture by `analyze`, so the
-    branch stays the single source of truth without duplicating derived data.
-    `headline` is a human-readable one-liner for the commit message only.
+    irreproducible capture (`capture/`), the run `provenance.json`, and a snapshot
+    of the analysis-shaping config (`config/`) — never any derived numbers. Every
+    metric (erosion, verbosity, correctness, coupling, ...) is recomputed from the
+    checkpoint commits + this capture by `analyze`, so the branch stays the single
+    source of truth without duplicating derived data. `headline` is a
+    human-readable one-liner for the commit message only.
     """
     out_dir = os.path.join(wt, "evolve-results")
     os.makedirs(out_dir, exist_ok=True)
     capture.assemble_into(cap_dir, out_dir)
     if provenance is not None:
         capture.write_json(os.path.join(out_dir, "provenance.json"), provenance)
+    if snapshot:
+        capture.snapshot_config(snapshot.get("config"), snapshot.get("checkpoints"),
+                                snapshot.get("astgrep_rules"), out_dir)
 
     subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
     msg = f"results: {arm}/{strategy}/chain{chain} - run {run_id} (raw capture)"
@@ -300,19 +307,21 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         where = f"run {run_id} | {arm}/{strategy} chain{chain}"
         print(f"\n--- {where} | cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
 
-        # 0. Inject ONLY this checkpoint's acceptance test (+ shared infra at
-        # cp01). The agent then sees cp01..cpK, never future requirements. It is
-        # NOT a separate commit -- it folds into this checkpoint's single commit.
-        inject_checkpoint_tests(wt, cfg, k)
+        # 0. Ensure this checkpoint's acceptance test is present. For k>=2 it was
+        # injected by the PREVIOUS checkpoint's reset commit (COMMIT 2), so it is
+        # already in HEAD; only cp01 (+ shared infra) is injected here. The agent
+        # sees cp01..cpK, never future requirements.
+        if k == 1:
+            inject_checkpoint_tests(wt, cfg, 1)
 
-        # Snapshot the pre-agent state (prior commits + the uncommitted cp(K-1)
-        # acceptance reset + the just-injected cpK test) as a throwaway commit, so
-        # a token-limit-interrupted attempt can be rolled back and retried cleanly.
+        # Snapshot the pre-agent state as a throwaway commit so a token-limit- or
+        # network-interrupted attempt can be rolled back and retried cleanly. It is
+        # undone (soft reset) before COMMIT 1, so it never enters real history.
         git(["-C", wt, "add", "-A"])
         subprocess.run(["git", "-C", wt, "commit", "-q", "--allow-empty",
                         "-m", f"__preagent_cp{k:02d}__"], capture_output=True, text=True)
         preagent_ref = git(["-C", wt, "rev-parse", "HEAD"])
-        base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # = cp(K-1) commit
+        base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # prev reset commit (base_ref at cp01)
 
         # 1. agent turn (fresh session, no carried context). On a token-limit OR a
         # transient failure (network drop, API overload, no completion), discard
@@ -323,10 +332,18 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         attempts = 0
         transient_attempts = 0
         stream_file = f"cp{k:02d}.agent.jsonl"
+        attempt_log: list[dict] = []  # every try (failed/limited too); last = success
         while True:
             ar = agent.run_agent(prompt, cwd=wt, model=model,
                                  timeout=cfg.get("agent_timeout", 3600),
                                  capture_path=os.path.join(cap_dir, stream_file))
+            att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
+                   "cost_usd": ar.cost_usd, "input_tokens": ar.input_tokens,
+                   "output_tokens": ar.output_tokens, "cache_read_tokens": ar.cache_read_tokens,
+                   "cache_creation_tokens": ar.cache_creation_tokens, "num_turns": ar.num_turns,
+                   "duration_ms": ar.duration_ms, "duration_api_ms": ar.duration_api_ms,
+                   "error": (ar.error or "")[:500], "wait_s": None}
+            attempt_log.append(att)
             if not (ar.limit_reached or ar.retryable):
                 break
             attempts += 1
@@ -337,24 +354,21 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
             if ar.limit_reached:
                 transient_attempts = 0
-                wait_for_window(ar, cfg)
+                att["wait_s"] = wait_for_window(ar, cfg)
             else:
                 transient_attempts += 1
                 if transient_attempts > limits.get("max_transient_attempts", 20):
                     raise RuntimeError("too many consecutive transient failures; aborting run")
-                wait_transient(transient_attempts, ar, cfg)
+                att["wait_s"] = wait_transient(transient_attempts, ar, cfg)
 
-        # Undo the snapshot commit (keep its contents staged) so the real cpNN
-        # commit below contains the injected test + cp(K-1) reset + the agent work.
+        # Undo the snapshot commit (keep its contents staged) so COMMIT 1 (the
+        # agent commit) is parented on the pre-agent state and its diff is EXACTLY
+        # what the agent changed.
         subprocess.run(["git", "-C", wt, "reset", "--soft", base_for_cp],
                        capture_output=True, text=True)
 
-        # Capture the TRUE agent delta NOW — diffed against the pre-agent baseline
-        # (prior commits + cp(K-1) reset + injected cpK test), BEFORE we pin
-        # CLAUDE.md back and reset the acceptance tests. This is the one view the
-        # committed history can't reconstruct: the committed diff is normalised
-        # (pinned doc reverted, acceptance reset folded in), whereas this preserves
-        # exactly what the agent did, including any reverted CLAUDE.md edit.
+        # Capture the true agent delta (identical to COMMIT 1's diff, kept for
+        # convenience and to survive even if COMMIT 1 is empty).
         diff_file = f"cp{k:02d}.agent.diff"
         agent_diff = subprocess.run(["git", "-C", wt, "diff", preagent_ref],
                                     capture_output=True, text=True).stdout
@@ -368,48 +382,47 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if ar.error:
             row["notes"] = ar.error[:200]
 
-        # 1b. Pin the leveling docs. CLAUDE.md is a FIXED human-authored project
-        # guide that must be identical at every checkpoint (it offsets Spring's
-        # training-data advantage for OfficeFloor, symmetrically for both arms).
-        # If the agent edited a pinned file we note it and restore the base
-        # version BEFORE committing, so the doc can never turn into accumulating
-        # cross-checkpoint memory.
-        touched_pins = []
+        # Record what the agent touched, but DO NOT undo it yet — COMMIT 1 must
+        # preserve exactly what the agent did (incl. any CLAUDE.md edit or
+        # acceptance-test tamper). Normalisation happens in COMMIT 2 below.
+        touched_pins = [pf for pf in cfg.get("isolation", {}).get("pin_files", [])
+                        if subprocess.run(["git", "-C", wt, "status", "--porcelain", "--", pf],
+                                          capture_output=True, text=True).stdout.strip()]
+        row["pinned_touched"] = ",".join(touched_pins)
+        row["acceptance_touched"] = ",".join(restore_acceptance_tests(wt, cfg, k, write=False))
+
+        # 2. COMMIT 1 — the AGENT commit: `git show` on it is EXACTLY the agent's
+        # change for this checkpoint. An empty commit (no changes) => no-op checkpoint.
+        git(["-C", wt, "add", "-A"])
+        c1 = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} agent {cp['id']}"],
+                            capture_output=True, text=True)
+        agent_committed = c1.returncode == 0
+        agent_sha = git(["-C", wt, "rev-parse", "HEAD"]) if agent_committed else ""
+
+        # 3. Normalise for the next run: restore the pinned docs to base (CLAUDE.md
+        # must be identical at every checkpoint — it can never become accumulating
+        # cross-checkpoint memory) and reset the acceptance tests to authored —
+        # BOTH before the gate, so a weakened test or an edited guide can never
+        # produce a false pass. These land in COMMIT 2 below.
         for pf in cfg.get("isolation", {}).get("pin_files", []):
-            touched = subprocess.run(["git", "-C", wt, "status", "--porcelain", "--", pf],
-                                     capture_output=True, text=True).stdout.strip()
-            if touched:
-                touched_pins.append(pf)
             restored = subprocess.run(["git", "-C", wt, "checkout", arm_cfg["base_ref"], "--", pf],
                                       capture_output=True, text=True)
-            if restored.returncode != 0:  # not in base_ref -> agent created it; drop it
+            if restored.returncode != 0:  # agent-created (not in base_ref) -> drop it
                 fpath = os.path.join(wt, pf)
                 if os.path.exists(fpath):
                     os.remove(fpath)
-        row["pinned_touched"] = ",".join(touched_pins)
-
-        # 1c. Detect (do NOT yet undo) any agent edits to the experimenter-owned
-        # acceptance tests, so the commit below preserves exactly what the agent
-        # changed about them.
-        row["acceptance_touched"] = ",".join(restore_acceptance_tests(wt, cfg, k, write=False))
-
-        # 2. one commit per checkpoint: the injected test + the agent's code,
-        # including any acceptance-test edits the agent made (kept for review).
-        git(["-C", wt, "add", "-A"])
-        commit = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} {cp['id']}"],
-                                capture_output=True, text=True)
-        committed = commit.returncode == 0
-        cp_sha = git(["-C", wt, "rev-parse", "HEAD"]) if committed else ""
-
-        # 3. Reset the acceptance tests to the authored version -- AFTER the commit
-        # (so the agent's edits stay in history) but BEFORE the gate, so a weakened
-        # test can never produce a false pass. The reset stays uncommitted and
-        # folds into the NEXT checkpoint's commit, so the agent must also satisfy
-        # the real (reset) test at the next step.
         restore_acceptance_tests(wt, cfg, k, write=True)
 
-        # 4. correctness gate (runs on the authored tests)
+        # 4. correctness gate (runs on the authored tests, pinned CLAUDE.md, and
+        # the agent's production code)
         outcome = correctness.run_tests(wt, k, cfg)
+        # Full build + test console (raw): a test that errors before producing a
+        # Surefire report leaves no trace otherwise. Capped to keep the commit sane.
+        build_log_file = None
+        if outcome.console:
+            build_log_file = f"cp{k:02d}.build.log"
+            with open(os.path.join(cap_dir, build_log_file), "w") as fh:
+                fh.write(outcome.console[:500_000])
         row.update({
             "build_ok": outcome.build_ok, "total_selected": outcome.total_selected,
             "strict_pass": outcome.all_pass, "iso_pass": outcome.iso_pass,
@@ -428,15 +441,26 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row["regressions"] = correctness.count_regressions(prior_passing, outcome.passing)
         prior_passing = outcome.passing
 
-        # 5. structural metrics — computed here ONLY to show live progress; they
-        # are NOT persisted. They are a pure function of the committed source + git
-        # history, so analyze recomputes them from the checkpoint commits (the same
-        # metrics.compute_all), which is the single source of every derived number.
-        prev_ref = "HEAD~1" if committed else "HEAD"
+        # 5. COMMIT 2 — the RESET commit: the harness normalisation (pinned docs +
+        # acceptance reset) plus the NEXT checkpoint's injected test — the content
+        # that sets up the next run. Kept even if empty, so every checkpoint is a
+        # clean two-commit boundary and cp(K+1)'s agent commit stays pure.
+        if k < n:
+            inject_checkpoint_tests(wt, cfg, k + 1)
+        git(["-C", wt, "add", "-A"])
+        subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
+                        "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
+        reset_sha = git(["-C", wt, "rev-parse", "HEAD"])
+
+        # 6. structural metrics — LOGGING ONLY (analyze recomputes them). Measured
+        # over the AGENT commit (base_for_cp..agent), so the log shows the agent's
+        # delta. Clean the jscpd scratch dir so it can never leak into a later commit.
+        metrics_cur = agent_sha or "HEAD"
         mrow, _ = metrics.compute_all(
-            wt, arm_cfg, cfg["tools"], base_commit, prev_ref, "HEAD",
+            wt, arm_cfg, cfg["tools"], base_commit, base_for_cp, metrics_cur,
             exclude=cfg.get("acceptance", {}).get("dest_subpath"))
         row.update(mrow)
+        shutil.rmtree(os.path.join(wt, ".jscpd-report"), ignore_errors=True)
 
         # 6. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
         # (default: the first checkpoint of each phase).
@@ -461,10 +485,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # SHAs) referencing the stream + agent-diff files already written to cap_dir.
         rec = capture.checkpoint_record(
             k, cp["id"], phase,
-            {"commit": cp_sha, "preagent": preagent_ref, "prev": base_for_cp, "base": base_commit},
+            {"commit": agent_sha, "reset": reset_sha, "preagent": preagent_ref,
+             "prev": base_for_cp, "base": base_commit},
             ar, outcome, probe_record, touched_pins,
             row["acceptance_touched"].split(",") if row["acceptance_touched"] else [],
-            stream_file, diff_file)
+            stream_file, diff_file, build_log_file=build_log_file,
+            attempts=attempt_log, spec=cp["spec"], prompt=prompt)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
         captures.append(rec)
         log_rows.append(dict(row))
@@ -497,13 +523,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if flags:
             print("    flags  : " + "  ".join(flags))
 
-        # Files the agent changed this checkpoint (excluding the injected acceptance
-        # test), so progress is visible as the code evolves.
+        # Files the agent changed this checkpoint = COMMIT 1's diff (base_for_cp..
+        # agent), minus the injected acceptance test, so progress is visible.
         accept_dir = cfg.get("acceptance", {}).get("dest_subpath")
         pathspec = ["--", ".", f":(exclude){accept_dir}"] if accept_dir else []
         changed = subprocess.run(
-            ["git", "-C", wt, "diff", "--name-status", "HEAD~1" if committed else base_commit,
-             "HEAD", *pathspec], capture_output=True, text=True).stdout.strip()
+            ["git", "-C", wt, "diff", "--name-status", base_for_cp,
+             agent_sha or base_for_cp, *pathspec], capture_output=True, text=True).stdout.strip()
         if changed:
             print("    changed:")
             for line in changed.splitlines():
@@ -524,7 +550,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     strict = sum(1 for r in log_rows if r.get("strict_pass") is True)
     regr = sum(int(r.get("regressions") or 0) for r in log_rows)
     headline = f"checkpoints={n_done} strict_pass={strict}/{n_done} regressions={regr} (derived numbers recomputed by analyze)"
-    commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline)
+    commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline,
+                         snapshot=cfg.get("_snapshot"))
 
 
 def main() -> int:
@@ -564,6 +591,15 @@ def main() -> int:
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])
     if cfg.get("acceptance", {}).get("src_dir"):
         cfg["acceptance"]["src_dir"] = resolve(cfg["acceptance"]["src_dir"])
+
+    # Sources snapshotted into each results commit so a run is self-contained: the
+    # config that shaped its metrics travels with it (analyze prefers this over the
+    # live config when re-deriving).
+    cfg["_snapshot"] = {
+        "config": os.path.abspath(args.config),
+        "checkpoints": cfg["checkpoints_file"],
+        "astgrep_rules": cfg.get("tools", {}).get("astgrep_rules"),
+    }
 
     with open(cfg["checkpoints_file"]) as fh:
         checkpoints = yaml.safe_load(fh)["checkpoints"]

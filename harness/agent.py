@@ -24,6 +24,20 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+# Read-only toolset the cold-reader probe is restricted to.
+PROBE_TOOLS = "Read,Grep,Glob,Bash"
+
+
+def invocation_flags(model: str, allowed_tools: Optional[str] = None) -> list[str]:
+    """The `claude` flags (excluding the prompt) for one headless turn. Single
+    source of truth, so the run and the captured agent-env profile can't drift."""
+    flags = ["--output-format", "stream-json", "--verbose", "--model", model,
+             "--dangerously-skip-permissions"]
+    if allowed_tools:
+        flags += ["--allowedTools", allowed_tools]
+    return flags
+
+
 def _kill_group(proc: subprocess.Popen) -> None:
     """Kill the child AND its descendants (they may hold the output pipe open)."""
     try:
@@ -158,14 +172,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     (overwritten per call, so a retried checkpoint keeps only the successful
     attempt's stream). This is the agent's full behaviour trace — tool calls,
     files read, commands run — which is irreproducible and lost otherwise."""
-    cmd = [
-        "claude", "-p", prompt,
-        "--output-format", "stream-json", "--verbose",
-        "--model", model,
-        "--dangerously-skip-permissions",
-    ]
-    if allowed_tools:
-        cmd += ["--allowedTools", allowed_tools]
+    cmd = ["claude", "-p", prompt, *invocation_flags(model, allowed_tools)]
 
     try:
         proc = subprocess.Popen(
@@ -260,7 +267,7 @@ def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = N
     Recall is a crude keyword hit-rate; grade properly offline for the paper.
     """
     res = run_agent(question, cwd=cwd, model=model, timeout=timeout,
-                    allowed_tools="Read,Grep,Glob,Bash", label="probe",
+                    allowed_tools=PROBE_TOOLS, label="probe",
                     capture_path=capture_path)
     recall = None
     if expected:

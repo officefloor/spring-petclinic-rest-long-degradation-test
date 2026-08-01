@@ -84,17 +84,23 @@ def _latest_run_id(cfg: dict) -> str | None:
 
 
 def _cp_commits(repo: str, branch: str) -> dict[int, str]:
-    """checkpoint number -> commit sha, parsed from the branch's 'cpNN id' commits
-    (works even on runs made before the capture layer existed)."""
+    """checkpoint number -> AGENT commit sha, parsed from commit messages (fallback
+    for runs without provenance). Prefers the two-commit format's 'cpNN agent ...'
+    commit; falls back to the legacy single 'cpNN <id>' commit."""
     out = subprocess.run(["git", "-C", repo, "log", "--format=%H %s", branch],
                          capture_output=True, text=True).stdout
-    m: dict[int, str] = {}
+    agent_m: dict[int, str] = {}
+    legacy_m: dict[int, str] = {}
     for line in out.splitlines():
         sha, _, subj = line.partition(" ")
-        mt = re.match(r"cp0*(\d+)\b", subj)
-        if mt:
-            m.setdefault(int(mt.group(1)), sha)  # newest listing wins; each cp once
-    return m
+        ma = re.match(r"cp0*(\d+) agent\b", subj)
+        if ma:
+            agent_m.setdefault(int(ma.group(1)), sha)
+            continue
+        ml = re.match(r"cp0*(\d+)\b", subj)
+        if ml and " reset " not in f" {subj} ":
+            legacy_m.setdefault(int(ml.group(1)), sha)
+    return agent_m or legacy_m
 
 
 def _read_captures(repo: str, branch: str) -> dict[int, dict]:
@@ -118,6 +124,58 @@ def _read_captures(repo: str, branch: str) -> dict[int, dict]:
     return caps
 
 
+def _read_provenance(repo: str, branch: str) -> dict:
+    """The chain's provenance.json (base_commit + checkpoint_shas + versions).
+    Empty for pre-provenance runs."""
+    blob = subprocess.run(["git", "-C", repo, "show", f"{branch}:evolve-results/provenance.json"],
+                          capture_output=True, text=True)
+    if blob.returncode != 0:
+        return {}
+    try:
+        return json.loads(blob.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
+    """Config to DERIVE with: prefer the per-run snapshot committed at run time (so
+    metrics match how the run was configured), falling back to the live config for
+    runs recorded before snapshots existed. Repo filesystem paths always come from
+    the live environment; only the metric-shaping fields (globs, thresholds,
+    entry-handler regex, ast-grep rules) are taken from the snapshot."""
+    branches = _evolve_branches(live_cfg, run_id)
+    if not branches:
+        return live_cfg
+    repo, branch = branches[0][0], branches[0][1]
+    blob = subprocess.run(
+        ["git", "-C", repo, "show", f"{branch}:evolve-results/config/config.yaml"],
+        capture_output=True, text=True)
+    if blob.returncode != 0:
+        print("  (no per-run config snapshot; deriving with the live config.yaml)")
+        return live_cfg
+    run_cfg = yaml.safe_load(blob.stdout)
+    # Repos are filesystem locations — take them from the live environment (matched
+    # by arm name), not from the snapshot.
+    for name, arm in run_cfg.get("arms", {}).items():
+        live_arm = live_cfg.get("arms", {}).get(name)
+        arm["repo"] = live_arm["repo"] if live_arm else expand_path(arm.get("repo"), f"arms.{name}.repo")
+    # Extract the snapshotted ast-grep rules so Verbosity's pattern component
+    # matches the run; if none were snapshotted, fall back to the live rules path.
+    rel = "evolve-results/config/astgrep-rules"
+    listing = subprocess.run(["git", "-C", repo, "ls-tree", branch, rel],
+                             capture_output=True, text=True).stdout.strip()
+    run_cfg.setdefault("tools", {})
+    if listing:
+        arch = subprocess.run(["git", "-C", repo, "archive", branch, rel], capture_output=True)
+        if arch.returncode == 0:
+            subprocess.run(["tar", "-x", "-C", tmp_dir], input=arch.stdout)
+            run_cfg["tools"]["astgrep_rules"] = os.path.join(tmp_dir, rel)
+    else:
+        run_cfg["tools"]["astgrep_rules"] = live_cfg.get("tools", {}).get("astgrep_rules", "")
+    print(f"  using per-run config snapshot from {branch}")
+    return run_cfg
+
+
 def recompute_rows(cfg: dict, run_id: str, work_root: str,
                    exclude: str | None = None) -> list[dict]:
     """Rebuild every checkpoint row for `run_id` from its commits + capture.
@@ -133,19 +191,45 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         arm_cfg = cfg["arms"].get(arm)
         if not arm_cfg:
             continue
-        cpmap = _cp_commits(repo, branch)
-        if not cpmap:
-            continue
-        ks = sorted(cpmap)
-        n = len(ks)
-        base_commit = subprocess.run(
-            ["git", "-C", repo, "rev-parse", f"{cpmap[ks[0]]}~1"],
-            capture_output=True, text=True).stdout.strip()
         caps = _read_captures(repo, branch)
+        prov = _read_provenance(repo, branch)
+
+        # Checkpoint list + per-checkpoint commit SHA. Prefer the run's OWN record
+        # (provenance.checkpoint_shas): it lists EVERY checkpoint including no-ops
+        # (agent changed nothing -> no cpNN commit -> "" sha), which parsing commit
+        # messages would silently drop. Fall back to commit messages for
+        # pre-provenance runs.
+        if prov and prov.get("checkpoint_shas"):
+            shas = {int(k): (v or "") for k, v in prov["checkpoint_shas"].items()}
+            base_commit = prov.get("base_commit") or ""
+        else:
+            shas = _cp_commits(repo, branch)
+            base_commit = ""
+        if not shas:
+            continue
+        ks = sorted(shas)
+        n = len(ks)
+        if not base_commit:
+            first_real = next((shas[k] for k in ks if shas[k]), "")
+            base_commit = subprocess.run(
+                ["git", "-C", repo, "rev-parse", f"{first_real}~1"],
+                capture_output=True, text=True).stdout.strip() if first_real else ""
+        if not base_commit:
+            print(f"    ! {branch}: cannot determine base commit; skipping")
+            continue
+
         prior_passing: set[str] = set()
+        prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
+        n_noop = 0
         for k in ks:
-            sha = cpmap[k]
-            prev = cpmap.get(k - 1, base_commit)
+            real = shas.get(k) or ""     # AGENT commit sha; "" => no-op checkpoint
+            tree = real or prev_tree     # a no-op reuses the previous checkpoint's tree
+            # The agent commit's parent IS the previous reset commit, so diffing the
+            # agent commit against its own parent yields the pure agent delta. A
+            # no-op diffs the previous tree against itself (zero change).
+            prev = f"{real}~1" if real else prev_tree
+            if not real:
+                n_noop += 1
             cap = caps.get(k) or {}
             row = {f: "" for f in CSV_FIELDS}
             row.update({
@@ -155,13 +239,15 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 "phase": cap.get("phase") or phase_for(k, n),
             })
 
-            # DERIVE: structural metrics from the checkpoint commit (materialised
-            # in a throwaway detached worktree — cheap; no build/agent involved).
+            # DERIVE: structural metrics from the checkpoint tree (materialised in a
+            # throwaway detached worktree — cheap; no build/agent involved). A no-op
+            # reuses the previous tree, so its blast radius vs the previous
+            # checkpoint is zero — exactly right.
             wt = os.path.join(rc_root, f"{arm}_{strat}_c{chain}_cp{k:02d}")
             shutil.rmtree(wt, ignore_errors=True)
             subprocess.run(["git", "-C", repo, "worktree", "prune"],
                            capture_output=True, text=True)
-            add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, sha],
+            add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, tree],
                                  capture_output=True, text=True)
             try:
                 if add.returncode == 0:
@@ -175,6 +261,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt],
                                capture_output=True, text=True)
                 shutil.rmtree(wt, ignore_errors=True)
+            prev_tree = tree
 
             # DERIVE: correctness from the RAW captured test-result map.
             tests = cap.get("tests") or {}
@@ -221,6 +308,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             row["acceptance_touched"] = ",".join(cap.get("acceptance_touched") or [])
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
+              + (f" ({n_noop} no-op)" if n_noop else "")
               + ("" if caps else "  (no capture — structural metrics only)"))
     return rows
 
@@ -400,8 +488,14 @@ def main() -> int:
     run_id = args.run_id or _latest_run_id(cfg)
     if not run_id:
         raise SystemExit("no evolve branches found; run the experiment first")
-    rows = recompute_rows(cfg, run_id, work_root,
-                          exclude=cfg.get("acceptance", {}).get("dest_subpath"))
+    # Derive with the run's OWN config snapshot (globs/thresholds/entry-handler/
+    # ast-grep rules), so metrics match how that run was configured.
+    snap_tmp = os.path.join(work_root, "recompute-config", str(run_id))
+    shutil.rmtree(snap_tmp, ignore_errors=True)
+    os.makedirs(snap_tmp, exist_ok=True)
+    eff_cfg = _resolve_run_config(cfg, run_id, snap_tmp)
+    rows = recompute_rows(eff_cfg, run_id, work_root,
+                          exclude=eff_cfg.get("acceptance", {}).get("dest_subpath"))
     if not rows:
         raise SystemExit(f"no checkpoint commits found for run_id {run_id!r}")
     print(f"run_id {run_id}: recomputed {len(rows)} rows from checkpoint commits")

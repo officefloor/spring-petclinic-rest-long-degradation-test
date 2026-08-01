@@ -33,7 +33,8 @@ CAT_RE = re.compile(r"(core|error|functionality)", re.IGNORECASE)
 class TestOutcome:
     build_ok: bool = False
     error: str = ""
-    build_output: str = ""                             # compiler output (kept on failure)
+    build_output: str = ""                             # compiler output tail (quick display)
+    console: str = ""                                  # FULL build + test console (→ cpNN.build.log)
     passing: set[str] = field(default_factory=set)     # "class#method" that passed
     results: dict[str, bool] = field(default_factory=dict)  # RAW {test_id: passed} — the atom
     detail: list[dict] = field(default_factory=list)   # per-test time + failure text
@@ -65,15 +66,15 @@ class TestOutcome:
 
 
 def build(worktree: str, cfg: dict) -> tuple[bool, str]:
+    """Returns (ok, full_combined_output). The caller keeps the whole console; a
+    truncated tail is derived from it for quick display."""
     cmd = cfg["build"]["cmd"]
     try:
         proc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
                               timeout=cfg["build"].get("timeout", 1800))
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return False, f"build failed to launch/timed out: {exc}"
-    if proc.returncode != 0:
-        return False, f"build exit {proc.returncode}: {proc.stdout[-800:]}\n{proc.stderr[-800:]}"
-    return True, ""
+    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
 
 
 def _clear_surefire(worktree: str, cfg: dict) -> None:
@@ -98,8 +99,13 @@ def _parse_surefire(worktree: str, cfg: dict) -> tuple[dict[str, bool], list[dic
             cls = case.get("classname", "")
             name = case.get("name", "")
             test_id = f"{cls}#{name}"
-            skipped = any(c.tag == "skipped" for c in case)
-            if skipped:
+            t = float(case.get("time", 0) or 0)
+            if any(c.tag == "skipped" for c in case):
+                # A skipped test is neither a pass nor a fail, so it stays OUT of
+                # `results` (and thus out of scoring/total_selected) — but recorded
+                # in `detail` so "skipped" is distinguishable from "never selected".
+                detail.append({"test_id": test_id, "passed": None, "skipped": True,
+                               "time": t, "failure": None})
                 continue
             fail_el = next((c for c in case if c.tag in ("failure", "error")), None)
             passed = fail_el is None
@@ -107,7 +113,8 @@ def _parse_surefire(worktree: str, cfg: dict) -> tuple[dict[str, bool], list[dic
             detail.append({
                 "test_id": test_id,
                 "passed": passed,
-                "time": float(case.get("time", 0) or 0),
+                "skipped": False,
+                "time": t,
                 "failure": None if passed else
                 (f"{fail_el.get('type', '')}: {fail_el.get('message', '')}".strip()[:500]),
             })
@@ -148,24 +155,32 @@ def score_results(results: dict[str, bool], checkpoint_k: int) -> TestOutcome:
 
 
 def run_tests(worktree: str, checkpoint_k: int, cfg: dict) -> TestOutcome:
-    """Run the accumulated suite cp01..cpK and score by category."""
-    ok, err = build(worktree, cfg)
+    """Run the accumulated suite cp01..cpK and score by category. The full build +
+    test console is retained on the outcome (`console`) so it can be captured — a
+    test that errors before producing a Surefire report (e.g. context startup)
+    would otherwise leave no trace beyond a lower selected-count."""
+    ok, build_out = build(worktree, cfg)
+    console = f"$ {' '.join(cfg['build']['cmd'])}\n{build_out}"
     if not ok:
-        return TestOutcome(build_ok=False, error=err, build_output=err)
+        return TestOutcome(build_ok=False, error=f"build failed:\n{build_out[-1600:]}",
+                           build_output=build_out[-1600:], console=console)
 
     _clear_surefire(worktree, cfg)
     tags = ",".join(f"cp{str(i).zfill(2)}" for i in range(1, checkpoint_k + 1))
     tmpl = cfg["build"]["test_cmd_template"]
     cmd = [part.replace("{tags}", tags) for part in tmpl]
     try:
-        subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
-                       timeout=cfg["build"].get("test_timeout", 3600))
+        tproc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
+                               timeout=cfg["build"].get("test_timeout", 3600))
+        console += f"\n$ {' '.join(cmd)}\n{(tproc.stdout or '') + (tproc.stderr or '')}"
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return TestOutcome(build_ok=True, error=f"test run failed to launch/timed out: {exc}")
+        return TestOutcome(build_ok=True, error=f"test run failed to launch/timed out: {exc}",
+                           console=console + f"\n$ {' '.join(cmd)}\n[launch/timeout] {exc}")
 
     results, detail = _parse_surefire(worktree, cfg)
     outcome = score_results(results, checkpoint_k)
     outcome.detail = detail
+    outcome.console = console
     return outcome
 
 

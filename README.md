@@ -42,34 +42,40 @@ to (a guard refuses any branch not under `evolve/`).
 
 Then, for each checkpoint `k` (1→N), in this exact order:
 
-0. **Inject** `CpKTests.java` (plus the shared test infra at k=1). The agent
-   now sees cp01..cpK tests and never future requirements.
+Each checkpoint produces **two commits** — an *agent* commit (exactly what the AI
+changed) followed by a *reset* commit (the harness normalisation + setup for the
+next checkpoint):
+
+0. **Test already present.** `CpKTests.java` was injected by the *previous*
+   checkpoint's reset commit (for k=1, `Cp01Tests.java` + shared infra is injected
+   here). The agent sees cp01..cpK tests, never future requirements.
 1. **Agent turn** — a **fresh** headless `claude -p` with only the checkpoint
    spec, no `--continue`/`--resume` (SlopCodeBench's no-carried-context
    condition). Cost, tokens, `duration_api_ms` etc. are captured. If the agent
    hits a **token/session limit**, the harness snapshots the pre-agent state,
    rolls back the interrupted attempt, **waits for the window to reopen** (parsed
    from the reset time, else `limits.poll_seconds`), and retries the *same*
-   checkpoint — so an overnight pause resumes exactly where it left off, with no
-   no-op gaps in the data.
-2. **Pin `CLAUDE.md`** — if the agent edited it, record `pinned_touched` and
-   restore the base version *before* committing, so the leveling doc can never
-   become cross-checkpoint memory.
-3. **Detect** acceptance-test edits (read-only) → record `acceptance_touched`.
-   The edits are **left in place** so the commit preserves them.
-4. **Commit** — one commit per checkpoint, `cpNN <id>`, capturing the agent's
-   code **and** any acceptance-test edits it made (kept for review).
-5. **Reset** the acceptance tests to the authored version — *after* the commit
-   (so the agent's edits stay in history) but *before* the gate, so a weakened
-   test can never produce a false pass. The reset stays **uncommitted** and folds
-   into the *next* checkpoint's commit, so the agent must also satisfy the real
-   (reset) test at step k+1.
-6. **Gate** (`correctness.run_tests`) — compile, run `-Dgroups=cp01..cpK` on the
+   checkpoint — so an overnight pause resumes exactly where it left off.
+2. **COMMIT 1 — `cpNN agent <id>`.** Parented on the pre-agent state, so its diff
+   is **exactly what the agent changed** (production code + any CLAUDE.md edit + any
+   acceptance-test tamper). `pinned_touched` / `acceptance_touched` are recorded
+   first; the edits are *left in place* so this commit preserves them. An empty
+   commit means a no-op checkpoint.
+3. **Normalise for the next run:** restore `CLAUDE.md` to base (it can never become
+   cross-checkpoint memory) and reset the acceptance tests to authored — both
+   *before* the gate, so a weakened test or edited guide can never produce a false
+   pass.
+4. **Gate** (`correctness.run_tests`) — compile, run `-Dgroups=cp01..cpK` on the
    authored tests, parse Surefire XML. Classify by class (`CpNNTests`) and method
    prefix (`core`/`error`/`functionality`); cp&lt;K counts as **Regression**.
    Produce Strict / ISO / Core, **Normalized Change** (SWE-CI), and regression count.
-7. **Structural metrics** (Java production source only, `metrics.compute_all`):
-   `lizard` gives per-function CC/SLOC. Erosion is reported **twice** — `erosion`
+5. **COMMIT 2 — `cpNN reset <id>`.** The harness normalisation (pinned docs +
+   acceptance reset) plus the **next checkpoint's injected test** — the content
+   that sets up the next run. Kept even if empty, so every checkpoint is a clean
+   two-commit boundary and cp(K+1)'s agent commit stays pure.
+6. **Structural metrics** (Java production source only, `metrics.compute_all`),
+   measured over the **agent commit** (`base_for_cp..agent`, i.e. the pure agent
+   delta): `lizard` gives per-function CC/SLOC. Erosion is reported **twice** — `erosion`
    over the whole app (SlopCodeBench-comparable) and `erosion_scoped` over a
    **dynamic subsystem**: the production-Java files changed since `base_ref`
    (cumulative `git diff`). Scoping stops one god method being diluted across ~280
@@ -83,9 +89,9 @@ Then, for each checkpoint `k` (1→N), in this exact order:
    committed source + git history** — so it is computed **only to narrate the
    progress log**, never persisted; `analyze` recomputes it. See *Capture vs.
    derive* below.
-8. **Cold-reader probe** at each phase boundary — a read-only `claude -p` asks a
+7. **Cold-reader probe** at each phase boundary — a read-only `claude -p` asks a
    fixed comprehension question; its raw text/cost/tokens go into the capture.
-9. Write this checkpoint's **raw capture** (`capture/cpNN.json` + the agent event
+8. Write this checkpoint's **raw capture** (`capture/cpNN.json` + the agent event
    stream + the pre-normalization agent diff). The derived correctness/structural
    numbers are printed to the log for at-a-glance progress but **not stored**.
 
@@ -97,19 +103,34 @@ is split in two:
 - **Capture** — the per-checkpoint information that is *gone forever* if not
   recorded at the instant the agent runs, staged outside the worktree and
   committed into `evolve-results/capture/`:
-  - `cpNN.json` — the agent envelope (cost/tokens incl. cache-creation, model,
-    session id, stop reason, turns, durations), the **raw `{test_id: passed}`
-    map** + per-test timing/failure text (the atom behind regressions / Normalized
-    Change / Zero-Regression Rate), build output on failure, pinned/acceptance
-    flags, and the checkpoint→commit SHAs;
+  - `cpNN.json` — the `request` (the spec **and** rendered prompt, so a checkpoint
+    is self-describing without the harness repo); the agent envelope (cost/tokens
+    incl. cache-creation, model, session id, stop reason, turns, durations) plus
+    **`attempts`** — every try including failed/rate-limited ones with their
+    cost/tokens and wait seconds, so true wall-clock and total (incl. wasted) cost
+    are recoverable; the **raw `{test_id: passed}` map** + per-test timing/failure
+    text (the atom behind regressions / Normalized Change / Zero-Regression Rate);
+    pinned/acceptance flags; and the checkpoint→commit SHAs;
   - `cpNN.agent.jsonl` — the **full agent event stream** (every tool call, file
     read, command) — the behaviour trace, otherwise discarded;
   - `cpNN.agent.diff` — the **true agent delta**, diffed *before* CLAUDE.md is
     pinned back and the acceptance tests are reset, so it preserves exactly what
     the agent did (including any reverted CLAUDE.md edit) — which the normalized
     checkpoint commit can't reconstruct;
-  - `provenance.json` — model, harness git SHA, and tool versions, so a later
-    re-derivation is reproducible.
+  - `cpNN.build.log` — the **full build + test console**, so a test that errors
+    before producing a Surefire report (e.g. context startup) still leaves a trace;
+  - `provenance.json` — model, harness git SHA, tool versions, the
+    **checkpoint→SHA map** (`""` for a no-op checkpoint that made no commit), and
+    the **agent environment** — the CLI invocation flags plus hashes of the
+    settings files and names of MCP servers / relevant env vars (hashes and names
+    only, never contents or values, so the experiment's *control* is recorded
+    without leaking secrets);
+  - `config/` — a **snapshot of the analysis-shaping config** (`config.yaml`,
+    `checkpoints.yaml`, `astgrep-rules/`), so the run is self-contained: `analyze`
+    derives with the config that *shaped this run*, not whatever is live later.
+
+Per-test `detail` also records **skipped** tests (excluded from scoring, so
+"skipped" is distinguishable from "never selected").
 - **Derive** — everything else (correctness scores, erosion, verbosity, blast
   radius, coupling, WMC, entry-handler, …) is a pure function of the commits +
   capture, so it is **never persisted**: `analyze` always rebuilds it from the
@@ -122,18 +143,22 @@ is split in two:
 
 A final `results:` commit on the evolve branch writes `evolve-results/` — **raw
 only**: `capture/` (the per-checkpoint records + agent streams + agent diffs
-above) and `provenance.json`. No derived table is stored. So each branch = N
-checkpoint commits + 1 raw-capture commit. Nothing is written to the harness repo.
+above), `provenance.json`, and `config/` (the config snapshot). No derived table
+is stored. So each branch = 2N checkpoint commits (agent + reset per checkpoint) +
+1 raw-capture commit. Nothing is written to the harness repo.
 
 ### Analysis (`analyze.py`, run separately)
 
 `analyze` **always recomputes** from the branches — the single source of truth is
-the checkpoint commits + `capture/`, and nothing derived is read back. For the
-selected run it materializes each checkpoint commit, runs `metrics.compute_all`
-over its source, re-scores correctness from the captured raw test map, and writes
-gitignored output to `results/<run_id>/analysis/`: degradation slope `m` with
-bootstrap CIs, phase means, EvoScore, Zero-Regression Rate, the pinned-doc touch
-rate, the acceptance-tamper rate, and PNG plots.
+the checkpoint commits + `capture/`, and nothing derived is read back. It
+enumerates checkpoints from `provenance.checkpoint_shas` (so no-op checkpoints are
+included) and derives with the run's own `config/` snapshot (so metrics match how
+that run was configured, not the live config). For the selected run it materializes
+each checkpoint tree, runs `metrics.compute_all` over its source, re-scores
+correctness from the captured raw test map, and writes gitignored output to
+`results/<run_id>/analysis/`: degradation slope `m` with bootstrap CIs, phase
+means, EvoScore, Zero-Regression Rate, the pinned-doc touch rate, the
+acceptance-tamper rate, and PNG plots.
 
 ```
 python -m harness.analyze --config config.yaml --run-id <id>
@@ -143,11 +168,12 @@ Add a metric to `metrics.compute_all`, re-run this, and it applies to every past
 run — structural metrics need only the commits; correctness/agent columns come
 from `capture/` (blank for any older run recorded without it).
 
-> Note on the reset (step 5): the commit at step 4 preserves the agent's
-> acceptance-test edits for review, but the gate at step 6 runs on the authored
-> (reset) tests — so a weakened test can never produce a false pass. Edits are
-> still flagged in `acceptance_touched`, and the reset also carries the real test
-> forward into step k+1.
+> Note on the two commits: COMMIT 1 (agent) preserves the agent's acceptance-test
+> edits and CLAUDE.md edits for review, but step 3 restores both to authored/base
+> *before* the gate — so a weakened test or edited guide can never produce a false
+> pass. The edits are flagged in `acceptance_touched` / `pinned_touched`, and the
+> reset (in COMMIT 2) carries the real test forward so cp(k+1)'s agent must satisfy
+> it too.
 
 ## Prerequisites
 
