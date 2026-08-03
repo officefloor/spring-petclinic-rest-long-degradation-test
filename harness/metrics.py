@@ -159,12 +159,21 @@ def _clone_lines_jscpd(root: str, src_dirs: list[str], jscpd_bin: str) -> Option
             data = json.load(fh)
     except (json.JSONDecodeError, OSError):
         return None
+    def _line(fobj, base):
+        # jscpd emits base ('start'/'end') as an int line number and baseLoc as
+        # {line, column, position}; prefer the Loc.line, fall back to the int.
+        loc = fobj.get(base + "Loc")
+        if isinstance(loc, dict) and loc.get("line") is not None:
+            return loc["line"]
+        v = fobj.get(base)
+        return v if isinstance(v, int) else None
+
     for dup in data.get("duplicates", []):
         for side in ("firstFile", "secondFile"):
             f = dup.get(side, {})
             name = f.get("name")
-            start = (f.get("start") or {}).get("line") or f.get("startLoc", {}).get("line")
-            end = (f.get("end") or {}).get("line") or f.get("endLoc", {}).get("line")
+            start = _line(f, "start")
+            end = _line(f, "end")
             if name and start and end:
                 rel = os.path.relpath(name, root)
                 for ln in range(int(start), int(end) + 1):
