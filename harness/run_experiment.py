@@ -53,7 +53,7 @@ CSV_FIELDS = [
     # correctness
     "build_ok", "total_selected", "strict_pass", "iso_pass", "core_pass",
     "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
-    "regr_p", "regr_t", "regressions", "normalized_change",
+    "regr_p", "regr_t", "regressions", "true_regressions", "checkpoint_type", "normalized_change",
     # structure (final numbers + the intermediates they are computed from)
     "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",  # whole app
     "erosion_scoped", "erosion_scoped_high_mass", "erosion_scoped_total_mass", "subsystem_nfns",  # touched-file subsystem
@@ -181,51 +181,77 @@ def wait_transient(attempt: int, ar, cfg: dict) -> float:
     return secs
 
 
-def inject_checkpoint_tests(wt: str, cfg: dict, k: int) -> list[str]:
-    """Copy ONLY checkpoint k's acceptance test (plus the shared infra at k=1)
-    into the worktree. This is what keeps the agent from seeing future
-    requirements: at checkpoint k the worktree contains cp01..cpk tests only.
-    """
+def _install_list(cp: dict) -> list[str]:
+    """The acceptance-test source files a checkpoint installs. Defaults to its own
+    `CpNNTests.java`. A checkpoint may instead declare `tests:` explicitly — used
+    by a MUTATIVE checkpoint to ship its new test PLUS updated copies of the prior
+    tests it changes (e.g. `["Cp08Tests.java", "cp08/Cp02Tests.java"]`). Each entry
+    is a path under acceptance.src_dir; it installs to the worktree by basename, so
+    `cp08/Cp02Tests.java` overwrites the running `Cp02Tests.java`."""
+    tests = cp.get("tests")
+    return list(tests) if tests else [f"Cp{cp['n']:02d}Tests.java"]
+
+
+def _authored_set(cfg: dict, checkpoints: list[dict], k: int) -> dict[str, str]:
+    """The CURRENT authored version of every acceptance test as of checkpoint k:
+    a map of {installed basename -> source path under src_dir}. Walking the
+    checkpoints in order, a later manifest entry for the same basename wins, so a
+    mutative checkpoint's replacement becomes the authoritative version from then
+    on. Shared infra (from acceptance.shared, installed at cp01) is included."""
+    acc = cfg.get("acceptance") or {}
+    authored: dict[str, str] = {os.path.basename(s): s for s in acc.get("shared", [])}
+    for cp in checkpoints:
+        if cp["n"] > k:
+            break
+        for entry in _install_list(cp):
+            authored[os.path.basename(entry)] = entry
+    return authored
+
+
+def inject_checkpoint_tests(wt: str, cfg: dict, cp: dict) -> list[str]:
+    """Install checkpoint `cp`'s test manifest into the worktree (its new test, and
+    for a mutative checkpoint the updated prior tests too). Shared infra is added at
+    cp01. Existing requirement tests are never removed, so the worktree holds
+    cp01..cpN tests, with mutated priors overwritten by their updated versions."""
     acc = cfg.get("acceptance")
     if not acc:
         return []
     dest = os.path.join(wt, acc["dest_subpath"])
     os.makedirs(dest, exist_ok=True)
-    wanted = list(acc.get("shared", [])) if k == 1 else []
-    wanted.append(f"Cp{k:02d}Tests.java")
+    entries = (list(acc.get("shared", [])) if cp["n"] == 1 else []) + _install_list(cp)
     copied = []
-    for fn in wanted:
-        src = os.path.join(acc["src_dir"], fn)
+    for entry in entries:
+        src = os.path.join(acc["src_dir"], entry)
         if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(dest, fn))
-            copied.append(fn)
+            shutil.copy2(src, os.path.join(dest, os.path.basename(entry)))
+            copied.append(os.path.basename(entry))
     return copied
 
 
-def restore_acceptance_tests(wt: str, cfg: dict, k: int, write: bool = True) -> list[str]:
-    """Compare the experimenter-owned acceptance tests (cp01..cpK + shared infra)
-    against the authored source. Returns the files the agent changed or deleted.
+def restore_acceptance_tests(wt: str, cfg: dict, checkpoints: list[dict], k: int,
+                             write: bool = True) -> list[str]:
+    """Reset the experimenter-owned tests to their CURRENT authored version (the
+    latest manifest wins, so a mutated prior resets to its updated form, not its
+    original). Returns the basenames the agent changed or deleted.
 
-    With write=False it only DETECTS (used before the commit, so the agent's edit
-    stays visible in that commit). With write=True it also rewrites the authored
-    version (used AFTER the commit + gate, so the reset test folds into the next
-    checkpoint's commit and the agent must satisfy it at the next step).
-    """
+    write=False only DETECTS (before the commit, so the agent's edit stays visible
+    in it). write=True rewrites the authored version (after the commit + gate, so a
+    weakened test cannot produce a false pass and the reset folds into the next
+    checkpoint's commit)."""
     acc = cfg.get("acceptance")
     if not acc:
         return []
     dest = os.path.join(wt, acc["dest_subpath"])
-    wanted = list(acc.get("shared", [])) + [f"Cp{i:02d}Tests.java" for i in range(1, k + 1)]
     tampered = []
-    for fn in wanted:
-        src = os.path.join(acc["src_dir"], fn)
+    for basename, entry in _authored_set(cfg, checkpoints, k).items():
+        src = os.path.join(acc["src_dir"], entry)
         if not os.path.isfile(src):
             continue
         authored = open(src, "rb").read()
-        dst = os.path.join(dest, fn)
+        dst = os.path.join(dest, basename)
         current = open(dst, "rb").read() if os.path.isfile(dst) else None
         if current != authored:
-            tampered.append(fn)
+            tampered.append(basename)
             if write:
                 os.makedirs(dest, exist_ok=True)
                 with open(dst, "wb") as fh:
@@ -312,7 +338,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # already in HEAD; only cp01 (+ shared infra) is injected here. The agent
         # sees cp01..cpK, never future requirements.
         if k == 1:
-            inject_checkpoint_tests(wt, cfg, 1)
+            inject_checkpoint_tests(wt, cfg, cp)
 
         # Snapshot the pre-agent state as a throwaway commit so a token-limit- or
         # network-interrupted attempt can be rolled back and retried cleanly. It is
@@ -387,7 +413,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # acceptance-test tamper). Normalisation happens in COMMIT 2 below.
         touched_pins = [pf for pf in cfg.get("isolation", {}).get("pin_files", [])
                         if git(["-C", wt, "status", "--porcelain", "--", pf], check=False)]
-        acceptance_touched = restore_acceptance_tests(wt, cfg, k, write=False)
+        acceptance_touched = restore_acceptance_tests(wt, cfg, checkpoints, k, write=False)
         row["pinned_touched"] = ",".join(touched_pins)
         row["acceptance_touched"] = ",".join(acceptance_touched)
 
@@ -410,7 +436,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                 fpath = os.path.join(wt, pf)
                 if os.path.exists(fpath):
                     os.remove(fpath)
-        restore_acceptance_tests(wt, cfg, k, write=True)
+        restore_acceptance_tests(wt, cfg, checkpoints, k, write=True)
 
         # 4. correctness gate (runs on the authored tests, pinned CLAUDE.md, and
         # the agent's production code)
@@ -422,7 +448,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             build_log_file = f"cp{k:02d}.build.log"
             with open(os.path.join(cap_dir, build_log_file), "w") as fh:
                 fh.write(outcome.console[:500_000])
-        row.update(correctness.outcome_row(outcome, prior_passing))
+        # A mutative checkpoint's `mutates` lists the prior rules it deliberately
+        # changes; their tests are expected to change, so regressions there are
+        # intended. true_regressions counts only breakage on the un-mutated surface.
+        mutated = [int(m) for m in (cp.get("mutates") or [])]
+        row["checkpoint_type"] = cp.get("type", "additive")
+        row.update(correctness.outcome_row(outcome, prior_passing, mutated))
         prior_passing = outcome.passing
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
@@ -432,7 +463,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # that sets up the next run. Kept even if empty, so every checkpoint is a
         # clean two-commit boundary and cp(K+1)'s agent commit stays pure.
         if k < n:
-            inject_checkpoint_tests(wt, cfg, k + 1)
+            inject_checkpoint_tests(wt, cfg, checkpoints[k])  # 0-indexed: next checkpoint
         git(["-C", wt, "add", "-A"])
         subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
                         "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
@@ -475,7 +506,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
              "prev": base_for_cp, "base": base_commit},
             ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
-            attempts=attempt_log, spec=cp["spec"], prompt=prompt)
+            attempts=attempt_log, spec=cp["spec"], prompt=prompt,
+            ckpt_type=cp.get("type", "additive"), mutates=mutated)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
         captures.append(rec)
         strict_count += 1 if row["strict_pass"] is True else 0

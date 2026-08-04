@@ -1,19 +1,22 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp13: reject creating an owner once 20 have already been created today. */
+/** cp13 namesake-count: Return 'namesakeCount' = the number of existing owners (before this create) sharing the sa... */
 @Tag("cp13")
 class Cp13Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsOverDailyCap() throws Exception {
-		for (int i = 0; i < 20; i++) {
-			createOwnerOk(ownerNode()); // distinct cities, so the per-city cap is not hit
-		}
-		createOwner(ownerNode()).andExpect(status().isBadRequest()); // 21st today
+	void coreCountsNamesakes() throws Exception {
+		ObjectNode a = ownerNode();
+		a.put("firstName", "Ann"); a.put("lastName", "namesake");
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("firstName", "Ann"); b.put("lastName", "namesake");
+		int id = createOwnerOk(b);
+		getOwner(id).andExpect(jsonPath("$.namesakeCount").value(1));
 	}
 }

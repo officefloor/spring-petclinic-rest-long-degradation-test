@@ -267,7 +267,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             if results is not None:
                 outcome = correctness.score_results(results, k)
                 outcome.build_ok = tests.get("build_ok", True)
-                row.update(correctness.outcome_row(outcome, prior_passing))
+                row["checkpoint_type"] = cap.get("type", "additive")
+                row.update(correctness.outcome_row(outcome, prior_passing, cap.get("mutates") or []))
                 prior_passing = outcome.passing
 
             # Ephemera straight from capture (irreproducible; never recomputed).
@@ -387,17 +388,26 @@ def evoscore(rows: list[dict], gamma: float, signal: str = "strict_pass") -> flo
     return float(np.mean(scores)) if scores else math.nan
 
 
-def zero_regression_rate(rows: list[dict]) -> float:
+def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
     per_chain = defaultdict(int)
     seen = set()
     for r in rows:
         c = int(r["chain"])
         seen.add(c)
-        per_chain[c] += int(_f(r["regressions"]) or 0)
+        per_chain[c] += int(_f(r.get(field)) or 0)
     if not seen:
         return math.nan
     clean = sum(1 for c in seen if per_chain[c] == 0)
     return clean / len(seen)
+
+
+def regression_summary(rows: list[dict]) -> dict:
+    """Totals for the intended-vs-true regression split, plus the count of mutative
+    checkpoints (so a reader can see how much cross-cutting pressure the run had)."""
+    total = sum(int(_f(r.get("regressions")) or 0) for r in rows)
+    true = sum(int(_f(r.get("true_regressions")) or 0) for r in rows)
+    n_mut = sum(1 for r in rows if str(r.get("checkpoint_type", "")).strip() == "mutative")
+    return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut}
 
 
 METRICS_TO_PLOT = [
@@ -554,6 +564,20 @@ def main() -> int:
         evs = " | ".join(f"{evoscore(grp, g):.3f}" for g in gammas)
         zrr = zero_regression_rate(grp)
         lines.append(f"| {gk[0]}/{gk[1]} | {evs} | {zrr:.3f} |")
+    lines.append("")
+
+    # Regression split: a mutative checkpoint's changes to prior rules are INTENDED,
+    # so its regressions there do not count as faults. true_regressions counts only
+    # breakage on the surface the checkpoint was not asked to touch. The true
+    # Zero-Regression Rate is the safety signal a purely additive run cannot give.
+    lines.append("## Regressions: intended vs. true (un-mutated surface)\n")
+    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    for gk, grp in sorted(groups.items()):
+        rs = regression_summary(grp)
+        tzrr = zero_regression_rate(grp, "true_regressions")
+        lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
+                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} |")
     lines.append("")
 
     # Pinned-doc (CLAUDE.md) touch rate: fraction of checkpoints where the agent

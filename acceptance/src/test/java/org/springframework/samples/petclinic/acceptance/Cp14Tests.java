@@ -1,26 +1,16 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-import tools.jackson.databind.node.ObjectNode;
-
-/** cp14: reject creating an owner once their city already contains 8 owners. */
+/** cp14 membership-number: Assign 'membershipNumber' formatted '<customerCode>-M<YY>' where YY is the last two digits... */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 
 	@Test
-	void coreRejectsOverCityCap() throws Exception {
-		String city = "Capville" + seq(); // fresh city, no existing owners
-		for (int i = 0; i < 8; i++) {
-			ObjectNode o = ownerNode();
-			o.put("city", city);
-			createOwnerOk(o);
-		}
-		ObjectNode ninth = ownerNode();
-		ninth.put("city", city);
-		createOwner(ninth).andExpect(status().isBadRequest());
+	void coreAssignsMembershipNumber() throws Exception {
+		int id = createOwnerOk(ownerNode());
+		getOwner(id).andExpect(jsonPath("$.membershipNumber").exists()); // TODO: <customerCode>-M<YY>
 	}
 }

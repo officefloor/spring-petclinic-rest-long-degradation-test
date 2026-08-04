@@ -1,36 +1,35 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp12: city title-cased on create; reused spelling if the city already exists. */
+/** cp12 address-normalize: Introduce address normalization applied whenever an owner is created: trim and collapse wh... */
 @Tag("cp12")
 class Cp12Tests extends AcceptanceBase {
 
 	@Test
-	void coreTitleCasesCity() throws Exception {
-		int s = seq();
+	void coreNormalizesWhitespaceAndCase() throws Exception {
 		ObjectNode o = ownerNode();
-		o.put("city", "riverdale" + s); // lowercase input
+		o.put("address", "  12  main  st ");
 		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.city").value("Riverdale" + s));
+		getOwner(id).andExpect(jsonPath("$.address").value("12 MAIN STREET"));
 	}
 
 	@Test
-	void functionalityReusesExistingCitySpelling() throws Exception {
-		int s = seq();
-		String city = "greenvale" + s;
-		ObjectNode a = ownerNode();
-		a.put("city", city);
-		String stored = fetchOwner(createOwnerOk(a)).get("city").asText();
+	void functionalityExpandsAbbreviations() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("address", "7 elm ave");
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.address").value("7 ELM AVENUE"));
+	}
 
-		ObjectNode b = ownerNode();
-		b.put("city", city.toUpperCase()); // same city, different case -> reuse A's spelling
-		assertEquals(stored, fetchOwner(createOwnerOk(b)).get("city").asText());
+	@Test
+	void errorRejectsBlankAfterNormalize() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("address", "   ");
+		createOwner(o).andExpect(status().isBadRequest());
 	}
 }

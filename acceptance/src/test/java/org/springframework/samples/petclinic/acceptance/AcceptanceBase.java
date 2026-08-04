@@ -108,6 +108,23 @@ public abstract class AcceptanceBase {
 		return o;
 	}
 
+	/** Owner payload plus a postcode. The checkpoints from 'postcode' onward require it.
+	 *  TODO: once the city-to-postcode table exists, use a postcode valid for the city. */
+	protected ObjectNode withPostcode(ObjectNode o) {
+		o.put("postcode", "2000");
+		return o;
+	}
+
+	/** Owner with a STRUCTURED address (addressLine1 / city / postcode) for the later
+	 *  checkpoints that replace the flat 'address' input with structured fields. */
+	protected ObjectNode structuredOwner() {
+		ObjectNode o = ownerNode();
+		o.remove("address");
+		o.put("addressLine1", seq() + " Test Street");
+		o.put("postcode", "2000");
+		return o;
+	}
+
 	// --- requests -----------------------------------------------------------
 
 	protected String json(JsonNode node) {

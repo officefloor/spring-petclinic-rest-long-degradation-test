@@ -1,38 +1,27 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11: telephone stored digits-only, and normalized before the uniqueness check. */
+/** cp11 shares-household: The request may set boolean 'sharesHousehold'. When true, allow an owner at an address alr... */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 
-	private String formatted(String digits) {
-		return "(" + digits.substring(0, 3) + ") " + digits.substring(3, 6) + "-" + digits.substring(6);
-	}
-
 	@Test
-	void coreStoresDigitsOnly() throws Exception {
-		String digits = uniqueTelephone();
-		ObjectNode o = ownerNode();
-		o.put("telephone", formatted(digits));
-		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.telephone").value(digits));
-	}
-
-	@Test
-	void functionalityNormalisedDuplicateRejected() throws Exception {
-		String digits = uniqueTelephone();
+	void coreJoinersShareHouseholdId() throws Exception {
 		ObjectNode a = ownerNode();
-		a.put("telephone", digits);
 		createOwnerOk(a);
-		ObjectNode b = ownerNode();
-		b.put("telephone", formatted(digits)); // same digits, punctuation added
-		createOwner(b).andExpect(status().isConflict());
+		ObjectNode b = ownerNode(); b.put("lastName", a.get("lastName").asText());
+		b.put("address", a.get("address").asText()); b.put("sharesHousehold", true);
+		int idb = createOwnerOk(b);
+		ObjectNode c = ownerNode(); c.put("lastName", a.get("lastName").asText());
+		c.put("address", a.get("address").asText()); c.put("sharesHousehold", true);
+		int idc = createOwnerOk(c);
+		String hb = fetchOwner(idb).get("householdId").asText();
+		assertEquals(hb, fetchOwner(idc).get("householdId").asText());
+		assertTrue(!hb.isBlank());
 	}
 }

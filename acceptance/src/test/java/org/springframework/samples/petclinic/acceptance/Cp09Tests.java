@@ -1,20 +1,25 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp09: sequential membershipNumber = current owner count + 1. */
+/** cp09 customer-code: Assign 'customerCode' formatted '<LAST3>-<NNNN>' where LAST3 is the upper-cased first thre... */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 
 	@Test
-	void coreMembershipNumberIsSequential() throws Exception {
-		// Absolute value depends on seed count, so assert the invariant: two
-		// consecutive creations differ by exactly one.
-		int a = fetchOwner(createOwnerOk(ownerNode())).get("membershipNumber").asInt();
-		int b = fetchOwner(createOwnerOk(ownerNode())).get("membershipNumber").asInt();
-		assertEquals(a + 1, b, "membershipNumber should increment by one per owner");
+	void coreFormatAndGlobalSequence() throws Exception {
+		ObjectNode a = ownerNode(); a.put("lastName", "smithers");
+		int ida = createOwnerOk(a);
+		ObjectNode b = ownerNode(); b.put("lastName", "jones");
+		int idb = createOwnerOk(b);
+		String ca = fetchOwner(ida).get("customerCode").asText();
+		String cb = fetchOwner(idb).get("customerCode").asText();
+		assertTrue(ca.startsWith("SMI-"), ca);
+		assertTrue(cb.startsWith("JON-"), cb);
+		assertEquals(Integer.parseInt(ca.substring(4)) + 1, Integer.parseInt(cb.substring(4)));
 	}
 }

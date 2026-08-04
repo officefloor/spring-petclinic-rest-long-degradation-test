@@ -146,7 +146,8 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
                       acceptance_touched: list[str], stream_file: str | None,
                       diff_file: str | None, build_log_file: str | None = None,
                       attempts: list[dict] | None = None, spec: str | None = None,
-                      prompt: str | None = None) -> dict:
+                      prompt: str | None = None, ckpt_type: str = "additive",
+                      mutates: list | None = None) -> dict:
     """Assemble the raw, irreproducible record for one checkpoint. `outcome` is a
     correctness.TestOutcome (its RAW results map + detail are what matter here —
     every set-based correctness metric is re-derivable from them).
@@ -161,6 +162,8 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
         "checkpoint": k,
         "checkpoint_id": cp_id,
         "phase": phase,
+        "type": ckpt_type,          # additive | mutative
+        "mutates": mutates or [],   # prior checkpoint numbers a mutation changes
         "request": {"spec": spec, "prompt": prompt},
         "commit_sha": shas.get("commit"),   # the AGENT commit ("" for a no-op)
         "reset_sha": shas.get("reset"),      # the RESET commit (harness normalisation)

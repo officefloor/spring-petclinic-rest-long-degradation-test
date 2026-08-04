@@ -1,32 +1,39 @@
 package org.springframework.samples.petclinic.acceptance;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp10: customerCode = "<UPPERCASE_CITY>-<NNNN>", NNNN = per-city sequence. */
+/** cp10 household-duplicate: Reject creating an owner when another owner has the same lastName and the same address (co... */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 
 	@Test
-	void coreCustomerCodePerCitySequence() throws Exception {
-		String city = "Zedton" + seq();      // a city with no existing owners
-		String prefix = city.toUpperCase() + "-";
-
+	void coreRejectsSameLastNameAndAddress() throws Exception {
 		ObjectNode a = ownerNode();
-		a.put("city", city);
-		String codeA = fetchOwner(createOwnerOk(a)).get("customerCode").asText();
-
+		createOwnerOk(a);
 		ObjectNode b = ownerNode();
-		b.put("city", city);
-		String codeB = fetchOwner(createOwnerOk(b)).get("customerCode").asText();
+		b.put("lastName", a.get("lastName").asText()); b.put("address", a.get("address").asText());
+		createOwner(b).andExpect(status().isConflict());
+	}
 
-		assertTrue(codeA.startsWith(prefix), "code should start with the uppercased city: " + codeA);
-		assertEquals(prefix + "0001", codeA);
-		assertEquals(prefix + "0002", codeB);
+	@Test
+	void functionalityAllowsDifferentAddress() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", a.get("lastName").asText());
+		createOwner(b).andExpect(status().is2xxSuccessful());
+	}
+
+	@Test
+	void functionalityAllowsWithSharesHousehold() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", a.get("lastName").asText()); b.put("address", a.get("address").asText());
+		b.put("sharesHousehold", true);
+		createOwner(b).andExpect(status().is2xxSuccessful());
 	}
 }
