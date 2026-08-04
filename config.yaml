@@ -104,7 +104,7 @@ tools:
 
 probe:
   enabled: true
-  at_checkpoints: [1, 5, 10, 15, 20]   # run the cold-reader probe at these checkpoints
+  at_checkpoints: [1, 10, 20, 30, 40, 50, 60]   # cold-reader probe every 10 checkpoints
   question: |
     Read the code as it currently stands and answer without changing anything.
     List, in order, every validation and side-effect that is applied when
@@ -112,20 +112,55 @@ probe:
   # Ground-truth items for a crude recall score (case-insensitive substring match;
   # grade properly offline too). Single distinctive tokens for the create-owner
   # rules, so casing/spacing (e.g. "displayName" vs "display name") doesn't matter.
+  # Spans the full cp1-60 stream: at an early probe only the rules implemented so
+  # far can match, so the denominator is shared and the score rises over the run.
+  # The absolute value is rough; the Spring-vs-OfficeFloor gap at each probe is the
+  # signal (same denominator, same checkpoint, both arms).
   expected:
-    - "duplicate"       # exact / household / telephone / email uniqueness (cp1-5)
-    - "telephone"       # normalisation + uniqueness (cp3, cp11)
-    - "email"           # cp4
-    - "display"         # displayName (cp6)
-    - "initials"        # cp7
-    - "registration"    # registrationDate default (cp8)
-    - "membership"      # membershipNumber + tier (cp9, cp15)
-    - "customer"        # customerCode (cp10)
-    - "city"            # canonical casing + city capacity (cp12, cp14)
-    - "namesake"        # namesakeCount (cp16)
-    - "household"       # sharesHousehold (cp17)
-    - "local"           # locality (cp18)
-    - "audit"           # audit trail + bulk-signup warning (cp19, cp20)
+    # cp1-20 rule web
+    - "duplicate"       # exact / household / telephone / email uniqueness
+    - "telephone"       # normalisation + uniqueness + E.164
+    - "email"           # email presence / format / uniqueness
+    - "display"         # displayName
+    - "initials"        # initials
+    - "registration"    # registrationDate default + business day
+    - "membership"      # membershipNumber
+    - "customer"        # customerCode
+    - "city"            # canonical casing + per-city sequence + capacity
+    - "namesake"        # namesakeCount
+    - "household"       # sharesHousehold / householdId
+    - "local"           # locality
+    - "audit"           # audit trail
+    # cp21-40 identity, limits, membership maths
+    - "bulk"            # bulkSignupWarning
+    - "gold"            # GOLD tier before numeric levels
+    - "level"           # membershipLevel (numeric, then points)
+    - "country"         # country-specific telephone length
+    - "preference"      # contactPreference
+    - "identity"        # identityKey
+    - "postcode"        # postcode validation
+    - "luhn"            # customerCode check digit
+    - "hash"            # SHA-256 region-and-hash identity
+    - "future"          # reject future registrationDate
+    - "age"             # ageBand
+    - "possible"        # possibleDuplicate soft-match
+    - "blocklist"       # disposable email-domain blocklist
+    - "tenure"          # tenure gate on top level
+    - "points"          # membershipPoints
+    # cp41-60 collisions, structure, fiscal, v2
+    - "collision"       # customerCode / memberId de-duplication
+    - "timezone"        # region-to-timezone
+    - "title"           # salutation from title
+    - "deleted"         # exclude deleted owners from checks
+    - "holiday"         # public-holiday business-day roll-forward
+    - "fiscal"          # fiscal-year basis
+    - "idempotency"     # Idempotency-Key replay
+    - "soundex"         # identityKey v2 soundex(lastName)
+    - "segment"         # ownerSegment
+    - "capacity"        # capacityWarning approaching city limit
+    - "risk"            # riskFlag
+    - "problem"         # RFC7807 problem+json rejections
+    - "version"         # apiVersion / schemaVersion v2 finale
 
 # Kept identical at every checkpoint. CLAUDE.md is the fixed, human-authored
 # project guide (present in BOTH arms so the playing field is level: it offsets
