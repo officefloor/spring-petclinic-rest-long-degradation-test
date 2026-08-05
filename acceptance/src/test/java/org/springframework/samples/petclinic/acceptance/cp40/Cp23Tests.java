@@ -2,17 +2,30 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold: UPDATED by cp40 (membership-points) — Replace the level rules with a points system: start at 0; add 2 when an email is present; add 1 when namesakeCount is 0; add 2 for a household of 3 or more; add 3 for tenure over 365 days */
+/** cp23 tier-gold, UPDATED by cp40: a large household now adds points (not a GOLD tier). The third
+ *  member of a household (same lastName+postcode) with an email scores 5 points
+ *  (2 email + 1 namesake 0 + 2 household-of-3), mapping to level 3. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Replace the level rules with a points system: start at 0; add 2 when an email is present; add 1 when namesakeCount is 0; add 2 for a household of 3 or more; add 3 for tenure over 365 days.
-		// TODO: assert the UPDATED behaviour of "tier-gold" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreHouseholdAddsPoints() throws Exception {
+		String lastName = uniqueLastName();
+		int last = 0;
+		for (int i = 0; i < 3; i++) {
+			ObjectNode m = withPostcode(ownerNode());
+			m.put("firstName", "Mem" + i);
+			m.put("lastName", lastName);
+			m.put("sharesHousehold", true);
+			if (i == 2) {
+				m.put("email", uniqueEmail());
+			}
+			last = createOwnerOk(m);
+		}
+		getOwner(last).andExpect(jsonPath("$.membershipPoints").value(5))
+				.andExpect(jsonPath("$.membershipLevel").value(3));
 	}
 }

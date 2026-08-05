@@ -2,17 +2,27 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp07 registration-date: UPDATED by cp20 (business-day) — The default registration date must now fall on a business day: when the server date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate' */
+/** cp07 registration-date, UPDATED by cp20: the effective registration date rolls off weekends to the
+ *  next Monday (supplied dates too). 2026-01-03 is a Saturday -> 2026-01-05 (Mon); a weekday is kept. */
 @Tag("cp07")
 class Cp07Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. The default registration date must now fall on a business day: when the server date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate'.
-		// TODO: assert the UPDATED behaviour of "registration-date" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreWeekendRollsToMonday() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("registrationDate", "2026-01-03"); // Saturday
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.registrationDate").value("2026-01-05"));
+	}
+
+	@Test
+	void functionalityWeekdayKept() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("registrationDate", "2026-01-06"); // Tuesday
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.registrationDate").value("2026-01-06"));
 	}
 }

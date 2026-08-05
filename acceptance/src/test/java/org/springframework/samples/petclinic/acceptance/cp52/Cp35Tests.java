@@ -2,17 +2,25 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp35 soft-match: UPDATED by cp52 (identity-key-v2) — Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first */
+/** cp35 soft-match, UPDATED by cp52: the soft match now triggers on soundex(lastName) + postcode with
+ *  a differing identityKey. Two owners with the same lastName (same soundex) and postcode, different
+ *  telephone, flag the second as a possible duplicate of the first. */
 @Tag("cp35")
 class Cp35Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first.
-		// TODO: assert the UPDATED behaviour of "soft-match" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreSoftMatchOnSoundexAndPostcode() throws Exception {
+		String lastName = uniqueLastName();
+		ObjectNode a = withPostcode(ownerNode());
+		a.put("lastName", lastName);
+		int ida = createOwnerOk(a);
+		ObjectNode b = withPostcode(ownerNode());
+		b.put("lastName", lastName);
+		int idb = createOwnerOk(b);
+		getOwner(idb).andExpect(jsonPath("$.possibleDuplicate").value(true))
+				.andExpect(jsonPath("$.possibleDuplicateOf").value(ida));
 	}
 }

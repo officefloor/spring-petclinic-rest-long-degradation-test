@@ -5,18 +5,17 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp21 audit-create, UPDATED by cp32: the audit line carries the new region-and-hash customerCode,
- *  alongside the owner id and registrationDate. */
+/** cp21 audit-create, UPDATED by cp56: customerCode is gone from the audit line; it still carries the
+ *  owner id and registrationDate (stable identifiers). */
 @Tag("cp21")
 class Cp21Tests extends AcceptanceBase {
 
 	@Test
-	void coreAuditLineHasRegionHashCode() throws Exception {
+	void coreAuditLineHasIdAndDate() throws Exception {
 		try (AuditLogCapture audit = new AuditLogCapture()) {
 			int id = createOwnerOk(knownOwner("Sydney"));
 			JsonNode r = fetchOwner(id);
-			assertTrue(audit.anyContains(String.valueOf(id),
-					r.get("customerCode").asText(), r.get("registrationDate").asText()));
+			assertTrue(audit.anyContains(String.valueOf(id), r.get("registrationDate").asText()));
 		}
 	}
 }

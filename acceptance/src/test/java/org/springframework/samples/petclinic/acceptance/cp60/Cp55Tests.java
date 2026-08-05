@@ -2,17 +2,19 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp55 owner-segment: UPDATED by cp60 (identity-v2) — Release version 2 of the owner identity */
+/** cp55 owner-segment, UPDATED by cp60: the segment is recomputed from the v2 identity but the rule
+ *  (TIER by level, AREA by locality) is unchanged. A Sydney owner with an email is STANDARD_METRO. */
 @Tag("cp55")
 class Cp55Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Release version 2 of the owner identity.
-		// TODO: assert the UPDATED behaviour of "owner-segment" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreSegmentRecomputedSameRule() throws Exception {
+		ObjectNode o = knownOwner("Sydney");
+		o.put("email", uniqueEmail());
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.ownerSegment").value("STANDARD_METRO"));
 	}
 }

@@ -373,7 +373,7 @@ def _run_agent_turn(cfg: dict, wt: str, model: str, prompt: str, cap_dir: str,
 
 
 def _log_checkpoint(row: dict, where: str, wt: str, base_for_cp: str,
-                    agent_sha: str, accept_dir: str | None) -> None:
+                    agent_sha: str, accept_dir: str | None, outcome=None) -> None:
     """Print this checkpoint's key metrics and the production files the agent changed
     (COMMIT 1's diff, minus the injected acceptance tests). Log-only narration; every
     number is recomputed by analyze from the commits + capture."""
@@ -384,6 +384,24 @@ def _log_checkpoint(row: dict, where: str, wt: str, base_for_cp: str,
     print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
           f"regressions={row['regressions']} norm_change={row['normalized_change']} "
           f"build_ok={row['build_ok']} selected={row['total_selected']}")
+    # Which acceptance tests failed, so a red checkpoint is legible at a glance. A
+    # failure in this checkpoint's own CpNN class means the agent didn't fully solve
+    # it; a failure in a PRIOR CpMM class is a regression (intended only if this is a
+    # mutative checkpoint that lists MM in `mutates`).
+    if outcome is not None and getattr(outcome, "results", None):
+        failed = [tid for tid, ok in outcome.results.items() if not ok]
+        total = len(outcome.results)
+        if failed:
+            fail_msg = {d.get("test_id"): d.get("failure") for d in getattr(outcome, "detail", [])}
+            own = f"Cp{k:02d}Tests"
+            print(f"    FAILED : {len(failed)} of {total} test(s):")
+            for tid in sorted(failed):
+                short = tid.split(".")[-1]           # ClassName#method
+                tag = "current" if short.startswith(own) else "regression"
+                msg = (fail_msg.get(tid) or "").strip().replace("\n", " ")
+                print(f"      - [{tag}] {short}" + (f"  {msg[:140]}" if msg else ""))
+        else:
+            print(f"    PASSED : all {total} cp01..cp{k:02d} test(s) green")
     print(f"    struct : erosion={row['erosion']} scoped={row['erosion_scoped']} "
           f"hotspot=CC{row.get('hotspot_cc')}/{row.get('hotspot_nloc')}nloc@{row.get('hotspot_fn')} "
           f"java_loc={row['java_loc']}")
@@ -458,6 +476,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                     "checkpoint": k, "checkpoint_id": cp["id"], "phase": phase})
         where = f"run {run_id} | {arm}/{strategy} chain{chain}"
         print(f"\n--- {where} | cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
+        if cp.get("type") == "mutative":
+            print(f"    type   : MUTATIVE (revises prior rules {cp.get('mutates', [])})", flush=True)
+        print(f"    spec   : {cp['spec']}", flush=True)
 
         # 0. Ensure the agent-view is set: shared infra + ONLY this checkpoint's own
         # test. For k>=2 the PREVIOUS checkpoint's reset commit (COMMIT 2) already set
@@ -614,9 +635,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         strict_count += 1 if row["strict_pass"] is True else 0
         regr_count += int(row["regressions"] or 0)
 
-        # Key metrics + changed files for this checkpoint, so progress is visible.
+        # Key metrics + failing tests + changed files for this checkpoint, so progress is visible.
         _log_checkpoint(row, where, wt, base_for_cp, agent_sha,
-                        cfg.get("acceptance", {}).get("dest_subpath"))
+                        cfg.get("acceptance", {}).get("dest_subpath"), outcome)
 
     # Final commit on the evolve branch: persist ONLY the raw capture + provenance
     # (nothing derived, nothing goes to the harness repo). The commit message

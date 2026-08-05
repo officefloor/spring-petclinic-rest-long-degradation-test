@@ -2,15 +2,17 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.JsonNode;
 
-/** cp31 check-digit: Return 'checkDigit' = a single Luhn check digit computed over the digits of the customerCo... */
+/** cp31 check-digit: 'checkDigit' is the Luhn check digit over the digits of the customerCode. The
+ *  test recomputes Luhn from the returned customerCode and asserts the exact digit. */
 @Tag("cp31")
 class Cp31Tests extends AcceptanceBase {
 
 	@Test
-	void coreReturnsCheckDigit() throws Exception {
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(jsonPath("$.checkDigit").exists()); // Luhn over customerCode digits
+	void coreCheckDigitIsLuhnOfCustomerCode() throws Exception {
+		JsonNode r = fetchOwner(createOwnerOk(ownerNode()));
+		assertEquals(luhn(r.get("customerCode").asText()), r.get("checkDigit").asInt());
 	}
 }

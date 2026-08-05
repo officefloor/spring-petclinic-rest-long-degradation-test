@@ -2,17 +2,23 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp14 membership-number: UPDATED by cp20 (business-day) — The default registration date must now fall on a business day: when the server date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate' */
+/** cp14 membership-number, UPDATED by cp20: the YY segment uses the business-day-adjusted
+ *  registration date. Supplying a Saturday whose Monday roll stays in the same year, the YY still
+ *  matches the returned (adjusted) registrationDate's year. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. The default registration date must now fall on a business day: when the server date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate'.
-		// TODO: assert the UPDATED behaviour of "membership-number" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreYearSegmentFromAdjustedDate() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("registrationDate", "2026-01-03"); // Saturday -> Monday 2026-01-05
+		JsonNode r = fetchOwner(createOwnerOk(o));
+		String yy = r.get("registrationDate").asText().substring(2, 4);
+		assertTrue(r.get("membershipNumber").asText().endsWith("-M" + yy),
+				r.get("membershipNumber").asText());
 	}
 }

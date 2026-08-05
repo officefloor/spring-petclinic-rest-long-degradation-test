@@ -2,17 +2,18 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp32 global-id: UPDATED by cp60 (identity-v2) — Release version 2 of the owner identity */
+/** cp32 global-id, UPDATED by cp60: the memberId (successor to customerCode) is now under the nested
+ *  'identity' object; the top-level memberId and customerCode are gone. */
 @Tag("cp32")
 class Cp32Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Release version 2 of the owner identity.
-		// TODO: assert the UPDATED behaviour of "global-id" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreMemberIdUnderIdentity() throws Exception {
+		int id = createOwnerOk(structuredOwner());
+		getOwner(id).andExpect(jsonPath("$.identity.memberId").isNotEmpty())
+				.andExpect(jsonPath("$.memberId").doesNotExist())
+				.andExpect(jsonPath("$.customerCode").doesNotExist());
 	}
 }

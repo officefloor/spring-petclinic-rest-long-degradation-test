@@ -2,17 +2,16 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp17 locality: UPDATED by cp32 (global-id) — Redesign owner identity */
+/** cp17 locality, UPDATED by cp32: the region derivation shared with the identity is unchanged for a
+ *  known city/postcode. Sydney (postcode 2000) still resolves locality "NSW". */
 @Tag("cp17")
 class Cp17Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Redesign owner identity.
-		// TODO: assert the UPDATED behaviour of "locality" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreLocalityStillRegion() throws Exception {
+		int id = createOwnerOk(knownOwner("Sydney"));
+		getOwner(id).andExpect(jsonPath("$.locality").value("NSW"));
 	}
 }

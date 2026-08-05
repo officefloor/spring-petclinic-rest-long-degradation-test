@@ -5,13 +5,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp36 household-hash, UPDATED by cp44: the household hash reads the structured postcode. Two
- *  structured owners with the same lastName + postcode share a householdId. */
-@Tag("cp36")
-class Cp36Tests extends AcceptanceBase {
+/** cp11 shares-household, UPDATED by cp60: householdId now lives under the nested 'identity' object.
+ *  Two owners with the same lastName + postcode still share it. */
+@Tag("cp11")
+class Cp11Tests extends AcceptanceBase {
 
 	@Test
-	void coreHouseholdIdFromStructuredPostcode() throws Exception {
+	void coreSharedHouseholdIdUnderIdentity() throws Exception {
 		String lastName = uniqueLastName();
 		ObjectNode a = structuredOwner();
 		a.put("lastName", lastName);
@@ -20,7 +20,8 @@ class Cp36Tests extends AcceptanceBase {
 		b.put("lastName", lastName);
 		b.put("postcode", "2000");
 		b.put("sharesHousehold", true);
-		assertEquals(fetchOwner(createOwnerOk(a)).get("householdId").asText(),
-				fetchOwner(createOwnerOk(b)).get("householdId").asText());
+		String ha = fetchOwner(createOwnerOk(a)).get("identity").get("householdId").asText();
+		String hb = fetchOwner(createOwnerOk(b)).get("identity").get("householdId").asText();
+		assertEquals(ha, hb);
 	}
 }

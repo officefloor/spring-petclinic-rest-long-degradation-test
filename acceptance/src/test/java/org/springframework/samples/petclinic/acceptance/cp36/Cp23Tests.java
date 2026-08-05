@@ -2,17 +2,28 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold: UPDATED by cp36 (household-hash) — The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically */
+/** cp23 tier-gold, UPDATED by cp36: household membership now keys off the computed householdId
+ *  (lastName + postcode). Three members share it; the third (unique firstName, no email) is numeric
+ *  membershipLevel 2 with no tier. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically.
-		// TODO: assert the UPDATED behaviour of "tier-gold" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreComputedHouseholdMemberHasLevel() throws Exception {
+		String lastName = uniqueLastName();
+		int last = 0;
+		for (int i = 0; i < 3; i++) {
+			ObjectNode m = ownerNode();
+			m.put("firstName", "Mem" + i);
+			m.put("lastName", lastName);
+			m.put("postcode", "2000");
+			m.put("sharesHousehold", true);
+			last = createOwnerOk(m);
+		}
+		getOwner(last).andExpect(jsonPath("$.membershipTier").doesNotExist())
+				.andExpect(jsonPath("$.membershipLevel").value(2));
 	}
 }

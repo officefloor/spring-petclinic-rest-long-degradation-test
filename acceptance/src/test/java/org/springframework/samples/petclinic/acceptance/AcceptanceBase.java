@@ -4,7 +4,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -82,9 +87,12 @@ public abstract class AcceptanceBase {
 		return "Town" + seq();
 	}
 
-	/** A unique 10-digit telephone starting with 2 (seed uses 6xxxxxxxxx). */
+	/** A unique 10-digit AU mobile ('04XXXXXXXX'). Chosen so the ONE payload stays valid across the
+	 *  whole telephone rule chain: 10 digits satisfies the early normalize-to-10 rule; dropping the
+	 *  leading '0' yields 9 national digits, which is exactly what the later E.164 '+61' form and the
+	 *  per-country length rule (+61 => 9 national digits) require. Distinct from the +1 NANP seed data. */
 	protected String uniqueTelephone() {
-		return String.format("2%09d", seq());
+		return String.format("04%08d", seq());
 	}
 
 	protected String uniqueEmail() {
@@ -108,8 +116,8 @@ public abstract class AcceptanceBase {
 		return o;
 	}
 
-	/** Owner payload plus a postcode. The checkpoints from 'postcode' onward require it.
-	 *  TODO: once the city-to-postcode table exists, use a postcode valid for the city. */
+	/** Owner payload plus a postcode. "2000" is in the NSW range and is accepted by cities with no
+	 *  known region (the permissive default), so it stays valid for the random cities ownerNode() makes. */
 	protected ObjectNode withPostcode(ObjectNode o) {
 		o.put("postcode", "2000");
 		return o;
@@ -145,6 +153,31 @@ public abstract class AcceptanceBase {
 		return extractId(createOwner(body).andExpect(status().is2xxSuccessful()));
 	}
 
+	/** POST with an {@code Idempotency-Key} header (for the idempotent-create rule). */
+	protected ResultActions createOwnerWithKey(JsonNode body, String key) throws Exception {
+		return mvc.perform(post("/api/owners").contentType(MediaType.APPLICATION_JSON)
+				.header("Idempotency-Key", key).content(json(body)));
+	}
+
+	/** Create {@code n} fully-unique owners (each accepted by every rule), all in the
+	 *  SAME city — used to drive the per-city capacity/warning rules. Returns nothing;
+	 *  each owner differs in name/address/telephone so only the city count accumulates. */
+	protected void fillCity(String city, int n) throws Exception {
+		for (int i = 0; i < n; i++) {
+			ObjectNode o = ownerNode();
+			o.put("city", city);
+			createOwnerOk(o);
+		}
+	}
+
+	/** Create {@code n} fully-unique owners (each accepted by every rule), all dated
+	 *  today — used to drive the per-day create-limit / bulk-signup rules. */
+	protected void createMany(int n) throws Exception {
+		for (int i = 0; i < n; i++) {
+			createOwnerOk(ownerNode());
+		}
+	}
+
 	protected ResultActions getOwner(int id) throws Exception {
 		return mvc.perform(get("/api/owners/" + id));
 	}
@@ -169,5 +202,107 @@ public abstract class AcceptanceBase {
 			return Integer.parseInt(location.substring(location.lastIndexOf('/') + 1));
 		}
 		throw new IllegalStateException("no id in create response: " + body);
+	}
+
+	// --- pinned reference data ------------------------------------------------
+	// Shared, fixed ground truth for the LOOKUP-based rules (region, postcode,
+	// timezone, holidays). The rule specs enumerate these same tables, so both
+	// arms implement identical mappings and a test can assert an EXACT value
+	// (e.g. locality "NSW" for Sydney) instead of merely that a field exists.
+
+	/** City -> canonical region; anything not listed derives locality "UNKNOWN". */
+	protected static final Map<String, String> CITY_REGION = Map.of(
+			"Sydney", "NSW", "Melbourne", "VIC", "Brisbane", "QLD");
+
+	/** Region -> IANA timezone. */
+	protected static final Map<String, String> REGION_TIMEZONE = Map.of(
+			"NSW", "Australia/Sydney", "VIC", "Australia/Melbourne", "QLD", "Australia/Brisbane");
+
+	/** Region -> inclusive 4-digit postcode range {low, high}. */
+	protected static final Map<String, int[]> REGION_POSTCODES = Map.of(
+			"NSW", new int[] {2000, 2099}, "VIC", new int[] {3000, 3099}, "QLD", new int[] {4000, 4099});
+
+	/** Fixed public holidays the business-day roll skips (year of the run). */
+	protected static final Set<LocalDate> HOLIDAYS = Set.of(
+			LocalDate.parse("2026-01-01"), LocalDate.parse("2026-01-26"),
+			LocalDate.parse("2026-04-25"), LocalDate.parse("2026-12-25"), LocalDate.parse("2026-12-28"));
+
+	protected String region(String city) {
+		return CITY_REGION.getOrDefault(city, "UNKNOWN");
+	}
+
+	protected String timezone(String city) {
+		return REGION_TIMEZONE.get(region(city));
+	}
+
+	/** A postcode valid for the pinned city (low end of its region's range). */
+	protected String validPostcode(String city) {
+		int[] r = REGION_POSTCODES.get(region(city));
+		return r == null ? null : String.valueOf(r[0]);
+	}
+
+	/** A fully-valid owner in a PINNED city with a valid postcode, so its region,
+	 *  timezone and postcode-derived values are known exactly. */
+	protected ObjectNode knownOwner(String city) {
+		ObjectNode o = ownerNode();
+		o.put("city", city);
+		o.put("postcode", validPostcode(city));
+		return o;
+	}
+
+	/** Roll a date forward over weekends and pinned holidays to the next business day. */
+	protected LocalDate toBusinessDay(LocalDate d) {
+		while (d.getDayOfWeek() == DayOfWeek.SATURDAY || d.getDayOfWeek() == DayOfWeek.SUNDAY
+				|| HOLIDAYS.contains(d)) {
+			d = d.plusDays(1);
+		}
+		return d;
+	}
+
+	// --- computed expectations ------------------------------------------------
+	// Tests replicate the spec's algorithms exactly so they can assert the precise
+	// derived value. The algorithms are standard (SHA-256, Luhn) and also stated in
+	// the specs, so both arms produce identical outputs.
+
+	/** Full lower-case hex SHA-256 of the UTF-8 bytes of {@code s}. */
+	protected static String sha256hex(String s) {
+		try {
+			byte[] digest = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+			StringBuilder sb = new StringBuilder(digest.length * 2);
+			for (byte b : digest) {
+				sb.append(String.format("%02x", b));
+			}
+			return sb.toString();
+		}
+		catch (Exception e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	/** First {@code n} UPPER-case hex characters of SHA-256({@code s}). */
+	protected static String shaHex(String s, int n) {
+		return sha256hex(s).substring(0, n).toUpperCase();
+	}
+
+	/** Luhn check digit (0-9) over the digits contained in {@code s}. */
+	protected static int luhn(String s) {
+		int sum = 0;
+		boolean dbl = true;
+		for (int i = s.length() - 1; i >= 0; i--) {
+			char c = s.charAt(i);
+			if (c < '0' || c > '9') {
+				continue;
+			}
+			int d = c - '0';
+			if (dbl) {
+				d *= 2;
+				if (d > 9) {
+					d -= 9;
+				}
+			}
+			sum += d;
+			dbl = !dbl;
+		}
+		return (10 - (sum % 10)) % 10;
 	}
 }

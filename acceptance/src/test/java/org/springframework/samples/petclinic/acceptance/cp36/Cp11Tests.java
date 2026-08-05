@@ -2,17 +2,27 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household: UPDATED by cp36 (household-hash) — The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically */
+/** cp11 shares-household, UPDATED by cp36: householdId is computed from lastName + postcode, so
+ *  sharesHousehold only bypasses the block. Two same lastName+postcode owners share the householdId. */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically.
-		// TODO: assert the UPDATED behaviour of "shares-household" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreComputedHouseholdIdShared() throws Exception {
+		String lastName = uniqueLastName();
+		ObjectNode a = ownerNode();
+		a.put("lastName", lastName);
+		a.put("postcode", "2000");
+		int ida = createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", lastName);
+		b.put("postcode", "2000");
+		b.put("sharesHousehold", true); // bypass the duplicate block
+		int idb = createOwnerOk(b);
+		assertEquals(fetchOwner(ida).get("householdId").asText(),
+				fetchOwner(idb).get("householdId").asText());
 	}
 }

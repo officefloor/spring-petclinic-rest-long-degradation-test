@@ -3,16 +3,17 @@ package org.springframework.samples.petclinic.acceptance;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp38 email-blocklist: UPDATED by cp52 (identity-key-v2) — Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first */
+/** cp38 email-blocklist, UPDATED by cp52: the disposable-domain blocklist is still applied first, so a
+ *  blocklisted email is rejected with 400 before identity checks. */
 @Tag("cp38")
 class Cp38Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first.
-		// TODO: assert the UPDATED behaviour of "email-blocklist" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreRejectsBlocklistedDomain() throws Exception {
+		ObjectNode o = structuredOwner();
+		o.put("email", "x@mailinator.com");
+		createOwner(o).andExpect(status().isBadRequest());
 	}
 }

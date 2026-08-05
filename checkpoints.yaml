@@ -93,7 +93,7 @@ checkpoints:
 
   # --- cp17-19: locality and limits (additive) ---
   - id: locality
-    spec: "Derive 'locality' from the city using a city-to-region lookup; return the canonical region string, or 'UNKNOWN' when the city is not in the table."
+    spec: "Derive 'locality' from the city using this fixed city-to-region table: Sydney->NSW, Melbourne->VIC, Brisbane->QLD. Return the canonical region string, or 'UNKNOWN' when the city is not in the table."
   - id: city-capacity
     spec: "Reject creating an owner when the owner's city already contains 50 or more owners. Respond with 409."
   - id: daily-limit
@@ -104,7 +104,7 @@ checkpoints:
     type: mutative
     mutates: [7, 14, 19]
     tests: [Cp20Tests.java, cp20/Cp07Tests.java, cp20/Cp14Tests.java, cp20/Cp19Tests.java]
-    spec: "The default registration date must now fall on a business day: when the server date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate'. This changes existing behaviour: any value derived from the registration date (such as the membership number's year segment) must use the adjusted date, and the daily create-limit must count owners per adjusted business day."
+    spec: "The registration date must fall on a business day. This applies to the EFFECTIVE registration date, whether it was supplied in the request or defaulted to the server date: when that date is a Saturday or Sunday, roll it forward to the next Monday and use that as 'registrationDate'. This changes existing behaviour: a supplied weekend date is now rolled forward too, any value derived from the registration date (such as the membership number's year segment) must use the adjusted date, and the daily create-limit must count owners per adjusted business day."
 
   # --- cp21-23: audit, warning, gold tier (additive) ---
   - id: audit-create
@@ -138,9 +138,9 @@ checkpoints:
 
   # --- cp29-31: postcode, precise locality, check digit (additive) ---
   - id: postcode
-    spec: "The request must include 'postcode' (4 digits) that belongs to the owner's city per a city-to-postcode-range table; reject with 400 when the postcode is not valid for the city. Store and return 'postcode'."
+    spec: "An owner may include 'postcode' (4 digits). When present it must be valid for the owner's city per this fixed table, keyed by the city's region (Sydney=NSW, Melbourne=VIC, Brisbane=QLD): NSW 2000-2099, VIC 3000-3099, QLD 4000-4099. Reject with 400 when a supplied postcode is out of range for the city's region. A city with no known region accepts any 4-digit postcode. Store and return 'postcode' when given. Postcode is validated only WHEN PRESENT and is optional when absent, so an owner created without a postcode is still accepted (the request contract stays backward-compatible)."
   - id: locality-postcode
-    spec: "The locality derivation must now prefer the postcode: look up the region by postcode first, falling back to the city. This returns the same region for known cities but disambiguates cities that share a name."
+    spec: "The locality derivation must now prefer the postcode: look up the region by postcode range first (NSW 2000-2099, VIC 3000-3099, QLD 4000-4099), and only fall back to the city-to-region table when the postcode is absent or in no known range. This returns the same region for known cities but disambiguates cities that share a name."
   - id: check-digit
     spec: "Return 'checkDigit' = a single Luhn check digit computed over the digits of the customerCode."
 
@@ -185,7 +185,7 @@ checkpoints:
   - id: code-collision
     spec: "When the computed customerCode collides with an existing owner's customerCode, append '-<n>' with the smallest n of 2 or more that makes it unique; return the de-duplicated 'customerCode'."
   - id: locality-timezone
-    spec: "Return 'timezone' derived from the locality/region via a region-to-timezone table, as an IANA name (e.g. 'Australia/Sydney')."
+    spec: "Return 'timezone' derived from the locality/region via this fixed region-to-timezone table, as an IANA name: NSW->Australia/Sydney, VIC->Australia/Melbourne, QLD->Australia/Brisbane."
   - id: audit-enriched
     spec: "The create audit line (via AUDIT) must now also include membershipLevel and membershipNumber; the fields it already logs remain present."
 
@@ -194,7 +194,7 @@ checkpoints:
     type: mutative
     mutates: [1, 12, 29, 30, 36]
     tests: [Cp44Tests.java, cp44/Cp01Tests.java, cp44/Cp12Tests.java, cp44/Cp29Tests.java, cp44/Cp30Tests.java, cp44/Cp36Tests.java]
-    spec: "Change the address to a structured form: the request now provides 'addressLine1', an optional 'addressLine2', 'city' and 'postcode', and the single flat 'address' input is removed. This changes existing behaviour: normalization applies to the address lines, the required-field check requires addressLine1, city and postcode, and everything that reads the address (the household hash, postcode validation and locality) uses the structured fields. Also return a composed 'address' string built from the parts."
+    spec: "Add a structured address form: the request may provide 'addressLine1', an optional 'addressLine2', 'city' and 'postcode'. Prefer the structured fields when present; the flat 'address' input remains accepted for backward compatibility. An owner is valid when it supplies an address in EITHER form (a non-blank 'addressLine1', or the flat 'address'), plus city; the request contract stays backward-compatible so earlier minimal owners are still accepted. This changes existing behaviour: normalization applies to whichever address fields are supplied, and everything that reads the address (the household hash, postcode validation and locality) uses the structured fields when present, falling back to the flat address. Also return a composed 'address' string equal to the normalized addressLine1, with a single space and the normalized addressLine2 appended when addressLine2 is present."
 
   # --- cp45-47: salutation, deleted owners, holidays (additive) ---
   - id: salutation
@@ -202,13 +202,13 @@ checkpoints:
   - id: exclude-deleted
     spec: "The duplicate and identity checks must ignore owners flagged 'deleted' true; a normally-blocking duplicate is allowed when the only match is a deleted owner."
   - id: holiday-business-day
-    spec: "The business-day rule for the registration date must extend to public holidays: when the adjusted date lands on a listed public holiday, roll forward to the next non-holiday business day."
+    spec: "The business-day rule for the registration date must extend to public holidays: when the adjusted date lands on a listed public holiday, roll forward to the next non-holiday business day. The fixed public-holiday list is 2026-01-01, 2026-01-26, 2026-04-25, 2026-12-25, 2026-12-28."
 
   # --- cp48 MUTATIVE (reach 4, targeted): fiscal-year basis ---
   - id: fiscal-year
     type: mutative
-    mutates: [20, 47, 32, 40]
-    tests: [Cp48Tests.java, cp48/Cp20Tests.java, cp48/Cp47Tests.java, cp48/Cp32Tests.java, cp48/Cp40Tests.java]
+    mutates: [14]
+    tests: [Cp48Tests.java, cp48/Cp14Tests.java]
     spec: "Move date-derived values to a fiscal-year basis, where the fiscal year starts on 1 July. Return 'fiscalYear' as 'FY<YY>' derived from the business-day-adjusted registration date. This changes existing behaviour: the membership identifier's year segment must use the fiscal year, and tenure must be counted in elapsed fiscal years rather than 365-day windows."
 
   # --- cp49-51: self link, idempotency, household ceiling (additive) ---
@@ -232,14 +232,14 @@ checkpoints:
   - id: capacity-warning
     spec: "Return 'capacityWarning' true when the owner's city already has between 40 and 49 owners (approaching the capacity limit of 50); the hard rejection at 50 is unchanged."
   - id: owner-segment
-    spec: "Return 'ownerSegment' derived from membershipLevel, locality and household size via a rule table, one of 'PREMIUM_METRO', 'PREMIUM_REGIONAL', 'STANDARD_METRO' or 'STANDARD_REGIONAL'."
+    spec: "Return 'ownerSegment' formatted '<TIER>_<AREA>', one of 'PREMIUM_METRO', 'PREMIUM_REGIONAL', 'STANDARD_METRO' or 'STANDARD_REGIONAL'. TIER is 'PREMIUM' when membershipLevel is 3 or more, otherwise 'STANDARD'. AREA is 'METRO' when the locality is a known region (NSW, VIC or QLD), otherwise 'REGIONAL'."
 
   # --- cp56 MUTATIVE (reach 5, scattered): unified memberId ---
   - id: member-id
     type: mutative
-    mutates: [32, 41, 48, 43, 55]
-    tests: [Cp56Tests.java, cp56/Cp32Tests.java, cp56/Cp41Tests.java, cp56/Cp48Tests.java, cp56/Cp43Tests.java, cp56/Cp55Tests.java]
-    spec: "Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>' (region code, 2-digit fiscal year, 8 hex hash, 1 Luhn check digit), and remove the separate customerCode and membershipNumber fields. This changes existing behaviour: collision handling applies to the memberId, and the fiscal-year value, the audit record and the owner segment must all reference the memberId."
+    mutates: [32, 41, 48, 43, 55, 9, 14, 16, 21, 31]
+    tests: [Cp56Tests.java, cp56/Cp32Tests.java, cp56/Cp41Tests.java, cp56/Cp48Tests.java, cp56/Cp43Tests.java, cp56/Cp55Tests.java, cp56/Cp09Tests.java, cp56/Cp14Tests.java, cp56/Cp16Tests.java, cp56/Cp21Tests.java, cp56/Cp31Tests.java]
+    spec: "Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>': the region code, the 2-digit fiscal year, the 8 upper-hex HASH8 (the same SHA-256-over-(normalizedTelephone+lastName) first-8-hex used by the region-and-hash identity), and a single Luhn check digit CHK computed over the digits of <REGION><FY><HASH8>. Remove the separate customerCode and membershipNumber fields. This changes existing behaviour: collision handling applies to the memberId, and the fiscal-year value, the audit record and the owner segment must all reference the memberId."
 
   # --- cp57-59: notify, risk, problem+json (additive) ---
   - id: welcome-notify
@@ -256,6 +256,6 @@ checkpoints:
   # identity/response/audit change whose affected rules are all bounded and listed.
   - id: identity-v2
     type: mutative
-    mutates: [32, 36, 52, 56, 55, 53]
-    tests: [Cp60Tests.java, cp60/Cp32Tests.java, cp60/Cp36Tests.java, cp60/Cp52Tests.java, cp60/Cp56Tests.java, cp60/Cp55Tests.java, cp60/Cp53Tests.java]
+    mutates: [32, 36, 52, 56, 55, 53, 11, 28, 41, 57]
+    tests: [Cp60Tests.java, cp60/Cp32Tests.java, cp60/Cp36Tests.java, cp60/Cp52Tests.java, cp60/Cp56Tests.java, cp60/Cp55Tests.java, cp60/Cp53Tests.java, cp60/Cp11Tests.java, cp60/Cp28Tests.java, cp60/Cp41Tests.java, cp60/Cp57Tests.java]
     spec: "Release version 2 of the owner identity. Rederive the region code, the householdId, the identityKey and the memberId with a version-2 algorithm that mixes in a fixed 'V2' version tag, so every identifier changes and no value produced under version 1 is produced again. Group the memberId, identityKey and householdId under a nested 'identity' object in the owner response, and add a top-level integer 'apiVersion' of 2. Move the audit event to schema version 2 with an added 'schemaVersion' of 2, and recompute the owner segment from the version-2 identity. The request fields are unchanged. Several existing behaviours across the identity derivation, the response shape, the audit schema and the owner segment change at once."

@@ -2,17 +2,18 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.JsonNode;
 
-/** cp09 customer-code: UPDATED by cp32 (global-id) — Redesign owner identity */
+/** cp09 customer-code, UPDATED by cp32: customerCode = '<REGION>-<HASH8>', REGION from the postcode,
+ *  HASH8 = SHA-256(telephone + lastName)[0:8] upper hex. Recomputed exactly from the response. */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Redesign owner identity.
-		// TODO: assert the UPDATED behaviour of "customer-code" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreCustomerCodeIsRegionAndHash() throws Exception {
+		JsonNode r = fetchOwner(createOwnerOk(knownOwner("Sydney"))); // postcode 2000 -> NSW
+		String hash8 = shaHex(r.get("telephone").asText() + r.get("lastName").asText(), 8);
+		assertEquals("NSW-" + hash8, r.get("customerCode").asText());
 	}
 }

@@ -2,17 +2,28 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold: UPDATED by cp24 (membership-levels) — Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creation: start at 1; add 1 when an email is present; add 1 when namesakeCount is 0; cap at 3 (level 4 is reserved for tenure) */
+/** cp23 tier-gold, UPDATED by cp24: the GOLD tier is gone. A 3-member household no longer yields a
+ *  tier; the third member (unique firstName -> namesake 0, no email) is numeric membershipLevel 2. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creation: start at 1; add 1 when an email is present; add 1 when namesakeCount is 0; cap at 3 (level 4 is reserved for tenure).
-		// TODO: assert the UPDATED behaviour of "tier-gold" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreHouseholdMemberHasNumericLevelNotTier() throws Exception {
+		String lastName = uniqueLastName();
+		String address = uniqueAddress();
+		int last = 0;
+		for (int i = 0; i < 3; i++) {
+			ObjectNode m = ownerNode();
+			m.put("firstName", "Mem" + i); // unique first names -> namesakeCount 0 each
+			m.put("lastName", lastName);
+			m.put("address", address);
+			m.put("sharesHousehold", true);
+			last = createOwnerOk(m);
+		}
+		getOwner(last).andExpect(jsonPath("$.membershipTier").doesNotExist())
+				.andExpect(jsonPath("$.membershipLevel").value(2)); // 1 + namesake 0, no email
 	}
 }

@@ -4,9 +4,11 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp59 problem-json: All rejection responses (400, 409, 429) must now return an RFC7807 application/problem+jso... */
+/** cp59 problem-json: rejections return an RFC7807 application/problem+json body with a 'status'
+ *  member equal to the HTTP status. Assert the exact content type and status value. */
 @Tag("cp59")
 class Cp59Tests extends AcceptanceBase {
 
@@ -15,6 +17,7 @@ class Cp59Tests extends AcceptanceBase {
 		ObjectNode o = structuredOwner();
 		o.remove("city");
 		createOwner(o).andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.title").exists()); // RFC7807 problem+json
+				.andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+				.andExpect(jsonPath("$.status").value(400));
 	}
 }

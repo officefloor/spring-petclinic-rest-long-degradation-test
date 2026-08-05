@@ -2,17 +2,20 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp24 membership-levels: UPDATED by cp40 (membership-points) — Replace the level rules with a points system: start at 0; add 2 when an email is present; add 1 when namesakeCount is 0; add 2 for a household of 3 or more; add 3 for tenure over 365 days */
+/** cp24 membership-levels, UPDATED by cp40: membershipLevel now comes from points. A new owner with
+ *  an email scores 3 points (2 email + 1 namesake 0), which maps to level 2. */
 @Tag("cp24")
 class Cp24Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Replace the level rules with a points system: start at 0; add 2 when an email is present; add 1 when namesakeCount is 0; add 2 for a household of 3 or more; add 3 for tenure over 365 days.
-		// TODO: assert the UPDATED behaviour of "membership-levels" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void corePointsDriveLevel() throws Exception {
+		ObjectNode o = withPostcode(ownerNode());
+		o.put("email", uniqueEmail());
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.membershipPoints").value(3))
+				.andExpect(jsonPath("$.membershipLevel").value(2));
 	}
 }

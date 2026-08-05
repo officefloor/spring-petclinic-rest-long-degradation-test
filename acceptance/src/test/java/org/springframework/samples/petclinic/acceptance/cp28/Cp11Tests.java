@@ -2,17 +2,29 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household: UPDATED by cp28 (identity-key) — Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner */
+/** cp11 shares-household, UPDATED by cp28: household members still share a householdId, and the
+ *  identityKey is exactly telephone|email|householdId (email empty here). */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner.
-		// TODO: assert the UPDATED behaviour of "shares-household" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreSharedHouseholdAndIdentityKey() throws Exception {
+		ObjectNode a = ownerNode();
+		a.put("sharesHousehold", true);
+		int ida = createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", a.get("lastName").asText());
+		b.put("address", a.get("address").asText());
+		b.put("sharesHousehold", true);
+		int idb = createOwnerOk(b);
+		JsonNode ra = fetchOwner(ida);
+		JsonNode rb = fetchOwner(idb);
+		assertEquals(ra.get("householdId").asText(), rb.get("householdId").asText());
+		assertEquals(rb.get("telephone").asText() + "||" + rb.get("householdId").asText(),
+				rb.get("identityKey").asText());
 	}
 }

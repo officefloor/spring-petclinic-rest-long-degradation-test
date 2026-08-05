@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp40 membership-points: Replace the level rules with a points system: start at 0; add 2 when an email is present;... */
+/** cp40 membership-points: points = +2 email, +1 namesake 0, +2 household of 3+, +3 tenure over
+ *  365 days; mapped to level 1 (0-1) / 2 (2-3) / 3 (4-5) / 4 (6+). A fresh owner with an email and
+ *  no namesake scores 3 points (2 + 1), a single-member household, zero tenure -> level 2. */
 @Tag("cp40")
 class Cp40Tests extends AcceptanceBase {
 
@@ -14,7 +16,7 @@ class Cp40Tests extends AcceptanceBase {
 		ObjectNode o = withPostcode(ownerNode());
 		o.put("email", uniqueEmail());
 		int id = createOwnerOk(o);
-		getOwner(id).andExpect(jsonPath("$.membershipPoints").exists())
-				.andExpect(jsonPath("$.membershipLevel").exists()); // TODO: assert mapping
+		getOwner(id).andExpect(jsonPath("$.membershipPoints").value(3))
+				.andExpect(jsonPath("$.membershipLevel").value(2));
 	}
 }

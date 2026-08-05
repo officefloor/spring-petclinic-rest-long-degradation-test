@@ -2,17 +2,24 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp43 audit-enriched: UPDATED by cp56 (member-id) — Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>' (region code, 2-digit fiscal year, 8 hex hash, 1 Luhn check digit), and remove the separate customerCode and membershipNumber fields */
+/** cp43 audit-enriched, UPDATED by cp56: membershipNumber is gone, so the audit line now records the
+ *  owner id and the membershipLevel. */
 @Tag("cp43")
 class Cp43Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>' (region code, 2-digit fiscal year, 8 hex hash, 1 Luhn check digit), and remove the separate customerCode and membershipNumber fields.
-		// TODO: assert the UPDATED behaviour of "audit-enriched" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreAuditLineHasLevel() throws Exception {
+		try (AuditLogCapture audit = new AuditLogCapture()) {
+			ObjectNode o = knownOwner("Sydney");
+			o.put("email", uniqueEmail());
+			int id = createOwnerOk(o);
+			JsonNode r = fetchOwner(id);
+			assertTrue(audit.anyContains(String.valueOf(id),
+					String.valueOf(r.get("membershipLevel").asInt())));
+		}
 	}
 }

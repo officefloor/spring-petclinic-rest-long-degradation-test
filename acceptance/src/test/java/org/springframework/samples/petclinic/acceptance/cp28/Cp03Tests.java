@@ -3,16 +3,19 @@ package org.springframework.samples.petclinic.acceptance;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp03 telephone-unique: UPDATED by cp28 (identity-key) — Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner */
+/** cp03 telephone-unique, UPDATED by cp28: duplicate detection is now the single identityKey
+ *  (telephone|email|householdId). Two owners with the same identity collide with 409. */
 @Tag("cp03")
 class Cp03Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner.
-		// TODO: assert the UPDATED behaviour of "telephone-unique" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreIdentityCollisionRejected() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = a.deepCopy(); // same telephone / lastName / address -> same identityKey
+		b.put("sharesHousehold", true); // bypass the household block; identity still collides
+		createOwner(b).andExpect(status().isConflict());
 	}
 }

@@ -3,16 +3,21 @@ package org.springframework.samples.petclinic.acceptance;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp10 household-duplicate: UPDATED by cp28 (identity-key) — Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner */
+/** cp10 household-duplicate, UPDATED by cp28: the household duplicate check is expressed through the
+ *  identityKey. Same lastName + address (same household, same telephone) still rejects with 409. */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner.
-		// TODO: assert the UPDATED behaviour of "household-duplicate" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreHouseholdDuplicateRejected() throws Exception {
+		ObjectNode a = ownerNode();
+		createOwnerOk(a);
+		ObjectNode b = ownerNode();
+		b.put("lastName", a.get("lastName").asText());
+		b.put("address", a.get("address").asText());
+		b.put("telephone", a.get("telephone").asText());
+		createOwner(b).andExpect(status().isConflict());
 	}
 }

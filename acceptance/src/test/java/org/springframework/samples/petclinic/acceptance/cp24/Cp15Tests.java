@@ -2,17 +2,20 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp15 membership-tier: UPDATED by cp24 (membership-levels) — Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creation: start at 1; add 1 when an email is present; add 1 when namesakeCount is 0; cap at 3 (level 4 is reserved for tenure) */
+/** cp15 membership-tier, UPDATED by cp24: the string tier is gone; a numeric membershipLevel replaces
+ *  it. A unique owner with an email scores level 3 (1 + email + namesake 0). */
 @Tag("cp15")
 class Cp15Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creation: start at 1; add 1 when an email is present; add 1 when namesakeCount is 0; cap at 3 (level 4 is reserved for tenure).
-		// TODO: assert the UPDATED behaviour of "membership-tier" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreNumericLevelReplacesTier() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("email", uniqueEmail());
+		int id = createOwnerOk(o);
+		getOwner(id).andExpect(jsonPath("$.membershipLevel").value(3))
+				.andExpect(jsonPath("$.membershipTier").doesNotExist());
 	}
 }

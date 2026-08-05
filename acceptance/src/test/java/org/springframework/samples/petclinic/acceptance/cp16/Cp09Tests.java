@@ -2,17 +2,27 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp09 customer-code: UPDATED by cp16 (customer-code-city) — Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased first three letters of the city, LAST3 the first three of the lastName, and NNNN a per-city 4-digit sequence (one more than the owners already in that city) */
+/** cp09 customer-code, UPDATED by cp16: customerCode is now '<CITY3>-<LAST3>-<NNNN>' with a per-city
+ *  sequence. Two owners in the same city get consecutive NNNN. */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased first three letters of the city, LAST3 the first three of the lastName, and NNNN a per-city 4-digit sequence (one more than the owners already in that city).
-		// TODO: assert the UPDATED behaviour of "customer-code" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreCityPrefixedPerCitySequence() throws Exception {
+		ObjectNode a = ownerNode();
+		a.put("city", "Sydney");
+		a.put("lastName", "alpha");
+		ObjectNode b = ownerNode();
+		b.put("city", "Sydney");
+		b.put("lastName", "bravo");
+		String ca = fetchOwner(createOwnerOk(a)).get("customerCode").asText();
+		String cb = fetchOwner(createOwnerOk(b)).get("customerCode").asText();
+		assertTrue(ca.startsWith("SYD-ALP-"), ca);
+		assertTrue(cb.startsWith("SYD-BRA-"), cb);
+		assertEquals(Integer.parseInt(ca.substring(8)) + 1, Integer.parseInt(cb.substring(8)));
 	}
 }

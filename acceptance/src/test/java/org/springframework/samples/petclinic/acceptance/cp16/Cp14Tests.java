@@ -2,17 +2,21 @@ package org.springframework.samples.petclinic.acceptance;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
-/** cp14 membership-number: UPDATED by cp16 (customer-code-city) — Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased first three letters of the city, LAST3 the first three of the lastName, and NNNN a per-city 4-digit sequence (one more than the owners already in that city) */
+/** cp14 membership-number, UPDATED by cp16: still '<customerCode>-M<YY>', now over the city-prefixed
+ *  customerCode. Recomputed from the returned fields, so format-agnostic and exact. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 
 	@Test
-	void coreUpdatedBehaviour() throws Exception {
-		// This rule changed. Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased first three letters of the city, LAST3 the first three of the lastName, and NNNN a per-city 4-digit sequence (one more than the owners already in that city).
-		// TODO: assert the UPDATED behaviour of "membership-number" under the new spec.
-		int id = createOwnerOk(ownerNode());
-		getOwner(id).andExpect(status().is2xxSuccessful());
+	void coreMembershipNumberOnNewCode() throws Exception {
+		ObjectNode o = ownerNode();
+		o.put("city", "Sydney");
+		JsonNode r = fetchOwner(createOwnerOk(o));
+		String yy = r.get("registrationDate").asText().substring(2, 4);
+		assertEquals(r.get("customerCode").asText() + "-M" + yy, r.get("membershipNumber").asText());
 	}
 }
