@@ -5,8 +5,12 @@ arm's pre-feature base ref, then walks the ordered checkpoints. At each
 checkpoint it:
 
   1. runs a FRESH headless agent with only the checkpoint spec (no carried
-     context) -- SlopCodeBench's iterative-extension condition;
-  2. commits, then gates on build + the accumulated acceptance suite cp01..cpK;
+     context) and only THIS checkpoint's own acceptance test visible -- every prior
+     test is hidden, so the agent has no checklist of earlier behaviour to preserve
+     (SlopCodeBench's iterative-extension condition, made strict);
+  2. commits the pure agent delta, then installs the full authored suite cp01..cpK
+     (the priors the agent never saw) and gates on build + that suite -- so a change
+     that silently broke earlier behaviour surfaces as a REAL regression;
   3. at phase boundaries, runs the read-only cold-reader probe;
   4. writes the checkpoint's RAW capture (agent envelope + event stream, the raw
      test-result map, the pre-normalisation agent diff, SHAs).
@@ -208,54 +212,85 @@ def _authored_set(cfg: dict, checkpoints: list[dict], k: int) -> dict[str, str]:
     return authored
 
 
-def inject_checkpoint_tests(wt: str, cfg: dict, cp: dict) -> list[str]:
-    """Install checkpoint `cp`'s test manifest into the worktree (its new test, and
-    for a mutative checkpoint the updated prior tests too). Shared infra is added at
-    cp01. Existing requirement tests are never removed, so the worktree holds
-    cp01..cpN tests, with mutated priors overwritten by their updated versions."""
+_CPTEST_RE = re.compile(r"Cp\d+Tests\.java$")
+
+
+def _own_test(cp: dict) -> str:
+    """The checkpoint's OWN acceptance test class — the ONLY requirement test the
+    agent may see while it works (never a mutative prior copy)."""
+    return f"Cp{cp['n']:02d}Tests.java"
+
+
+def _acc_dest(wt: str, cfg: dict) -> str | None:
     acc = cfg.get("acceptance")
-    if not acc:
+    return os.path.join(wt, acc["dest_subpath"]) if acc else None
+
+
+def _copy_authored(cfg: dict, entry: str, dest: str) -> str | None:
+    """Copy an acceptance source file (path under src_dir) into dest by basename."""
+    src = os.path.join(cfg["acceptance"]["src_dir"], entry)
+    if os.path.isfile(src):
+        os.makedirs(dest, exist_ok=True)
+        base = os.path.basename(entry)
+        shutil.copy2(src, os.path.join(dest, base))
+        return base
+    return None
+
+
+def set_agent_view(wt: str, cfg: dict, cp: dict) -> None:
+    """Make the acceptance dir hold EXACTLY what the agent may see while it works:
+    the shared infra plus THIS checkpoint's own CpNNTests.java. Every other
+    requirement test — all priors, and any mutative prior copies — is removed.
+
+    This is the crux of the regression measurement: the agent satisfies the current
+    spec WITHOUT a checklist of prior tests to keep green, so a change that silently
+    breaks earlier behaviour actually regresses (it is measured afterwards by
+    install_measurement_suite). Installed by the previous checkpoint's reset commit,
+    so each agent turn starts blind and its commit diff stays pure."""
+    dest = _acc_dest(wt, cfg)
+    if not dest:
+        return
+    acc = cfg["acceptance"]
+    keep = {os.path.basename(s) for s in acc.get("shared", [])} | {_own_test(cp)}
+    for entry in list(acc.get("shared", [])) + [_own_test(cp)]:
+        _copy_authored(cfg, entry, dest)
+    if os.path.isdir(dest):
+        for fn in os.listdir(dest):
+            if _CPTEST_RE.search(fn) and fn not in keep:
+                os.remove(os.path.join(dest, fn))
+
+
+def install_measurement_suite(wt: str, cfg: dict, checkpoints: list[dict], k: int) -> None:
+    """Install the FULL authored suite (Cp01..CpK, with mutative-updated priors
+    winning) for the post-agent regression gate. Overwrites the agent-view, so a
+    tampered or weakened visible test cannot buy a false pass, and adds back every
+    hidden prior so breakage on it surfaces as a regression."""
+    dest = _acc_dest(wt, cfg)
+    if not dest:
+        return
+    for _base, entry in _authored_set(cfg, checkpoints, k).items():
+        _copy_authored(cfg, entry, dest)
+
+
+def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
+    """Basenames among the agent-VISIBLE tests (shared + own CpNN) that the agent
+    changed or deleted vs their authored source. Reported as acceptance_touched;
+    the visible tests are restored to authored before the gate. Only the visible set
+    is checked — the hidden priors are absent by design, not tampered."""
+    dest = _acc_dest(wt, cfg)
+    if not dest:
         return []
-    dest = os.path.join(wt, acc["dest_subpath"])
-    os.makedirs(dest, exist_ok=True)
-    entries = (list(acc.get("shared", [])) if cp["n"] == 1 else []) + _install_list(cp)
-    copied = []
-    for entry in entries:
-        src = os.path.join(acc["src_dir"], entry)
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(dest, os.path.basename(entry)))
-            copied.append(os.path.basename(entry))
-    return copied
-
-
-def restore_acceptance_tests(wt: str, cfg: dict, checkpoints: list[dict], k: int,
-                             write: bool = True) -> list[str]:
-    """Reset the experimenter-owned tests to their CURRENT authored version (the
-    latest manifest wins, so a mutated prior resets to its updated form, not its
-    original). Returns the basenames the agent changed or deleted.
-
-    write=False only DETECTS (before the commit, so the agent's edit stays visible
-    in it). write=True rewrites the authored version (after the commit + gate, so a
-    weakened test cannot produce a false pass and the reset folds into the next
-    checkpoint's commit)."""
-    acc = cfg.get("acceptance")
-    if not acc:
-        return []
-    dest = os.path.join(wt, acc["dest_subpath"])
+    acc = cfg["acceptance"]
+    view = {os.path.basename(e): e for e in list(acc.get("shared", [])) + [_own_test(cp)]}
     tampered = []
-    for basename, entry in _authored_set(cfg, checkpoints, k).items():
+    for base, entry in view.items():
         src = os.path.join(acc["src_dir"], entry)
         if not os.path.isfile(src):
             continue
-        authored = open(src, "rb").read()
-        dst = os.path.join(dest, basename)
+        dst = os.path.join(dest, base)
         current = open(dst, "rb").read() if os.path.isfile(dst) else None
-        if current != authored:
-            tampered.append(basename)
-            if write:
-                os.makedirs(dest, exist_ok=True)
-                with open(dst, "wb") as fh:
-                    fh.write(authored)
+        if current != open(src, "rb").read():
+            tampered.append(base)
     return tampered
 
 
@@ -333,12 +368,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         where = f"run {run_id} | {arm}/{strategy} chain{chain}"
         print(f"\n--- {where} | cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
 
-        # 0. Ensure this checkpoint's acceptance test is present. For k>=2 it was
-        # injected by the PREVIOUS checkpoint's reset commit (COMMIT 2), so it is
-        # already in HEAD; only cp01 (+ shared infra) is injected here. The agent
-        # sees cp01..cpK, never future requirements.
+        # 0. Ensure the agent-view is set: shared infra + ONLY this checkpoint's own
+        # test. For k>=2 the PREVIOUS checkpoint's reset commit (COMMIT 2) already set
+        # it, so HEAD holds only CpK; cp01 sets it here. The agent never sees a prior
+        # requirement test — so it cannot use them as a checklist, and a change that
+        # breaks earlier behaviour truly regresses (measured after the agent turn).
         if k == 1:
-            inject_checkpoint_tests(wt, cfg, cp)
+            set_agent_view(wt, cfg, cp)
 
         # Snapshot the pre-agent state as a throwaway commit so a token-limit- or
         # network-interrupted attempt can be rolled back and retried cleanly. It is
@@ -413,7 +449,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # acceptance-test tamper). Normalisation happens in COMMIT 2 below.
         touched_pins = [pf for pf in cfg.get("isolation", {}).get("pin_files", [])
                         if git(["-C", wt, "status", "--porcelain", "--", pf], check=False)]
-        acceptance_touched = restore_acceptance_tests(wt, cfg, checkpoints, k, write=False)
+        acceptance_touched = detect_agent_tamper(wt, cfg, cp)
         row["pinned_touched"] = ",".join(touched_pins)
         row["acceptance_touched"] = ",".join(acceptance_touched)
 
@@ -436,10 +472,14 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                 fpath = os.path.join(wt, pf)
                 if os.path.exists(fpath):
                     os.remove(fpath)
-        restore_acceptance_tests(wt, cfg, checkpoints, k, write=True)
+        # Bring back EVERY prior test (authored, mutative-updated priors winning) plus
+        # the authored current test — the full cp01..cpK suite the agent never saw —
+        # so the gate below measures what its change silently broke.
+        install_measurement_suite(wt, cfg, checkpoints, k)
 
-        # 4. correctness gate (runs on the authored tests, pinned CLAUDE.md, and
-        # the agent's production code)
+        # 4. correctness gate (runs the full cp01..cpK authored suite against the
+        # agent's production code + pinned CLAUDE.md). Regressions are now REAL: the
+        # agent had no sight of the priors it may have broken.
         outcome = correctness.run_tests(wt, k, cfg)
         # Full build + test console (raw): a test that errors before producing a
         # Surefire report leaves no trace otherwise. Capped to keep the commit sane.
@@ -458,12 +498,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
 
-        # 5. COMMIT 2 — the RESET commit: the harness normalisation (pinned docs +
-        # acceptance reset) plus the NEXT checkpoint's injected test — the content
-        # that sets up the next run. Kept even if empty, so every checkpoint is a
-        # clean two-commit boundary and cp(K+1)'s agent commit stays pure.
+        # 5. COMMIT 2 — the RESET commit: the harness normalisation (pinned docs)
+        # plus setting the NEXT checkpoint's agent-view — shared infra + only cp(K+1)'s
+        # own test, with the measurement suite's priors removed again. So cp(K+1)'s
+        # agent starts blind and its agent commit stays pure. Kept even if empty, so
+        # every checkpoint is a clean two-commit boundary.
         if k < n:
-            inject_checkpoint_tests(wt, cfg, checkpoints[k])  # 0-indexed: next checkpoint
+            set_agent_view(wt, cfg, checkpoints[k])  # 0-indexed: next checkpoint
         git(["-C", wt, "add", "-A"])
         subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
                         "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
