@@ -6,6 +6,17 @@ agent must reason about changes solely from the code's current structure". That
 is exactly the condition under which a self-describing architecture (the
 OfficeFloor YAML index) can pay off, so we reproduce it here.
 
+To make that guarantee airtight we also isolate Claude's *config* per call: each
+invocation runs under a throwaway ``CLAUDE_CONFIG_DIR`` seeded with only the login
+credentials (see ``_seed_clean_config_dir``). Without this, Claude Code's
+auto-memory writes project "learnings" into ``~/.claude/projects/<repo>/memory/``
+keyed by the git common dir -- which for all of an arm's worktrees is the ONE base
+repo. That memory would then be recalled by later checkpoints (breaking the
+context-free condition) and shared across chains and, asymmetrically, between the
+two arms (contaminating the safety signal we measure). A fresh login-only config
+dir per call means every checkpoint sees a pristine, stateless Claude; the real
+``~/.claude`` is never read or written.
+
 We run with `--output-format stream-json --verbose` and read the event stream
 line by line, printing Claude's text and tool calls to the console so a long run
 shows live progress instead of looking hung. stdin is DEVNULL so the child can
@@ -17,8 +28,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from typing import Optional
@@ -26,6 +39,36 @@ from typing import Optional
 
 # Read-only toolset the cold-reader probe is restricted to.
 PROBE_TOOLS = "Read,Grep,Glob,Bash"
+
+# The one file inside a Claude config dir that constitutes "login". Seeding a
+# fresh config dir with only this gives a pristine, stateless, still-authenticated
+# Claude -- no memory, no history, no accumulated project state.
+_LOGIN_FILE = ".credentials.json"
+
+
+def _source_config_dir() -> str:
+    """The real config dir to copy login from -- honouring an already-set
+    CLAUDE_CONFIG_DIR, else ~/.claude."""
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def _seed_clean_config_dir() -> Optional[str]:
+    """Create a throwaway config dir seeded with only the login credentials, and
+    return its path (caller sets CLAUDE_CONFIG_DIR to it and removes it after).
+
+    Returns None if the login file can't be found, in which case the caller runs
+    under the inherited config (a loud warning is printed) rather than failing the
+    whole run over an environment quirk."""
+    src = os.path.join(_source_config_dir(), _LOGIN_FILE)
+    if not os.path.isfile(src):
+        print(f"    [isolation] WARNING: no {_LOGIN_FILE} at {src}; "
+              f"running under inherited ~/.claude (memory NOT isolated)", flush=True)
+        return None
+    cfg = tempfile.mkdtemp(prefix="pe-claude-cfg-")
+    dst = os.path.join(cfg, _LOGIN_FILE)
+    shutil.copy2(src, dst)
+    os.chmod(dst, 0o600)
+    return cfg
 
 
 def invocation_flags(model: str, allowed_tools: Optional[str] = None) -> list[str]:
@@ -174,11 +217,22 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     files read, commands run — which is irreproducible and lost otherwise."""
     cmd = ["claude", "-p", prompt, *invocation_flags(model, allowed_tools)]
 
+    # Isolate Claude's config/memory to a fresh login-only dir for this one call,
+    # so nothing (memory, history, session state) leaks across checkpoints, chains
+    # or arms. Removed in `finally`; the real ~/.claude is untouched.
+    cfg_dir = _seed_clean_config_dir()
+    child_env = os.environ.copy()
+    if cfg_dir:
+        child_env["CLAUDE_CONFIG_DIR"] = cfg_dir
+
     try:
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True)
+            stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True,
+            env=child_env)
     except FileNotFoundError:
+        if cfg_dir:
+            shutil.rmtree(cfg_dir, ignore_errors=True)
         return AgentResult(ok=False, error="`claude` CLI not found on PATH")
 
     stderr_buf: list[str] = []
@@ -234,6 +288,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         drain.join(timeout=2)
         if cap_fh:
             cap_fh.close()
+        if cfg_dir:
+            shutil.rmtree(cfg_dir, ignore_errors=True)
 
     if timed_out["v"]:
         # No completion within the timeout — often an overloaded/unresponsive API.
