@@ -14,9 +14,10 @@ _UNEXPANDED = re.compile(r"\$\{?\w+\}?")
 
 
 def git_out(cwd: str, args: list[str], check: bool = False, timeout: int = 60) -> str:
-    """Run ``git -C <cwd> <args>`` and return stdout. Swallows errors (returns "")
-    unless ``check`` is set, in which case a non-zero exit raises. The one shared
-    git-stdout helper for the harness."""
+    """Run ``git -C <cwd> <args>`` and return stdout (unstripped). Swallows errors
+    (returns "") unless ``check`` is set, in which case a non-zero exit raises. Used
+    by the derive/analyze side, which needs graceful degradation on a missing repo;
+    run_experiment keeps its own stricter ``git`` (raises by default, strips)."""
     try:
         proc = subprocess.run(["git", "-C", cwd, *args],
                               capture_output=True, text=True, timeout=timeout)

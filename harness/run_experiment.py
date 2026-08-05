@@ -87,8 +87,10 @@ def phase_for(idx: int, n: int) -> str:
     return PHASES[b]
 
 
-def git(args: list[str], cwd: str | None = None, check: bool = True) -> str:
-    proc = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+def git(args: list[str], check: bool = True) -> str:
+    """Run git (the repo is passed via `-C <dir>` inside args) and return stripped
+    stdout; raise on non-zero unless check=False."""
+    proc = subprocess.run(["git"] + args, capture_output=True, text=True)
     if check and proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
@@ -237,6 +239,13 @@ def _copy_authored(cfg: dict, entry: str, dest: str) -> str | None:
     return None
 
 
+def _view_entries(cfg: dict, cp: dict) -> list[str]:
+    """Source entries the agent may see while working: shared infra + this
+    checkpoint's own CpNNTests.java (never a mutative prior copy)."""
+    acc = cfg.get("acceptance") or {}
+    return list(acc.get("shared", [])) + [_own_test(cp)]
+
+
 def set_agent_view(wt: str, cfg: dict, cp: dict) -> None:
     """Make the acceptance dir hold EXACTLY what the agent may see while it works:
     the shared infra plus THIS checkpoint's own CpNNTests.java. Every other
@@ -250,9 +259,9 @@ def set_agent_view(wt: str, cfg: dict, cp: dict) -> None:
     dest = _acc_dest(wt, cfg)
     if not dest:
         return
-    acc = cfg["acceptance"]
-    keep = {os.path.basename(s) for s in acc.get("shared", [])} | {_own_test(cp)}
-    for entry in list(acc.get("shared", [])) + [_own_test(cp)]:
+    entries = _view_entries(cfg, cp)
+    keep = {os.path.basename(e) for e in entries}
+    for entry in entries:
         _copy_authored(cfg, entry, dest)
     if os.path.isdir(dest):
         for fn in os.listdir(dest):
@@ -268,7 +277,7 @@ def install_measurement_suite(wt: str, cfg: dict, checkpoints: list[dict], k: in
     dest = _acc_dest(wt, cfg)
     if not dest:
         return
-    for _base, entry in _authored_set(cfg, checkpoints, k).items():
+    for entry in _authored_set(cfg, checkpoints, k).values():
         _copy_authored(cfg, entry, dest)
 
 
@@ -281,7 +290,7 @@ def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
     if not dest:
         return []
     acc = cfg["acceptance"]
-    view = {os.path.basename(e): e for e in list(acc.get("shared", [])) + [_own_test(cp)]}
+    view = {os.path.basename(e): e for e in _view_entries(cfg, cp)}
     tampered = []
     for base, entry in view.items():
         src = os.path.join(acc["src_dir"], entry)
@@ -322,6 +331,88 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
                        capture_output=True, text=True)
     print(f"  results commit on {branch}: "
           + ("ok" if c.returncode == 0 else (c.stdout.strip() or c.stderr.strip())[:120]))
+
+
+def _run_agent_turn(cfg: dict, wt: str, model: str, prompt: str, cap_dir: str,
+                    stream_file: str, preagent_ref: str):
+    """Run the agent for one checkpoint, retrying on a token/session limit or a
+    transient failure. A limit waits for the quota reset; a transient failure backs
+    off short. Each retry hard-resets the worktree to `preagent_ref` first. Returns
+    (final AgentResult, per-attempt log) where the last log entry is the successful
+    try. Raises RuntimeError if the retry caps are exceeded."""
+    limits = cfg.get("limits", {})
+    attempts = transient_attempts = 0
+    attempt_log: list[dict] = []  # every try (failed/limited too); last = success
+    while True:
+        ar = agent.run_agent(prompt, cwd=wt, model=model,
+                             timeout=cfg.get("agent_timeout", 3600),
+                             capture_path=os.path.join(cap_dir, stream_file))
+        att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
+               "cost_usd": ar.cost_usd, "input_tokens": ar.input_tokens,
+               "output_tokens": ar.output_tokens, "cache_read_tokens": ar.cache_read_tokens,
+               "cache_creation_tokens": ar.cache_creation_tokens, "num_turns": ar.num_turns,
+               "duration_ms": ar.duration_ms, "duration_api_ms": ar.duration_api_ms,
+               "error": (ar.error or "")[:500], "wait_s": None}
+        attempt_log.append(att)
+        if not (ar.limit_reached or ar.retryable):
+            return ar, attempt_log
+        attempts += 1
+        if attempts > limits.get("max_attempts", 500):
+            raise RuntimeError("exceeded max retry attempts; aborting run")
+        subprocess.run(["git", "-C", wt, "reset", "--hard", preagent_ref],
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
+        if ar.limit_reached:
+            transient_attempts = 0
+            att["wait_s"] = wait_for_window(ar, cfg)
+        else:
+            transient_attempts += 1
+            if transient_attempts > limits.get("max_transient_attempts", 20):
+                raise RuntimeError("too many consecutive transient failures; aborting run")
+            att["wait_s"] = wait_transient(transient_attempts, ar, cfg)
+
+
+def _log_checkpoint(row: dict, where: str, wt: str, base_for_cp: str,
+                    agent_sha: str, accept_dir: str | None) -> None:
+    """Print this checkpoint's key metrics and the production files the agent changed
+    (COMMIT 1's diff, minus the injected acceptance tests). Log-only narration; every
+    number is recomputed by analyze from the commits + capture."""
+    k, phase, cid = row["checkpoint"], row["phase"], row["checkpoint_id"]
+    api_s = round((row.get("duration_api_ms") or 0) / 1000)
+    cache_k = (row.get("cache_read_tokens") or 0) // 1000
+    print(f"  == {where} | cp{k:02d} [{phase}] {cid} ==")
+    print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
+          f"regressions={row['regressions']} norm_change={row['normalized_change']} "
+          f"build_ok={row['build_ok']} selected={row['total_selected']}")
+    print(f"    struct : erosion={row['erosion']} scoped={row['erosion_scoped']} "
+          f"hotspot=CC{row.get('hotspot_cc')}/{row.get('hotspot_nloc')}nloc@{row.get('hotspot_fn')} "
+          f"java_loc={row['java_loc']}")
+    print(f"    churn  : +{row['diff_added']}/-{row['diff_removed']} lines, {row['files_touched']} files")
+    print(f"    blast  : {row.get('existing_fns_modified')} existing fns modified, "
+          f"{row.get('files_created')} new files, {row.get('files_modified')} modified")
+    print(f"    class  : WMC_max={row.get('wmc_max')}@{row.get('wmc_max_class')} "
+          f"entry=CC{row.get('entry_cc')}/{row.get('entry_nloc')}nloc@{row.get('entry_fn')} "
+          f"pkgs={row.get('packages_touched')} reedit={row.get('reedit_rate')} "
+          f"({row.get('reedit_prior_lines')}/{row.get('reedit_body_lines')} body lines)")
+    print(f"    proc   : cost=${row['cost_usd']} api={api_s}s cache_read={cache_k}k turns={row['num_turns']}")
+    flags = []
+    for fld, lbl in (("pinned_touched", "pinned_touched"),
+                     ("acceptance_touched", "acceptance_touched"), ("notes", "notes")):
+        if str(row.get(fld, "")).strip():
+            flags.append(f"{lbl}={str(row[fld])[:100]}")
+    if flags:
+        print("    flags  : " + "  ".join(flags))
+    pathspec = ["--", ".", f":(exclude){accept_dir}"] if accept_dir else []
+    changed = subprocess.run(
+        ["git", "-C", wt, "diff", "--name-status", base_for_cp,
+         agent_sha or base_for_cp, *pathspec], capture_output=True, text=True).stdout.strip()
+    if changed:
+        print("    changed:")
+        for line in changed.splitlines():
+            print(f"      {line}")
+    else:
+        print("    changed: (no production files)")
+    print(flush=True)
 
 
 def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
@@ -385,43 +476,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         preagent_ref = git(["-C", wt, "rev-parse", "HEAD"])
         base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # prev reset commit (base_ref at cp01)
 
-        # 1. agent turn (fresh session, no carried context). On a token-limit OR a
-        # transient failure (network drop, API overload, no completion), discard
-        # this attempt, WAIT, then retry the SAME checkpoint from the reset state.
-        # Token limits wait for the quota reset; transient failures back off short.
+        # 1. agent turn (fresh session, no carried context), with the token-limit /
+        # transient-failure retry loop. Retries roll back to the pre-agent state.
         prompt = build_prompt(template, cp["spec"])
-        limits = cfg.get("limits", {})
-        attempts = 0
-        transient_attempts = 0
         stream_file = f"cp{k:02d}.agent.jsonl"
-        attempt_log: list[dict] = []  # every try (failed/limited too); last = success
-        while True:
-            ar = agent.run_agent(prompt, cwd=wt, model=model,
-                                 timeout=cfg.get("agent_timeout", 3600),
-                                 capture_path=os.path.join(cap_dir, stream_file))
-            att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
-                   "cost_usd": ar.cost_usd, "input_tokens": ar.input_tokens,
-                   "output_tokens": ar.output_tokens, "cache_read_tokens": ar.cache_read_tokens,
-                   "cache_creation_tokens": ar.cache_creation_tokens, "num_turns": ar.num_turns,
-                   "duration_ms": ar.duration_ms, "duration_api_ms": ar.duration_api_ms,
-                   "error": (ar.error or "")[:500], "wait_s": None}
-            attempt_log.append(att)
-            if not (ar.limit_reached or ar.retryable):
-                break
-            attempts += 1
-            if attempts > limits.get("max_attempts", 500):
-                raise RuntimeError("exceeded max retry attempts; aborting run")
-            subprocess.run(["git", "-C", wt, "reset", "--hard", preagent_ref],
-                           capture_output=True, text=True)
-            subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
-            if ar.limit_reached:
-                transient_attempts = 0
-                att["wait_s"] = wait_for_window(ar, cfg)
-            else:
-                transient_attempts += 1
-                if transient_attempts > limits.get("max_transient_attempts", 20):
-                    raise RuntimeError("too many consecutive transient failures; aborting run")
-                att["wait_s"] = wait_transient(transient_attempts, ar, cfg)
+        ar, attempt_log = _run_agent_turn(cfg, wt, model, prompt, cap_dir,
+                                          stream_file, preagent_ref)
 
         # Undo the snapshot commit (keep its contents staged) so COMMIT 1 (the
         # agent commit) is parented on the pre-agent state and its diff is EXACTLY
@@ -554,48 +614,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         strict_count += 1 if row["strict_pass"] is True else 0
         regr_count += int(row["regressions"] or 0)
 
-        # Key metrics for this checkpoint, so progress is visible in the logs.
-        api_s = round((row.get("duration_api_ms") or 0) / 1000)
-        cache_k = (row.get("cache_read_tokens") or 0) // 1000
-        print(f"  == {where} | cp{k:02d} [{phase}] {cp['id']} ==")
-        print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
-              f"regressions={row['regressions']} norm_change={row['normalized_change']} "
-              f"build_ok={row['build_ok']} selected={row['total_selected']}")
-        print(f"    struct : erosion={row['erosion']} scoped={row['erosion_scoped']} "
-              f"hotspot=CC{row.get('hotspot_cc')}/{row.get('hotspot_nloc')}nloc@{row.get('hotspot_fn')} "
-              f"java_loc={row['java_loc']}")
-        print(f"    churn  : +{row['diff_added']}/-{row['diff_removed']} lines, {row['files_touched']} files")
-        print(f"    blast  : {row.get('existing_fns_modified')} existing fns modified, "
-              f"{row.get('files_created')} new files, {row.get('files_modified')} modified")
-        print(f"    class  : WMC_max={row.get('wmc_max')}@{row.get('wmc_max_class')} "
-              f"entry=CC{row.get('entry_cc')}/{row.get('entry_nloc')}nloc@{row.get('entry_fn')} "
-              f"pkgs={row.get('packages_touched')} reedit={row.get('reedit_rate')} "
-              f"({row.get('reedit_prior_lines')}/{row.get('reedit_body_lines')} body lines)")
-        print(f"    proc   : cost=${row['cost_usd']} api={api_s}s cache_read={cache_k}k turns={row['num_turns']}")
-        flags = []
-        if str(row.get("pinned_touched", "")).strip():
-            flags.append(f"pinned_touched={row['pinned_touched']}")
-        if str(row.get("acceptance_touched", "")).strip():
-            flags.append(f"acceptance_touched={row['acceptance_touched']}")
-        if str(row.get("notes", "")).strip():
-            flags.append(f"notes={str(row['notes'])[:100]}")
-        if flags:
-            print("    flags  : " + "  ".join(flags))
-
-        # Files the agent changed this checkpoint = COMMIT 1's diff (base_for_cp..
-        # agent), minus the injected acceptance test, so progress is visible.
-        accept_dir = cfg.get("acceptance", {}).get("dest_subpath")
-        pathspec = ["--", ".", f":(exclude){accept_dir}"] if accept_dir else []
-        changed = subprocess.run(
-            ["git", "-C", wt, "diff", "--name-status", base_for_cp,
-             agent_sha or base_for_cp, *pathspec], capture_output=True, text=True).stdout.strip()
-        if changed:
-            print("    changed:")
-            for line in changed.splitlines():
-                print(f"      {line}")
-        else:
-            print("    changed: (no production files)")
-        print(flush=True)
+        # Key metrics + changed files for this checkpoint, so progress is visible.
+        _log_checkpoint(row, where, wt, base_for_cp, agent_sha,
+                        cfg.get("acceptance", {}).get("dest_subpath"))
 
     # Final commit on the evolve branch: persist ONLY the raw capture + provenance
     # (nothing derived, nothing goes to the harness repo). The commit message

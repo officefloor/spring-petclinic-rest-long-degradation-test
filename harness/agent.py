@@ -33,7 +33,7 @@ import signal
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -107,7 +107,6 @@ class AgentResult:
     session_id: str = ""
     stop_reason: str = ""       # result subtype: success / error_max_turns / ...
     result_text: str = ""
-    raw: dict = field(default_factory=dict)
     error: str = ""
     limit_reached: bool = False  # usage/session limit; caller waits for the quota reset then retries
     retryable: bool = False      # transient failure (network/overload/no-completion); short backoff then retry
@@ -120,9 +119,13 @@ _LIMIT_PHRASES = ("session limit", "usage limit", "you've hit your", "hit your s
                   "limit · resets", "limit resets")
 
 
-def looks_like_limit(text: str) -> bool:
+def _matches(text: str, phrases) -> bool:
     t = (text or "").lower()
-    return any(p in t for p in _LIMIT_PHRASES)
+    return any(p in t for p in phrases)
+
+
+def looks_like_limit(text: str) -> bool:
+    return _matches(text, _LIMIT_PHRASES)
 
 
 # Transient failures that should be retried after a short wait (not a data outcome):
@@ -140,8 +143,7 @@ _RETRYABLE_PHRASES = (
 
 
 def looks_retryable(text: str) -> bool:
-    t = (text or "").lower()
-    return any(p in t for p in _RETRYABLE_PHRASES)
+    return _matches(text, _RETRYABLE_PHRASES)
 
 
 def _result_from_obj(data: dict) -> AgentResult:
@@ -160,14 +162,13 @@ def _result_from_obj(data: dict) -> AgentResult:
         session_id=str(data.get("session_id", "") or ""),
         stop_reason=str(data.get("subtype", "") or ""),
         result_text=str(data.get("result", "") or ""),
-        raw=data,
     )
 
 
 _TOOL_KEYS = ("file_path", "path", "command", "pattern", "url", "query", "notebook_path")
 
 
-def _fmt_tool(name: str, inp) -> str:
+def _fmt_tool(name: str, inp: object) -> str:
     if isinstance(inp, dict):
         for k in _TOOL_KEYS:
             if inp.get(k):
@@ -276,7 +277,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
             elif et == "assistant":
                 captured["model"] = (ev.get("message") or {}).get("model") or captured["model"]
             elif et == "result":
-                result_obj = ev  # session_id/model extracted by _result_from_obj
+                result_obj = ev  # session_id extracted by _result_from_obj; model from `captured`
             if stream:
                 _print_event(ev, prefix)
         proc.wait()
@@ -304,11 +305,10 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     res = _result_from_obj(result_obj)
     res.model = res.model or captured["model"] or model
     res.session_id = res.session_id or captured["session_id"]
-    res.limit_reached = looks_like_limit(res.result_text) or looks_like_limit(res.error)
+    res.limit_reached = looks_like_limit(res.result_text)
     # Only an actual error result can be transient; a SUCCESSFUL completion never is
     # (its summary text may contain "503"/"timeout"/etc. from the agent's test runs).
-    res.retryable = (not res.ok) and (not res.limit_reached) and (
-        looks_retryable(res.result_text) or looks_retryable(res.error))
+    res.retryable = (not res.ok) and (not res.limit_reached) and looks_retryable(res.result_text)
     return res
 
 
@@ -328,7 +328,7 @@ def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = N
     if expected:
         text = res.result_text.lower()
         hits = sum(1 for e in expected if e.lower() in text)
-        recall = hits / len(expected) if expected else None
+        recall = hits / len(expected)
     return {
         "probe_cost_usd": res.cost_usd,
         "probe_input_tokens": res.input_tokens,

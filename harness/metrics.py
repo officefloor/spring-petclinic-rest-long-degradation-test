@@ -30,6 +30,15 @@ from . import git_out
 CC_THRESHOLD = 10  # Radon standard, as used by SlopCodeBench
 
 
+def _git(worktree: str, args: list[str], timeout: int = 60) -> str:
+    """Run ``git -C <worktree> <args>`` and return stdout. Raises on a missing git
+    binary or timeout; callers that need a graceful sentinel wrap this in try/except
+    (the shared git_out() swallows too much — several metrics must distinguish a
+    real empty diff from a failed git call and return None, not zeros)."""
+    return subprocess.run(["git", "-C", worktree, *args],
+                          capture_output=True, text=True, timeout=timeout).stdout
+
+
 def _java_files(root: str, globs: list[str]) -> list[str]:
     files: list[str] = []
     for g in globs:
@@ -60,12 +69,13 @@ def functions(root: str, globs: list[str]) -> list[dict]:
 
 
 def _mass(fn: dict) -> float:
+    """Complexity mass CC * sqrt(SLOC) for one function (Eq. 2)."""
     return fn["cc"] * math.sqrt(max(fn["nloc"], 1))
 
 
-def function_mass(fn: dict) -> float:
-    """Public: complexity mass CC * sqrt(SLOC) for one function (Eq. 2)."""
-    return _mass(fn)
+def _fn_label(fn: dict) -> str:
+    """Short `File.java::method` label for a function record (basename only)."""
+    return f"{fn['file'].split('/')[-1]}::{fn['name'].split('::')[-1]}"
 
 
 def erosion(fns: list[dict], cc_threshold: int = CC_THRESHOLD) -> float:
@@ -112,7 +122,7 @@ def hotspot_stats(fns: list[dict]) -> dict:
     return {
         "hotspot_nloc": worst["nloc"],
         "hotspot_cc": worst["cc"],
-        "hotspot_fn": f"{worst['file'].split('/')[-1]}::{worst['name'].split('::')[-1]}",
+        "hotspot_fn": _fn_label(worst),
     }
 
 
@@ -239,15 +249,10 @@ def blast_radius(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
     churn."""
     pathspec = ["--", ".", f":(exclude){exclude}"] if exclude else []
     try:
-        stat = subprocess.run(
-            ["git", "-C", worktree, "diff", "--shortstat", prev_ref, cur_ref, *pathspec],
-            capture_output=True, text=True, timeout=60).stdout.strip()
-        names = subprocess.run(
-            ["git", "-C", worktree, "diff", "--name-only", prev_ref, cur_ref, *pathspec],
-            capture_output=True, text=True, timeout=60).stdout.strip()
+        stat = _git(worktree, ["diff", "--shortstat", prev_ref, cur_ref, *pathspec]).strip()
+        names = _git(worktree, ["diff", "--name-only", prev_ref, cur_ref, *pathspec]).strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"diff_added": None, "diff_removed": None, "files_touched": None}
-    import re
     added = removed = 0
     m_ins = re.search(r"(\d+) insertion", stat)
     m_del = re.search(r"(\d+) deletion", stat)
@@ -267,10 +272,7 @@ def _is_prod_java(path: str) -> bool:
 
 def _changed_ranges(worktree: str, prev_ref: str, cur_ref: str, path: str) -> list[tuple[int, int]]:
     """New-file line ranges the diff touched, from `git diff -U0` hunk headers."""
-    import re
-    txt = subprocess.run(
-        ["git", "-C", worktree, "diff", "-U0", prev_ref, cur_ref, "--", path],
-        capture_output=True, text=True, timeout=60).stdout
+    txt = _git(worktree, ["diff", "-U0", prev_ref, cur_ref, "--", path])
     ranges: list[tuple[int, int]] = []
     for m in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", txt, re.M):
         a = int(m.group(1))
@@ -281,27 +283,26 @@ def _changed_ranges(worktree: str, prev_ref: str, cur_ref: str, path: str) -> li
     return ranges
 
 
+def _overlapping_functions(worktree: str, cur_ref: str, path: str,
+                           ranges: list[tuple[int, int]]) -> list:
+    """The lizard function objects in `path`@cur_ref whose body overlaps any changed
+    line range. Empty if there are no ranges, or if the git show / lizard parse
+    fails (the function is simply dropped from the metric — degrade gracefully)."""
+    if not ranges:
+        return []
+    try:
+        code = _git(worktree, ["show", f"{cur_ref}:{path}"])
+        analysis = lizard.analyze_file.analyze_source_code(path, code)
+    except Exception:
+        return []
+    return [fn for fn in analysis.function_list
+            if any(not (fn.end_line < a or fn.start_line > b) for a, b in ranges)]
+
+
 def _funcs_touched(worktree: str, cur_ref: str, path: str,
                    ranges: list[tuple[int, int]]) -> int:
     """How many functions in `path`@cur_ref overlap any changed line range."""
-    if not ranges:
-        return 0
-    try:
-        code = subprocess.run(
-            ["git", "-C", worktree, "show", f"{cur_ref}:{path}"],
-            capture_output=True, text=True, timeout=60).stdout
-    except subprocess.SubprocessError:
-        return 0
-    try:
-        analysis = lizard.analyze_file.analyze_source_code(path, code)
-    except Exception:
-        return 0
-    n = 0
-    for fn in analysis.function_list:
-        s, e = fn.start_line, fn.end_line
-        if any(not (e < a or s > b) for a, b in ranges):
-            n += 1
-    return n
+    return len(_overlapping_functions(worktree, cur_ref, path, ranges))
 
 
 def blast_radius_detail(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
@@ -319,12 +320,8 @@ def blast_radius_detail(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> 
       churn_added/removed   - production line churn.
     """
     try:
-        ns = subprocess.run(
-            ["git", "-C", worktree, "diff", "--name-status", "-M", prev_ref, cur_ref],
-            capture_output=True, text=True, timeout=60).stdout
-        numstat = subprocess.run(
-            ["git", "-C", worktree, "diff", "--numstat", prev_ref, cur_ref],
-            capture_output=True, text=True, timeout=60).stdout
+        ns = _git(worktree, ["diff", "--name-status", "-M", prev_ref, cur_ref])
+        numstat = _git(worktree, ["diff", "--numstat", prev_ref, cur_ref])
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"existing_fns_modified": None, "files_modified": None,
                 "files_created": None, "churn_added": None, "churn_removed": None}
@@ -407,7 +404,7 @@ def entry_handler_stats(fns: list[dict], pattern: Optional[str]) -> dict:
     return {
         "entry_cc": h["cc"],
         "entry_nloc": h["nloc"],
-        "entry_fn": f"{h['file'].split('/')[-1]}::{h['name'].split('::')[-1]}",
+        "entry_fn": _fn_label(h),
     }
 
 
@@ -420,9 +417,7 @@ def change_spread(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
     production-Java diff touches. A sibling to blast radius that measures spread
     across the package tree rather than count of functions."""
     try:
-        names = subprocess.run(
-            ["git", "-C", worktree, "diff", "--name-only", prev_ref, cur_ref],
-            capture_output=True, text=True, timeout=60).stdout
+        names = _git(worktree, ["diff", "--name-only", prev_ref, cur_ref])
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"packages_touched": None}
     pkgs = {os.path.dirname(f) for f in names.splitlines() if _is_prod_java(f)}
@@ -435,9 +430,7 @@ def change_spread(worktree: str, prev_ref: str, cur_ref: str = "HEAD") -> dict:
 
 def _blame_line_commits(worktree: str, ref: str, path: str) -> dict[int, str]:
     """line number -> commit sha that last touched it, as of `ref`."""
-    out = subprocess.run(
-        ["git", "-C", worktree, "blame", "--line-porcelain", ref, "--", path],
-        capture_output=True, text=True, timeout=120).stdout
+    out = _git(worktree, ["blame", "--line-porcelain", ref, "--", path], timeout=120)
     m: dict[int, str] = {}
     for line in out.splitlines():
         mt = re.match(r"^([0-9a-f]{40}) \d+ (\d+)", line)
@@ -535,7 +528,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "entry_handler": eh,
         "change_spread": spread,
         "reedit": reedit,
-        "functions": [{**f, "mass": round(function_mass(f), 4)} for f in fns],
+        "functions": [{**f, "mass": round(_mass(f), 4)} for f in fns],
     }
     return row, details
 
@@ -556,12 +549,8 @@ def reedit_stats(worktree: str, base_ref: str, prev_ref: str,
     is deliberate: it catches a one-line insertion into a large shared method,
     which line-of-diff blame would miss because both arms are near-purely additive."""
     try:
-        ns = subprocess.run(
-            ["git", "-C", worktree, "diff", "--name-status", "-M", prev_ref, cur_ref],
-            capture_output=True, text=True, timeout=60).stdout
-        cur_sha = subprocess.run(
-            ["git", "-C", worktree, "rev-parse", cur_ref],
-            capture_output=True, text=True, timeout=60).stdout.strip()
+        ns = _git(worktree, ["diff", "--name-status", "-M", prev_ref, cur_ref])
+        cur_sha = _git(worktree, ["rev-parse", cur_ref]).strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"reedit_body_lines": None, "reedit_prior_lines": None, "reedit_rate": None}
     modified = [p.split("\t")[-1] for p in ns.splitlines()
@@ -580,16 +569,7 @@ def reedit_stats(worktree: str, base_ref: str, prev_ref: str,
     body_total = prior = 0
     for f in modified:
         ranges = _changed_ranges(worktree, prev_ref, cur_ref, f)  # new-side edited regions
-        if not ranges:
-            continue
-        try:
-            code = subprocess.run(["git", "-C", worktree, "show", f"{cur_ref}:{f}"],
-                                  capture_output=True, text=True, timeout=60).stdout
-            fns = lizard.analyze_file.analyze_source_code(f, code).function_list
-        except Exception:
-            continue
-        edited = [fn for fn in fns
-                  if any(not (fn.end_line < a or fn.start_line > b) for a, b in ranges)]
+        edited = _overlapping_functions(worktree, cur_ref, f, ranges)
         if not edited:
             continue
         blame = _blame_line_commits(worktree, cur_ref, f)

@@ -323,6 +323,19 @@ def ols_slope(xs: np.ndarray, ys: np.ndarray) -> float:
     return float(np.polyfit(xs, ys, 1)[0])
 
 
+def _bucket_by_checkpoint(chain_series: dict[int, list[tuple[int, float]]],
+                          sample: list[int] | None = None) -> dict[int, list[float]]:
+    """checkpoint -> [value across the selected chains]. `sample` (chain keys, with
+    repeats allowed for a bootstrap replicate) selects/weights which chains; default
+    = each chain once. The shared aggregation for the mean curve and the plots."""
+    keys = list(chain_series) if sample is None else sample
+    acc: dict[int, list[float]] = defaultdict(list)
+    for c in keys:
+        for k, v in chain_series[c]:
+            acc[k].append(v)
+    return acc
+
+
 def bootstrap_slope(chain_series: dict[int, list[tuple[int, float]]],
                     n_boot: int = 2000, seed: int = 0) -> tuple[float, float, float]:
     """Mean-curve slope with a bootstrap CI over chains.
@@ -336,10 +349,7 @@ def bootstrap_slope(chain_series: dict[int, list[tuple[int, float]]],
         return (math.nan, math.nan, math.nan)
 
     def mean_curve(sample: list[int]) -> tuple[np.ndarray, np.ndarray]:
-        acc: dict[int, list[float]] = defaultdict(list)
-        for c in sample:
-            for k, v in chain_series[c]:
-                acc[k].append(v)
+        acc = _bucket_by_checkpoint(chain_series, sample)
         ks = sorted(acc)
         return np.array(ks, dtype=float), np.array([np.mean(acc[k]) for k in ks])
 
@@ -370,13 +380,12 @@ def phase_means(rows: list[dict], field: str):
     return order, [float(np.mean(acc[p])) if acc[p] else math.nan for p in order]
 
 
-def evoscore(rows: list[dict], gamma: float, signal: str = "strict_pass") -> float:
-    """gamma-weighted mean of a 0/1 (or continuous) success signal over a chain,
-    averaged across chains."""
+def evoscore(rows: list[dict], gamma: float) -> float:
+    """gamma-weighted mean of the 0/1 strict-pass signal over a chain, averaged
+    across chains (later checkpoints discounted by gamma**i)."""
     per_chain = defaultdict(list)
     for r in rows:
-        val = 1.0 if signal == "strict_pass" and _b(r[signal]) else \
-              (_f(r[signal]) if signal != "strict_pass" else 0.0)
+        val = 1.0 if _b(r["strict_pass"]) else 0.0
         per_chain[int(r["chain"])].append((int(r["checkpoint"]), val))
     scores = []
     for c, pairs in per_chain.items():
@@ -437,10 +446,7 @@ def plot_metric(groups: dict, field: str, title: str, out_path: str) -> None:
         cs = series_by_chain(rows, field)
         if not cs:
             continue
-        acc = defaultdict(list)
-        for c in cs:
-            for k, v in cs[c]:
-                acc[k].append(v)
+        acc = _bucket_by_checkpoint(cs)
         ks = sorted(acc)
         if not ks:
             continue
@@ -471,10 +477,8 @@ def main() -> int:
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
 
-    # Single source of truth: the checkpoint COMMITS + raw capture on the evolve
-    # branches. Every derived number is recomputed here (nothing derived is read
-    # from the branches), so a metric added to metrics.compute_all applies to every
-    # past run without re-invoking the agent.
+    # Everything derived is recomputed here from the commits + capture (see module
+    # header); nothing derived is read from the branches.
     for name, arm_cfg in cfg["arms"].items():
         arm_cfg["repo"] = expand_path(arm_cfg["repo"], f"arms.{name}.repo")
 

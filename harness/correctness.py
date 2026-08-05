@@ -93,7 +93,15 @@ def _parse_surefire(worktree: str, cfg: dict) -> tuple[dict[str, bool], list[dic
     for report in glob.glob(pattern):
         try:
             root = ET.parse(report).getroot()
-        except ET.ParseError:
+        except ET.ParseError as e:
+            # An unparseable report would otherwise silently shrink total_selected
+            # (the "test left no trace" failure run_tests wants to avoid). Record it
+            # as a report-level error: passed=None keeps it OUT of `results`/scoring
+            # but visible in the captured detail.
+            detail.append({"test_id": os.path.basename(report), "passed": None,
+                           "skipped": None, "time": 0.0,
+                           "failure": f"unparseable surefire report: {e}"[:500],
+                           "report_error": True})
             continue
         for case in root.iter("testcase"):
             cls = case.get("classname", "")
