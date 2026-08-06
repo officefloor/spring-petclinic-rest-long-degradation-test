@@ -165,7 +165,9 @@ def wait_for_window(ar, cfg: dict) -> float:
     secs = secs if secs is not None else limits.get("poll_seconds", 1800)
     secs = max(60, min(secs, limits.get("max_sleep_seconds", 6 * 3600)))
     resume = datetime.now() + timedelta(seconds=secs)
-    print(f"    [limit] token limit reached — waiting {int(secs)}s "
+    is_auth = agent.looks_like_auth((ar.error or "") + " " + (ar.result_text or ""))
+    kind = "auth expired — re-login (`/login`) to resume" if is_auth else "token limit reached"
+    print(f"    [limit] {kind} — waiting {int(secs)}s "
           f"(until ~{resume:%H:%M:%S}) then retrying the same checkpoint...", flush=True)
     time.sleep(secs)
     return secs

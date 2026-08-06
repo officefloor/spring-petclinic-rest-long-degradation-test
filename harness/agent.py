@@ -108,7 +108,7 @@ class AgentResult:
     stop_reason: str = ""       # result subtype: success / error_max_turns / ...
     result_text: str = ""
     error: str = ""
-    limit_reached: bool = False  # usage/session limit; caller waits for the quota reset then retries
+    limit_reached: bool = False  # usage/session limit OR auth expiry; caller waits (quota reset / re-login) then retries
     retryable: bool = False      # transient failure (network/overload/no-completion); short backoff then retry
 
 
@@ -144,6 +144,26 @@ _RETRYABLE_PHRASES = (
 
 def looks_retryable(text: str) -> bool:
     return _matches(text, _RETRYABLE_PHRASES)
+
+
+# Auth/session expiry that needs a (possibly manual) re-login before the run can
+# continue. Treated like a quota LIMIT (wait and poll the SAME checkpoint until it
+# works again) rather than a transient failure, so an OAuth expiry mid-run pauses
+# and resumes on the next successful `/login` instead of silently burning the chain
+# as a no-op turn. Distinctive phrases, so they can't match a healthy build's output.
+# Kept DISTINCTIVE to the CLI's own auth plumbing -- deliberately NOT generic tokens
+# like "401"/"unauthorized", which a security-feature checkpoint's own test output
+# could emit and which would then trigger an endless auth-wait on an unrelated failure.
+_AUTH_PHRASES = (
+    "oauth session expired", "session expired and could not be refreshed",
+    "could not be refreshed", "failed to authenticate", "failed to refresh",
+    "authentication_error", "invalid api key", "invalid x-api-key",
+    "please run /login", "run `claude login`", "credentials could not be refreshed",
+)
+
+
+def looks_like_auth(text: str) -> bool:
+    return _matches(text, _AUTH_PHRASES)
 
 
 def _result_from_obj(data: dict) -> AgentResult:
@@ -296,16 +316,25 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         # No completion within the timeout — often an overloaded/unresponsive API.
         return AgentResult(ok=False, error=f"agent timed out after {timeout}s (no completion)",
                            retryable=True)
+    err_tail = "".join(stderr_buf)[-2000:].strip()
     if result_obj is None:
-        # Process ended without a result: crash, or the network cut mid-stream.
-        err = "".join(stderr_buf)[-1000:].strip()
-        lim = looks_like_limit(err)
-        return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err}",
+        # Process ended without a result: crash, network cut mid-stream, or an auth
+        # expiry that killed the process before any result event.
+        lim = looks_like_limit(err_tail) or looks_like_auth(err_tail)
+        return AgentResult(ok=False, error=f"no result from agent (exit {proc.returncode}): {err_tail}",
                            limit_reached=lim, retryable=not lim)
     res = _result_from_obj(result_obj)
     res.model = res.model or captured["model"] or model
     res.session_id = res.session_id or captured["session_id"]
-    res.limit_reached = looks_like_limit(res.result_text)
+    # An auth/session expiry can arrive as an is_error result whose message is only on
+    # stderr (result_text empty), so classification must inspect the stderr tail too --
+    # but ONLY for a failed turn, so a healthy build's stderr can't false-match. Auth is
+    # mapped to limit_reached: the caller waits and polls the SAME checkpoint (allowing a
+    # manual /login) instead of committing an empty no-op turn and marching on.
+    fail_txt = "" if res.ok else (res.result_text + "\n" + err_tail)
+    res.limit_reached = looks_like_limit(fail_txt) or looks_like_auth(fail_txt)
+    if (not res.ok) and (not res.error) and looks_like_auth(fail_txt):
+        res.error = "authentication failed / session expired (needs re-login); waiting to retry"
     # Only an actual error result can be transient; a SUCCESSFUL completion never is
     # (its summary text may contain "503"/"timeout"/etc. from the agent's test runs).
     res.retryable = (not res.ok) and (not res.limit_reached) and looks_retryable(res.result_text)
