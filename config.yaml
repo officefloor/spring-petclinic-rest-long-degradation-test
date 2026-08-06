@@ -3,7 +3,7 @@
 # with --dry-run and --max-checkpoints 1.
 
 model: claude-opus-4-8
-chains: 1                    # independent runs per (arm, strategy). 10 = target for tight CIs.
+chains: 10                    # independent runs per (arm, strategy). 10 = target for tight CIs.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600
 

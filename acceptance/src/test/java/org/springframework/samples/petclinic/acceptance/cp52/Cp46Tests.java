@@ -5,18 +5,17 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp46 exclude-deleted, UPDATED by cp52: the v2 identity key still ignores owners flagged deleted, so
- *  a same-identity create after a deleted owner still succeeds. */
+/** cp46 exclude-deleted, UPDATED by cp52: the v2 identity key still ignores soft-deleted owners, so a
+ *  create matching only a DELETE-d owner still succeeds. */
 @Tag("cp46")
 class Cp46Tests extends AcceptanceBase {
 
 	@Test
-	void coreDeletedOwnerDoesNotBlock() throws Exception {
+	void coreDeletedIgnoredUnderV2Key() throws Exception {
 		ObjectNode a = structuredOwner();
-		a.put("deleted", true);
-		createOwnerOk(a);
-		ObjectNode b = a.deepCopy();
-		b.remove("deleted");
-		createOwner(b).andExpect(status().is2xxSuccessful());
+		a.put("email", uniqueEmail());
+		int id = createOwnerOk(a);
+		deleteOwner(id);
+		createOwner(a.deepCopy()).andExpect(status().is2xxSuccessful());
 	}
 }

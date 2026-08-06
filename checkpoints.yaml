@@ -3,7 +3,9 @@
 #
 # DESIGN — ONE ENDPOINT, EVOLVING. Every checkpoint adds (or, for a MUTATIVE
 # checkpoint, revises) a business rule on the SAME endpoint: create owner
-# (POST /api/owners). No new endpoints. Each rule requires real CODE — a
+# (POST /api/owners). No NEW endpoints are added; the one rule that touches another
+# route is cp46, which converts the pre-existing owner DELETE from a hard delete to a
+# soft delete so create can ignore deleted owners. Each rule requires real CODE — a
 # cross-entity query, an aggregate/count, a date or string computation, a derived
 # field, a conditional, or a logged side-effect — so none can be satisfied by a
 # field constraint in openapi.yml alone.
@@ -200,7 +202,7 @@ checkpoints:
   - id: salutation
     spec: "The request may include 'title' (MR/MRS/MS/DR). Return 'salutation' = title + ' ' + lastName, or just lastName when no title is given."
   - id: exclude-deleted
-    spec: "The duplicate and identity checks must ignore owners flagged 'deleted' true; a normally-blocking duplicate is allowed when the only match is a deleted owner."
+    spec: "Change owner deletion to a soft-delete. DELETE /api/owners/{id} must now mark the owner deleted rather than removing the record: it sets 'deleted' true, retains the row, and returns 2xx; GET /api/owners/{id} still returns the owner afterwards with 'deleted' true. A newly created owner has 'deleted' false. The create endpoint's duplicate and identity checks must then ignore owners flagged deleted, so a normally-blocking duplicate is allowed when the only matching owner has been deleted."
   - id: holiday-business-day
     spec: "The business-day rule for the registration date must extend to public holidays: when the adjusted date lands on a listed public holiday, roll forward to the next non-holiday business day. The fixed public-holiday list is 2026-01-01, 2026-01-26, 2026-04-25, 2026-12-25, 2026-12-28."
 

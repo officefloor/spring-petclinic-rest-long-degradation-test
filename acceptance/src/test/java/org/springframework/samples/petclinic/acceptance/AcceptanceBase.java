@@ -1,5 +1,6 @@
 package org.springframework.samples.petclinic.acceptance;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -180,6 +181,12 @@ public abstract class AcceptanceBase {
 
 	protected ResultActions getOwner(int id) throws Exception {
 		return mvc.perform(get("/api/owners/" + id));
+	}
+
+	/** Soft-delete an owner via DELETE /api/owners/{id} (asserts 2xx). The record is retained,
+	 *  flagged deleted, so the create endpoint's duplicate/identity checks ignore it. */
+	protected void deleteOwner(int id) throws Exception {
+		mvc.perform(delete("/api/owners/" + id)).andExpect(status().is2xxSuccessful());
 	}
 
 	/** GET the owner and return its JSON body (asserts 2xx). */
