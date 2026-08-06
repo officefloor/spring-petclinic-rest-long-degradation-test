@@ -1,0 +1,238 @@
+# AGENTS.md — PetClinic-Evolve harness developer guide
+
+Canonical orientation for anyone (human or AI) **developing or extending the
+harness itself**. `CLAUDE.md` points here; `README.md` covers the experiment
+rationale and how to run it. Where any doc disagrees with this file, **this file
+wins** (the README predates several 2026-08 design changes noted below).
+
+> **MAINTENANCE DIRECTIVE — read before you change code.**
+> This file and `README.md` are the entry points others rely on to extend the
+> harness with AI. **Whenever you change harness behaviour, update both in the
+> same change:**
+> - a change to `harness/*.py` behaviour, the run lifecycle, capture/derive
+>   split, isolation, or resilience → update the matching section here **and** the
+>   README;
+> - a change to the checkpoint plan, acceptance-suite conventions, `mutates`
+>   discipline, or the reference tables → update "The acceptance suite" here and
+>   the README's suite section;
+> - a new config knob → update "Config knobs" here and `config.yaml`'s comments.
+> Keep the "Module map" table and the "Gotchas / lessons" list current — they are
+> the fastest way for a newcomer to get oriented. If you add a doc, link it here.
+
+> This is the guide for the *harness* repo. It is unrelated to the `CLAUDE.md`
+> that the experiment **pins into each arm's base repo** (`isolation.pin_files`);
+> that one is a fixed project guide handed to the checkpoint agent, not this file.
+
+## What the experiment is
+
+Hold the coding agent **fixed** (`claude-opus-4-8`) and make **architecture** the
+independent variable — Spring `@RestController` methods vs OfficeFloor
+YAML-composed functions — then measure how each codebase degrades as ~60
+accumulating change "checkpoints" land on the **one** endpoint `POST /api/owners`.
+Thesis: Spring's single handler erodes (complexity concentrates into a
+god-method; comprehension cost climbs) while OfficeFloor stays flat (each rule is
+a new small wired function). **Erosion slope and blast-radius are the decisive
+statistics.** Methods borrow from SlopCodeBench (arXiv:2603.24755 — Erosion,
+Verbosity, degradation slope, prompt arms) and SWE-CI (arXiv:2603.03823 —
+Normalized Change, EvoScore, Zero-Regression Rate).
+
+## Module map (`harness/`)
+
+| file | responsibility |
+|---|---|
+| `run_experiment.py` | the driver. `run_chain` walks checkpoints; two commits per checkpoint; the agent-view / measurement-suite / gate / capture flow. Entry point `main`. |
+| `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation). `probe()` is the read-only cold-reader. |
+| `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
+| `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion, hotspot, WMC, blast-radius, change-spread, re-edit coupling; jscpd + ast-grep for verbosity. |
+| `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. |
+| `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
+| `__init__.py` | shared helpers: `git_out` (graceful, for derive/analyze), `expand_path`. |
+
+`acceptance/` holds the black-box test suite (see below). `checkpoints.yaml` is
+the ordered rule stream; `config.yaml` wires arms/paths/limits.
+
+## The checkpoint lifecycle (current design)
+
+Per chain, `make_worktree` cuts a fresh branch **`evolve/<run_id>/<strategy>/<arm>/chain<n>`**
+from the untouched `base_ref` (note the order: run_id first — the README's older
+`<strategy>/<arm>/chain/<run_id>` is wrong). Then for each checkpoint k, **two commits**:
+
+1. **Agent view is set to ONLY this checkpoint's own test** (`set_agent_view`):
+   the acceptance dir holds shared infra + `CpKTests.java` and *nothing else*.
+   **The agent never sees prior tests** — this is the blind-agent design (below).
+2. **Agent turn** — fresh `claude -p`, spec only, no `--continue`. Retry loop
+   (`_run_agent_turn`) handles limit / transient / auth (below).
+3. **COMMIT 1 `cpNN agent <id>`** — parented on the pre-agent state, so its diff
+   is *exactly* the agent delta. Tamper/pin edits recorded (`detect_agent_tamper`,
+   `pinned_touched`) then left in place for the commit.
+4. **Normalize + install measurement suite** — restore pinned `CLAUDE.md`; then
+   `install_measurement_suite` installs the FULL resolved cp01..cpK authored suite
+   (the priors the agent never saw), overwriting any agent test-tamper, so a
+   weakened visible test can't buy a false pass.
+5. **Gate** (`correctness.run_tests`) against that full suite → regressions become
+   REAL: a failure on a prior rule the agent couldn't see is the signal.
+6. **COMMIT 2 `cpNN reset <id>`** — normalization + `set_agent_view(next cp)` so
+   cp(k+1) starts blind and its agent commit stays pure.
+7. **Structural metrics** over the agent commit (log-only; analyze recomputes).
+8. **Cold-reader probe** at `probe.at_checkpoints`.
+9. **Raw capture** written (`cpNN.json`, `.agent.jsonl`, `.agent.diff`, `.build.log`).
+
+End of chain: one `results:` commit persists **only raw** `evolve-results/`
+(`capture/`, `provenance.json`, `config/` snapshot). No derived table on the branch.
+
+## The two design pillars added 2026-08 (do not regress these)
+
+### 1. Blind-agent regression measurement
+The agent is given **only the current checkpoint's own test** while it works;
+the full cp01..cpK suite is installed **only for the post-commit gate**. Rationale:
+if the agent sees every prior test it has a checklist and regressions are ~0 by
+construction — which measures the wrong thing. Blind, a change that silently
+breaks unseen prior behaviour actually regresses, and that's the architecture
+signal. Implemented by `set_agent_view` / `install_measurement_suite` /
+`detect_agent_tamper` in `run_experiment.py`. `analyze` re-derives regressions
+from the captured raw test map, so this needs no analyze change.
+
+### 2. Per-call config/memory isolation
+Each `claude -p` runs under a throwaway `CLAUDE_CONFIG_DIR` seeded with **only the
+login credentials** (`_seed_clean_config_dir` in `agent.py`). Without this, Claude
+Code auto-memory writes project "learnings" into
+`~/.claude/projects/<repo>/memory/`, keyed by the git common dir — which for all
+of an arm's worktrees is the ONE base repo. That memory would leak across
+checkpoints (breaking the no-context condition) and, asymmetrically, between
+arms. A fresh login-only config dir per call guarantees a pristine, stateless
+Claude; the real `~/.claude` is never read or written. **If you touch `run_agent`,
+preserve this.**
+
+## The acceptance suite (`acceptance/`)
+
+Black-box MockMvc tests (`@SpringBootTest`, full app boot) so both arms are judged
+identically. One primary `CpNNTests` per checkpoint, `@Tag("cpNN")`, methods
+prefixed `core`/`error`/`functionality`. Shared base `AcceptanceBase` +
+`AuditLogCapture` (asserts the `AUDIT`/`NOTIFY` loggers via a Logback appender).
+Uses `tools.jackson` (Jackson 3), not `com.fasterxml`.
+
+**Deterministic oracle.** Every test asserts an **exact** value — never
+`exists`/`isNotEmpty`/a TODO — because it is the regression oracle: an existence
+check can't detect a corrupted value. Since the checkpoint's own test is handed to
+the agent, the test *can* pin the exact expected value and the agent must match:
+- Pure derivations → assert the computed string/number.
+- Hashes / Luhn → the test **recomputes** them (`sha256hex`, `shaHex`, `luhn` in
+  `AcceptanceBase`) and asserts equality; or asserts a relationship (same inputs →
+  same id) where internal normalization is opaque.
+- Lookups (region/postcode/timezone/holiday) → **pinned reference tables** in
+  `AcceptanceBase` (`CITY_REGION`, `REGION_POSTCODES`, `REGION_TIMEZONE`,
+  `HOLIDAYS`) mirrored into the relevant checkpoint specs, so both arms implement
+  identical ground truth and the test asserts the exact value.
+- Removed-field mutations assert **absence only** (so they survive later
+  restructuring without needing to be re-listed).
+
+**Mutative checkpoints and the `mutates` discipline.** A mutative checkpoint
+(`type: mutative`) revises prior rules. Its `tests:` manifest ships its own test
+PLUS updated copies of exactly the prior tests it changes, under a `cpNN/`
+subdir, installed **by basename** so `cp32/Cp14Tests.java` overwrites the running
+`Cp14Tests.java`. `_authored_set` resolves the current version of each test by
+walking checkpoints 0..k (latest wins). **Invariant that keeps the signal clean:**
+
+> A mutation's `mutates` list must overwrite EXACTLY the set of prior tests whose
+> asserted output it changes — no more, no less.
+
+Too few → a prior test asserts a now-changed value and fails as a *false*
+regression. Too many → you mask a rule that could have caught a real regression.
+Exactly right → any *other* prior test that goes red is a genuine regression.
+Auditing `mutates` for completeness is part of authoring any mutation. (Examples
+found this session: cp48→[14], cp56 must include 9/14/16/21/31 because it removes
+customerCode+membershipNumber, cp60 must include 11/28/41/57 because it moves
+identifiers under a nested `identity` object.)
+
+**The generator is superseded.** `acceptance/scaffold_tests.py` originally
+generated the whole tree from `checkpoints.yaml`, but the tests were then
+hand-authored to be deterministic. **The `.java` tree is now the source of
+truth** — do NOT re-run the generator (it would overwrite authored tests back to
+stubs). Edit the `.java` files directly.
+
+## Isolation & fairness (all must hold)
+
+- **No carried context** — fresh `claude -p` per checkpoint, never
+  `--continue`/`--resume`.
+- **`CLAUDE.md` pinned** into the arm repo, restored to base after each agent
+  turn (can't become cross-checkpoint memory); edits flagged in `pinned_touched`.
+- **Per-call `CLAUDE_CONFIG_DIR` isolation** (pillar 2 above).
+- **Structural metrics Java-only**, identical tools/thresholds both arms; YAML LOC
+  reported separately (`yaml_loc`).
+
+## Resilience (retry classification in `agent.py`)
+
+Terminal agent outcomes are classified against the result text AND the stderr tail
+(auth messages land on stderr), gated to failed turns so a healthy build can't
+false-match:
+- **`_LIMIT_PHRASES`** (quota/session limit) and **`_AUTH_PHRASES`** (OAuth expiry
+  / re-login needed) → `limit_reached`: the caller **waits and polls the SAME
+  checkpoint** (`wait_for_window`, `poll_seconds` default 30 min) until it
+  recovers. A manual `/login` mid-run resumes. **Auth phrases are kept distinctive**
+  (not generic `401`/`unauthorized`, which a security-feature checkpoint's own test
+  output could emit → endless false wait).
+- **`_RETRYABLE_PHRASES`** (network/overload) → short exponential backoff, aborts
+  after `max_transient_attempts`.
+- Anything else on a failed turn is treated as a completed no-op — which is why the
+  auth classification matters: **before the 2026-08 fix, an OAuth expiry was an
+  unclassified no-op that silently committed empty deltas and burned whole chains.**
+
+## Running it
+
+```bash
+python -m harness.run_experiment --config config.yaml --dry-run          # wiring check
+python -m harness.run_experiment --config config.yaml --arm spring --chain 0 --max-checkpoints 12   # smoke
+python -m harness.run_experiment --config config.yaml                     # full run (chains × 2 arms)
+python -m harness.run_experiment --config config.yaml --run-id <id> --arm officefloor --chain 2      # re-run ONE chain into an existing run
+python -m harness.analyze --config config.yaml --run-id <id>
+```
+
+`make_worktree` is idempotent per run_id (force-removes the worktree, deletes the
+branch, recreates from base) so a single-chain re-run into an existing run_id is
+safe and leaves completed chains untouched. Loop order is **chain-outer,
+arm-inner** (`spring/chain0, officefloor/chain0, spring/chain1, …`) so arms are
+time-matched.
+
+**Compile-check the resolved suite at any depth** (how test authoring was verified
+this session):
+```python
+from harness import run_experiment as R          # in a throwaway base worktree
+R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -DskipTests test-compile
+```
+
+## Config knobs (`config.yaml`)
+
+- `chains` — independent runs **per (arm, strategy)**; total = chains × arms. `10`
+  for tight CIs, `1` for validation.
+- `arms.<arm>.entry_handler` — the ONE create function whose CC trajectory is
+  tracked (Spring `OwnerRestControllerV1::addOwner`, OfficeFloor `BuildOwner::service`).
+- `arms.<arm>.function_package_glob` — OfficeFloor's wired-function dir (fn_count /
+  fn_nloc_max); null for Spring.
+- `limits.*` — poll/backoff/cap tuning for the resilience paths.
+- `probe.at_checkpoints` (every 10) and `probe.expected` (recall tokens spanning
+  cp1..60).
+- `isolation.pin_files` — `["CLAUDE.md"]`.
+
+## Gotchas / lessons (2026-08)
+
+- **"60 checkpoints captured" ≠ valid.** An auth-dead turn still writes a capture
+  record. The dead signature is `agent.ok=False, cost_usd=0, output_tokens=0,
+  num_turns=1` and an empty agent commit. Always scan for it before trusting a
+  chain (this is how a run that looked "Spring 3/3, OF 2/3" was really "only Spring
+  chain0 valid" — auth had died at OF chain0 cp09).
+- **Both arm base repos already ship a hard-delete `DELETE /api/owners/{id}`.**
+  cp46 (`exclude-deleted`) therefore *converts* it to a soft-delete (flag+retain);
+  its test asserts GET-after-DELETE returns 200 + `deleted=true`, which fails if any
+  hard-delete remains.
+- **Back-half checkpoints are slow.** Threshold tests (cp18 fills a city to 50,
+  cp19 creates 100, cp54 to 40) re-run at every later gate, so a full chain
+  averaged ~8 min/checkpoint (~4× the shallow published run). Budget a 20-chain
+  run at roughly a week and ~$1.5k.
+- **Request-contract changes must stay backward-compatible.** New request fields
+  (cp29 postcode, cp44 structured address) are additive/optional so the shared
+  `ownerNode()` helper stays valid at every later gate in both arms; a strict
+  rename would spray false regressions (this is why cp60 avoids renaming request
+  fields — see its note in `checkpoints.yaml`).
+- **`work/`, `results/`, `.venv/` are gitignored;** the base branches stay
+  pristine. Clearing `work/` deletes capture files — analyze then needs the pushed
+  evolve branches instead.

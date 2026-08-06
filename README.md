@@ -1,5 +1,16 @@
 # PetClinic-Evolve
 
+<!-- MAINTAINERS: keep this README and AGENTS.md in sync with the harness on every
+     behavioural change (see the maintenance directive at the top of AGENTS.md).
+     This README is the experiment-facing doc (rationale, setup, run, read results);
+     AGENTS.md is the harness-development guide and is the source of truth for
+     internals. Update both together. -->
+
+> **Developing or extending the harness?** Read **[AGENTS.md](./AGENTS.md)** (also
+> referenced by `CLAUDE.md`) — the architecture, the checkpoint lifecycle, the
+> design pillars, the acceptance-suite conventions, and the run/analyze internals.
+> AGENTS.md supersedes this README wherever they disagree.
+
 A long-horizon degradation harness that holds the coding agent **fixed** and
 makes **architecture** the independent variable: Spring `@RestController`
 methods vs OfficeFloor YAML-composed functions. It borrows its measurement
@@ -30,49 +41,56 @@ branches and reports). File references point at `harness/`.
    with a clear message if a variable is undefined; relative paths are then
    anchored to the config-file directory so the tree is movable.
 3. Load `checkpoints.yaml` and number the checkpoints 1..N.
-4. Open the per-run log CSV at `results/<run_id>/records.csv`, then loop over
-   `arm × chain` (respecting `--arm` / `--strategy` / `--chain`).
+4. Loop over `arm × chain` (respecting `--arm` / `--strategy` / `--chain`). No
+   local CSV is written by the run — derived numbers are printed to the log only;
+   `analyze` produces the CSV/tables from the branches afterwards.
 
 ### Per chain (`run_chain`)
 
-`make_worktree` runs `git worktree add -b evolve/<strategy>/<arm>/chain<n>/<run_id>
+`make_worktree` runs `git worktree add -b evolve/<run_id>/<strategy>/<arm>/chain<n>
 <wt> <base_ref>`: a fresh checkout on a **new** branch started from the base
-branch. The base branch is only ever read — never checked out, never committed
-to (a guard refuses any branch not under `evolve/`).
+branch (note the order — `run_id` first). The base branch is only ever read —
+never checked out, never committed to (a guard refuses any branch not under
+`evolve/`).
 
-Then, for each checkpoint `k` (1→N), in this exact order:
+Then, for each checkpoint `k` (1→N), in this exact order. Each checkpoint produces
+**two commits** — an *agent* commit (exactly what the AI changed) followed by a
+*reset* commit (the harness normalisation + setup for the next checkpoint):
 
-Each checkpoint produces **two commits** — an *agent* commit (exactly what the AI
-changed) followed by a *reset* commit (the harness normalisation + setup for the
-next checkpoint):
-
-0. **Test already present.** `CpKTests.java` was injected by the *previous*
-   checkpoint's reset commit (for k=1, `Cp01Tests.java` + shared infra is injected
-   here). The agent sees cp01..cpK tests, never future requirements.
+0. **Blind agent view.** Only this checkpoint's own `CpKTests.java` (plus the
+   shared infra) is present while the agent works — set by the *previous*
+   checkpoint's reset commit (`set_agent_view`), or here at k=1. **The agent never
+   sees prior tests.** This is deliberate: with a full checklist of prior tests
+   visible, regressions are ~0 by construction. Blind, the agent must preserve
+   earlier behaviour it cannot see, so a silent break becomes a measurable
+   regression (see AGENTS.md → "Blind-agent regression measurement").
 1. **Agent turn** — a **fresh** headless `claude -p` with only the checkpoint
    spec, no `--continue`/`--resume` (SlopCodeBench's no-carried-context
-   condition). Cost, tokens, `duration_api_ms` etc. are captured. If the agent
-   hits a **token/session limit**, the harness snapshots the pre-agent state,
-   rolls back the interrupted attempt, **waits for the window to reopen** (parsed
-   from the reset time, else `limits.poll_seconds`), and retries the *same*
-   checkpoint — so an overnight pause resumes exactly where it left off.
+   condition), under a per-call login-only `CLAUDE_CONFIG_DIR` so no memory leaks
+   between checkpoints or arms. Cost/tokens/`duration_api_ms` captured. On a
+   **token/session limit OR an auth expiry**, the harness rolls back the attempt,
+   **waits and retries the same checkpoint** (a manual `/login` mid-run resumes);
+   a **transient** failure backs off short then retries (see AGENTS.md →
+   "Resilience").
 2. **COMMIT 1 — `cpNN agent <id>`.** Parented on the pre-agent state, so its diff
-   is **exactly what the agent changed** (production code + any CLAUDE.md edit + any
-   acceptance-test tamper). `pinned_touched` / `acceptance_touched` are recorded
-   first; the edits are *left in place* so this commit preserves them. An empty
-   commit means a no-op checkpoint.
-3. **Normalise for the next run:** restore `CLAUDE.md` to base (it can never become
-   cross-checkpoint memory) and reset the acceptance tests to authored — both
-   *before* the gate, so a weakened test or edited guide can never produce a false
-   pass.
+   is **exactly what the agent changed**. `pinned_touched` / `acceptance_touched`
+   are recorded first; the edits are *left in place* so this commit preserves them.
+   An empty commit means a no-op checkpoint.
+3. **Normalise + install the measurement suite:** restore `CLAUDE.md` to base (it
+   can never become cross-checkpoint memory), then install the **full resolved
+   cp01..cpK authored suite** — the priors the agent never saw — overwriting any
+   agent test-tamper, both *before* the gate so a weakened visible test or edited
+   guide can never produce a false pass.
 4. **Gate** (`correctness.run_tests`) — compile, run `-Dgroups=cp01..cpK` on the
-   authored tests, parse Surefire XML. Classify by class (`CpNNTests`) and method
-   prefix (`core`/`error`/`functionality`); cp&lt;K counts as **Regression**.
-   Produce Strict / ISO / Core, **Normalized Change** (SWE-CI), and regression count.
-5. **COMMIT 2 — `cpNN reset <id>`.** The harness normalisation (pinned docs +
-   acceptance reset) plus the **next checkpoint's injected test** — the content
-   that sets up the next run. Kept even if empty, so every checkpoint is a clean
-   two-commit boundary and cp(K+1)'s agent commit stays pure.
+   full authored suite, parse Surefire XML. Classify by class (`CpNNTests`) and
+   method prefix (`core`/`error`/`functionality`). Produce Strict / ISO / Core,
+   **Normalized Change** (SWE-CI), and both `regressions` and `true_regressions`
+   (the latter excludes breakage a mutative checkpoint intended — see the `mutates`
+   discipline in AGENTS.md).
+5. **COMMIT 2 — `cpNN reset <id>`.** The harness normalisation plus
+   `set_agent_view` for the **next** checkpoint (its own test only) — so cp(K+1)
+   starts blind and its agent commit stays pure. Kept even if empty, so every
+   checkpoint is a clean two-commit boundary.
 6. **Structural metrics** (Java production source only, `metrics.compute_all`),
    measured over the **agent commit** (`base_for_cp..agent`, i.e. the pure agent
    delta): `lizard` gives per-function CC/SLOC. Erosion is reported **twice** — `erosion`
@@ -214,63 +232,65 @@ officefloor}` on the right branches and installs the Python deps into `.venv`
 The base branch is only ever **read** as a start point — it is never modified.
 
 1. **Do NOT pre-commit the acceptance suite to the base branch.** The tests stay
-   in this harness under `acceptance/` and are **injected per checkpoint**: at
-   checkpoint K the harness copies `CpKTests.java` (plus the shared infra
-   `AcceptanceBase`/`AuditLogCapture` at K=1) into the worktree, so the agent
-   only ever sees cp01..cpK and never the future requirements' tests. The
-   injected test folds into that checkpoint's single commit (no separate test
-   commit). If the agent edits an acceptance test, it is **restored** to the
-   authored version before the gate and flagged in the `acceptance_touched`
-   column (and the analysis "acceptance-tamper rate").
+   in this harness under `acceptance/` and are **installed per checkpoint**. While
+   the agent works it sees **only this checkpoint's own `CpKTests.java`** (plus the
+   shared infra `AcceptanceBase`/`AuditLogCapture`) — never the prior tests (the
+   blind-agent design). The full cp01..cpK suite is installed only for the
+   post-commit gate. If the agent edits a *visible* test it is restored to authored
+   before the gate and flagged in `acceptance_touched` (and the analysis
+   "acceptance-tamper rate").
 
-   Nothing to copy by hand — just keep `acceptance.src_dir` in `config.yaml`
-   pointing at the harness suite (the default). The base branch needs only the
-   app plus its normal test dependencies (`spring-boot-starter-test`, JUnit 5,
-   Jackson, `logback-classic`).
+   Nothing to copy by hand — keep `acceptance.src_dir` in `config.yaml` pointing at
+   the harness suite (the default). The base branch needs only the app plus its
+   normal test dependencies (`spring-boot-starter-test`, JUnit 5, Jackson 3
+   (`tools.jackson`), `logback-classic`).
 
 2. **Acceptance-test contract** (so scoring works without JUnit tags in the
-   Surefire XML):
-   - One class per checkpoint, named `CpNNTests`, tagged `@Tag("cpNN")`.
-   - Category is encoded in the **method name**: methods start with `core...`,
-     `error...`, or `functionality...`. (Do not use `@DisplayName` — the raw
-     method name must reach the Surefire XML so the prefix classifies it.)
-   - Tests are **black-box** (drive the REST API via MockMvc, booting the full
-     app) so both arms are judged identically.
-   - `functionality` = hidden exhaustive checks; `core` = behaviour the spec
-     states; `error` = failure modes; **Regression** is computed automatically
-     as any cp&lt;K test still selected at checkpoint K.
+   Surefire XML) — full detail in **AGENTS.md → "The acceptance suite"**:
+   - One primary class per checkpoint, `CpNNTests`, tagged `@Tag("cpNN")`; a
+     mutative checkpoint also ships `cpNN/CpMMTests.java` replacements that
+     overwrite the prior tests it changes (the `mutates` discipline).
+   - Category is encoded in the **method name** (`core`/`error`/`functionality`);
+     do not use `@DisplayName` (the raw method name must reach the Surefire XML).
+   - Tests are **black-box** (MockMvc, full app boot) so both arms are judged
+     identically, and **deterministic** — every assertion is an exact/computed/
+     pinned value (never `exists`/a TODO), because the suite is the regression
+     oracle.
+   - `regressions` = any prior test that fails at checkpoint K; `true_regressions`
+     excludes failures a mutative checkpoint intended (its `mutates` list).
 
-   **Acceptance-suite assumptions** (adjust to your exact API before running):
-   - 56 tests across 20 classes. `AcceptanceBase` boots the app with
-     `@SpringBootTest @AutoConfigureMockMvc`; `AuditLogCapture` asserts the
-     `AUDIT` logger (cp09/cp10) via a Logback appender — rename it if yours
-     differs.
-   - Endpoints assumed: `POST/PUT/GET /api/owners`, `POST /api/owners/{id}/pets`,
-     `PUT /api/pets/{petId}`; `PetType` id 1 exists in seed data.
-   - New fields the agent must add: `email` (cp12/13), `postcode` (cp17),
-     `registrationDate` (cp11), `displayName` (cp20). Tests read them back over
-     GET, so they fail until the field is added AND serialised.
-   - **Headroom matters.** Several behaviours (required fields, telephone
-     pattern) may already exist in these branches (they are the finished
-     comparison apps). Any checkpoint already satisfied starts green and yields
-     no degradation signal — remove those behaviours on the base branch, or drop
-     those checkpoints. Run `analyze` after a smoke run to see which start green.
-   - Tests use unique phones/emails per created owner, so they are independent
-     within a shared-context boot. Keep it that way if you add tests.
+   **Current suite:** 60 primary `CpNNTests` + the mutative `cpNN/` replacements +
+   shared infra. `AcceptanceBase` boots the app with `@SpringBootTest
+   @AutoConfigureMockMvc` and holds the pinned reference tables + hash/Luhn/
+   business-day helpers; `AuditLogCapture` asserts the `AUDIT`/`NOTIFY` loggers.
+   All rules land on `POST /api/owners`, except cp46 which converts the
+   pre-existing `DELETE /api/owners/{id}` from a hard delete to a soft delete.
+
+   > **Headroom / base-app assumptions matter.** The arm base branches are the
+   > finished comparison apps, so some behaviour may already exist (e.g. both ship a
+   > *hard-delete* owner DELETE — cp46 depends on that). A checkpoint already
+   > satisfied starts green and yields no signal. Smoke-run and check before a full
+   > run.
 
 3. **`CLAUDE.md`** should exist on *both* base branches as a fixed, human-authored
    project guide (it levels the field: OfficeFloor needs it to offset Spring's
    training-data advantage; Spring has one for symmetry). The harness pins it —
-   see *Isolation & fairness*.
+   see *Isolation & fairness*. (This is the arm-repo guide, distinct from the
+   harness repo's own `CLAUDE.md`/`AGENTS.md`.)
 
-4. Set `arms.spring.hotspot.methods` to the actual method names new owner
-   behaviour lands in (default `addOwner`/`updateOwner`).
+4. Set `arms.<arm>.entry_handler` to the ONE create function whose complexity
+   trajectory is tracked (default Spring `OwnerRestControllerV1::addOwner`,
+   OfficeFloor `BuildOwner::service`); the hotspot/erosion subsystem is otherwise
+   dynamic (files changed since `base_ref`), so no fixed method list is needed.
 
 ## Run
 
 Every run has a **`run_id`** (default: current time as `YYYYMMDDHHMM`, or pass
 `--run-id`). It branches each cell from the untouched base branch to
-`evolve/<strategy>/<arm>/chain<n>/<run_id>` and commits every checkpoint there.
+`evolve/<run_id>/<strategy>/<arm>/chain<n>` and commits every checkpoint there.
+`make_worktree` is idempotent per run_id, so passing an existing `--run-id` with
+`--arm`/`--chain` re-runs just that cell (e.g. to redo a chain lost to an auth
+stall) without touching completed chains.
 
 ```bash
 # sanity-check wiring without spending tokens (shows the branch names):
@@ -287,50 +307,62 @@ python -m harness.run_experiment --config config.yaml --run-id sprint7-baseline
 python -m harness.run_experiment --config config.yaml --strategy anti_slop
 python -m harness.run_experiment --config config.yaml --strategy plan_first
 
-# analysis (harvests the branches; defaults to the latest run_id):
+# analysis (recomputes from the branches' commits + capture; defaults to latest run_id):
 python -m harness.analyze --config config.yaml
 python -m harness.analyze --config config.yaml --run-id sprint7-baseline
 ```
 
 ## Where results live
 
-The **evolve branches are the single source of truth.** Each
-`evolve/<strategy>/<arm>/chain<n>/<run_id>` branch is a self-contained record:
+The **evolve branches are the single source of truth**, and they carry **raw data
+only** — every derived number is recomputed by `analyze`. Each
+`evolve/<run_id>/<strategy>/<arm>/chain<n>` branch is a self-contained record:
 
-- 20 checkpoint commits (`cpNN <id>`) — the code progression and diffs.
-- 1 final `results:` commit adding `evolve-results/`:
-  - `records.csv` — that chain's full metric rows (final numbers plus the
-    erosion/verbosity intermediates).
-  - `summary.md` — headline (strict pass, regressions, erosion start→final, cost,
-    CLAUDE.md touch count) and a per-checkpoint table.
-  - `probes/cpNN.md` — the cold-reader probe answers (kept so recall can be
-    re-graded later; not derivable from the CSV).
-  - `metrics/cpNN.json` — the raw metric inputs: every function's CC/SLOC/mass
-    and the erosion/verbosity terms, so each number can be recomputed by hand.
+- **2N checkpoint commits** (`cpNN agent <id>` + `cpNN reset <id>`) — the pure
+  agent delta and the harness normalisation for each of the N checkpoints.
+- 1 final `results:` commit adding `evolve-results/` — **raw capture only**:
+  - `capture/cpNN.json` — the per-checkpoint record (spec + rendered prompt, agent
+    envelope incl. all attempts, the raw `{test_id: passed}` map + per-test detail,
+    build flags, checkpoint→SHA map).
+  - `capture/cpNN.agent.jsonl` — the full agent event stream (behaviour trace).
+  - `capture/cpNN.agent.diff` — the pre-normalisation agent delta.
+  - `capture/cpNN.build.log` — the full build + test console.
+  - `provenance.json` — model, harness SHA, tool versions, checkpoint→SHA map,
+    secret-free agent environment.
+  - `config/` — a snapshot of `config.yaml` / `checkpoints.yaml` / `astgrep-rules`
+    so the run is self-contained.
 
-Nothing is written to **this** (harness) repo: the base branches stay pristine,
-and the local `results/`, `work/`, `.venv/` are gitignored.
+No derived table (no `records.csv`/`summary.md`/`metrics/`) is stored on the
+branch — `analyze` rebuilds all of it. Nothing is written to **this** (harness)
+repo: the base branches stay pristine; local `results/`, `work/`, `.venv/` are
+gitignored.
 
 Review a chain end to end:
 
 ```bash
-git -C ${HOME}/compare/spring log --oneline evolve/just-solve/spring/chain0/<run_id>
-git -C ${HOME}/compare/spring show   evolve/just-solve/spring/chain0/<run_id>:evolve-results/summary.md
+git -C ${HOME}/compare/spring log --oneline evolve/<run_id>/just-solve/spring/chain0
+git -C ${HOME}/compare/spring show   evolve/<run_id>/just-solve/spring/chain0:evolve-results/capture/cp30.json
 git -C ${HOME}/compare/spring diff <sha_cp05> <sha_cp15>     # any two checkpoints
 ```
 
 ## Reading the result
 
-`analyze` reconstructs the whole dataset by harvesting `evolve-results/records.csv`
-from every evolve branch across both repos (no local CSV is read), selects the
-run (`--run-id`, else latest), and writes **local, gitignored** output to
-`results/<run_id>/analysis/` plus a `records.concat.csv` for transparency.
+`analyze` **always recomputes** from the commits + `capture/` (no derived data is
+read back). It selects the run (`--run-id`, else latest), enumerates checkpoints
+from `provenance.checkpoint_shas` (so no-op checkpoints are included), materializes
+each checkpoint tree in a throwaway worktree, re-runs `metrics.compute_all`,
+re-scores correctness from the captured raw test map, and writes **local,
+gitignored** output to `results/<run_id>/analysis/`.
 
-`summary.md` reports the degradation slope `m` with a 95% bootstrap CI over
-chains, per arm/strategy, for `erosion`, `verbosity`, `cost_usd`,
-`cache_read_tokens`, `duration_api_ms`, `hotspot_cc`; phase-binned means;
-EvoScore (γ ∈ {1, 1.5, 2}); Zero-Regression Rate; and the pinned-doc
-(`CLAUDE.md`) touch rate per arm.
+It reports the degradation slope `m` with a 95% bootstrap CI over chains, per
+arm/strategy, for `erosion`, `verbosity`, `cost_usd`, `cache_read_tokens`,
+`duration_api_ms`, `hotspot_cc`; phase-binned means; EvoScore (γ ∈ {1, 1.5, 2});
+Zero-Regression Rate (over `regressions` and `true_regressions`); and the
+pinned-doc (`CLAUDE.md`) touch rate per arm.
+
+**Adding a metric applies it to every past run** — structural metrics need only
+the commits; correctness/agent columns come from `capture/`. Add it to
+`metrics.compute_all` and re-run `analyze`; no agent re-invocation.
 
 **Confirms the thesis** if `m_erosion(spring) > 0` (CI excludes 0),
 `m_erosion(officefloor) ≈ 0`, and the spring-minus-officefloor slope CI excludes
@@ -354,9 +386,18 @@ time. Report either honestly.
   agent turn, so it cannot become accumulating cross-checkpoint memory. The
   `pinned_touched` column and the touch-rate table record when the agent tried
   to edit it.
+- **Per-call config/memory isolation.** Each `claude -p` runs under a throwaway
+  `CLAUDE_CONFIG_DIR` seeded with only the login credentials, so Claude Code
+  auto-memory can't write project "learnings" that leak across checkpoints or,
+  asymmetrically, between arms. The real `~/.claude` is never read or written.
 - **Structural metrics are Java-only** and use identical tools/thresholds for
   both arms, so OfficeFloor's file-spreading cannot distort LOC; YAML LOC is
   logged separately (`yaml_loc`).
+- **Resilience.** A token/session limit **or an OAuth expiry** pauses and retries
+  the same checkpoint (a manual `/login` mid-run resumes); a transient
+  network/overload failure backs off short then retries. Watch for the auth-dead
+  signature (`$0` / 1 turn / empty commit) as a sign a chain needs re-running — see
+  AGENTS.md → "Gotchas".
 
 ## Notes and honest limitations
 
