@@ -15,8 +15,8 @@ class Cp25Tests extends AcceptanceBase {
 		ObjectNode a = ownerNode();
 		a.put("email", uniqueEmail());
 		createOwnerOk(a);
-		ObjectNode b = a.deepCopy(); // same telephone / email / household -> same identityKey
-		b.put("sharesHousehold", true);
-		createOwner(b).andExpect(status().isConflict());
+		// A pure full duplicate (email included) must collide (409). No sharesHousehold tweak, which
+		// would de-sync the householdId and let the keys differ before cp36 makes householdId computed.
+		createOwner(a.deepCopy()).andExpect(status().isConflict());
 	}
 }

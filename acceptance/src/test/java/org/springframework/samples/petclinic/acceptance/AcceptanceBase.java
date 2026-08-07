@@ -80,6 +80,13 @@ public abstract class AcceptanceBase {
 		return "Sur" + letters(seq());
 	}
 
+	/** Unique, letters-only given name (starts with "Fn"). Use this instead of names like
+	 *  "Mem"+i: the base app enforces a letters-only owner-name pattern, so a digit in a name is
+	 *  rejected with 400. Being unique it also keeps namesakeCount at 0. */
+	protected String uniqueFirstName() {
+		return "Fn" + letters(seq());
+	}
+
 	protected String uniqueAddress() {
 		return seq() + " Test Street";
 	}

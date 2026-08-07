@@ -17,7 +17,7 @@ class Cp23Tests extends AcceptanceBase {
 		int last = 0;
 		for (int i = 0; i < 3; i++) {
 			ObjectNode m = ownerNode();
-			m.put("firstName", "Mem" + i);
+			m.put("firstName", uniqueFirstName());
 			m.put("lastName", lastName);
 			m.put("postcode", "2000");
 			m.put("sharesHousehold", true);

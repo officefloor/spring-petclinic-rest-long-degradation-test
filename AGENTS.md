@@ -144,6 +144,19 @@ found this session: cp48→[14], cp56 must include 9/14/16/21/31 because it remo
 customerCode+membershipNumber, cp60 must include 11/28/41/57 because it moves
 identifiers under a nested `identity` object.)
 
+**Authoring pitfalls (each caused a false regression in run 202608070510).**
+- **Never put a digit in a name field.** The base app validates owner names as
+  letters only (`^[\p{L}]+...`), so `firstName = "Mem" + i` is rejected with 400 and
+  the test's own setup fails. Use `uniqueFirstName()` / `uniqueLastName()` /
+  `letters()`.
+- **To force a duplicate/identity collision, submit a pure full duplicate**
+  (`createOwner(a.deepCopy())`), never a copy-plus-one-tweak. A tweak like adding
+  `sharesHousehold` to the second owner only de-syncs the `householdId` that the
+  identity key is built from, so the keys differ and no collision fires (this passed
+  on one arm and failed on the other — a false signal). "Identical in every field
+  collides" is the one invariant that survives all three identity-key mutations
+  (cp28, cp36 makes householdId computed, cp52 switches to a soundex key).
+
 **The generator is superseded.** `acceptance/scaffold_tests.py` originally
 generated the whole tree from `checkpoints.yaml`, but the tests were then
 hand-authored to be deterministic. **The `.java` tree is now the source of
