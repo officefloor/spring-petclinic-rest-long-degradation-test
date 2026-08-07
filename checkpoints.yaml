@@ -136,7 +136,7 @@ checkpoints:
     type: mutative
     mutates: [3, 10, 25, 11]
     tests: [Cp28Tests.java, cp28/Cp03Tests.java, cp28/Cp10Tests.java, cp28/Cp25Tests.java, cp28/Cp11Tests.java]
-    spec: "Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 when a new owner's identityKey matches an existing owner. This changes existing behaviour: the separate telephone, email and household duplicate checks must now be expressed through this one key. Return 'identityKey'."
+    spec: "Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTelephone + '|' + (email or empty) + '|' + householdId, and reject with 409 only when a new owner's WHOLE identityKey equals an existing owner's. This changes existing behaviour: the separate telephone, email and household duplicate checks must now be expressed through this one key. Because the telephone is part of the key, two members of the same household (same householdId) with different telephones have different identityKeys and must both be allowed; only an exact full-key match is a duplicate. Return 'identityKey'."
 
   # --- cp29-31: postcode, precise locality, check digit (additive) ---
   - id: postcode
@@ -164,9 +164,9 @@ checkpoints:
   # --- cp36 MUTATIVE (reach 4, targeted): deterministic household id ---
   - id: household-hash
     type: mutative
-    mutates: [10, 11, 23, 28]
-    tests: [Cp36Tests.java, cp36/Cp10Tests.java, cp36/Cp11Tests.java, cp36/Cp23Tests.java, cp36/Cp28Tests.java]
-    spec: "The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically. This changes existing behaviour: 'sharesHousehold' now only bypasses the duplicate block rather than creating the link, and everything that keys off the household (duplicate detection and the household-size input to the membership level) must use this computed householdId."
+    mutates: [10, 11, 23, 28, 35]
+    tests: [Cp36Tests.java, cp36/Cp10Tests.java, cp36/Cp11Tests.java, cp36/Cp23Tests.java, cp36/Cp28Tests.java, cp36/Cp35Tests.java]
+    spec: "The householdId must become deterministic: the first 12 hex characters of SHA-256 over (normalizedLastName + '|' + postcode), so owners with the same lastName and postcode share it automatically. This changes existing behaviour: 'sharesHousehold' now only bypasses the duplicate block rather than creating the link, and everything that keys off the household (duplicate detection and the household-size input to the membership level) must use this computed householdId. Because the household is now keyed on (lastName, postcode), owners sharing lastName and postcode are the same household: a second such owner is rejected as a household duplicate (409) unless it sets 'sharesHousehold', in which case it is created as a declared household member and is NOT flagged as a possible duplicate (a declared member is not a suspected duplicate)."
 
   # --- cp37-39: display phone, blocklist, tenure cap (additive) ---
   - id: telephone-display
@@ -179,8 +179,8 @@ checkpoints:
   # --- cp40 MUTATIVE (reach 3, scattered): points-based membership ---
   - id: membership-points
     type: mutative
-    mutates: [24, 23, 39]
-    tests: [Cp40Tests.java, cp40/Cp24Tests.java, cp40/Cp23Tests.java, cp40/Cp39Tests.java]
+    mutates: [24, 23, 39, 15]
+    tests: [Cp40Tests.java, cp40/Cp24Tests.java, cp40/Cp23Tests.java, cp40/Cp39Tests.java, cp40/Cp15Tests.java]
     spec: "Replace the level rules with a points system: start at 0; add 2 when an email is present; add 1 when namesakeCount is 0; add 2 for a household of 3 or more; add 3 for tenure over 365 days. Map 'membershipPoints' to 'membershipLevel' as 1 (0-1 points), 2 (2-3), 3 (4-5), 4 (6 or more). Return both fields. This changes the existing rule that computed the membership level directly from those factors."
 
   # --- cp41-43: collision, timezone, richer audit (additive) ---
@@ -260,4 +260,4 @@ checkpoints:
     type: mutative
     mutates: [32, 36, 52, 56, 55, 53, 11, 28, 41, 57]
     tests: [Cp60Tests.java, cp60/Cp32Tests.java, cp60/Cp36Tests.java, cp60/Cp52Tests.java, cp60/Cp56Tests.java, cp60/Cp55Tests.java, cp60/Cp53Tests.java, cp60/Cp11Tests.java, cp60/Cp28Tests.java, cp60/Cp41Tests.java, cp60/Cp57Tests.java]
-    spec: "Release version 2 of the owner identity. Rederive the region code, the householdId, the identityKey and the memberId with a version-2 algorithm that mixes in a fixed 'V2' version tag, so every identifier changes and no value produced under version 1 is produced again. Group the memberId, identityKey and householdId under a nested 'identity' object in the owner response, and add a top-level integer 'apiVersion' of 2. Move the audit event to schema version 2 with an added 'schemaVersion' of 2, and recompute the owner segment from the version-2 identity. The request fields are unchanged. Several existing behaviours across the identity derivation, the response shape, the audit schema and the owner segment change at once."
+    spec: "Release version 2 of the owner identity. Rederive the region code used INSIDE the identifiers, the householdId, the identityKey and the memberId with a version-2 algorithm that mixes in a fixed 'V2' version tag, so every identifier changes and no value produced under version 1 is produced again. The user-facing 'locality' field is NOT an identifier: it must remain the plain region code (for example 'NSW'), so the V2 tag only appears inside the identifiers, never in 'locality', 'timezone' or the owner segment's derived region. Group the memberId, identityKey and householdId under a nested 'identity' object in the owner response, and add a top-level integer 'apiVersion' of 2. Move the audit event to schema version 2 with an added 'schemaVersion' of 2, and recompute the owner segment from the version-2 identity. The request fields are unchanged. Several existing behaviours across the identity derivation, the response shape, the audit schema and the owner segment change at once."

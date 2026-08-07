@@ -11,11 +11,15 @@ class Cp13Tests extends AcceptanceBase {
 
 	@Test
 	void coreCountsNamesakes() throws Exception {
+		// The two owners share firstName+lastName (the namesake key) but use DIFFERENT postcodes so
+		// they never fall into the same computed household once cp36 keys householdId on
+		// (lastName, postcode) -- otherwise the later household-duplicate block would 409 the setup.
+		String first = "Ann", last = uniqueLastName();
 		ObjectNode a = ownerNode();
-		a.put("firstName", "Ann"); a.put("lastName", "namesake");
+		a.put("firstName", first); a.put("lastName", last); a.put("postcode", "2000");
 		createOwnerOk(a);
 		ObjectNode b = ownerNode();
-		b.put("firstName", "Ann"); b.put("lastName", "namesake");
+		b.put("firstName", first); b.put("lastName", last); b.put("postcode", "2001");
 		int id = createOwnerOk(b);
 		getOwner(id).andExpect(jsonPath("$.namesakeCount").value(1));
 	}

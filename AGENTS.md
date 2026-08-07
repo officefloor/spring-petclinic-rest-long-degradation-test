@@ -142,7 +142,21 @@ Exactly right → any *other* prior test that goes red is a genuine regression.
 Auditing `mutates` for completeness is part of authoring any mutation. (Examples
 found this session: cp48→[14], cp56 must include 9/14/16/21/31 because it removes
 customerCode+membershipNumber, cp60 must include 11/28/41/57 because it moves
-identifiers under a nested `identity` object.)
+identifiers under a nested `identity` object. A later run-driven audit added two
+more that only surfaced at run time: **cp40 must include 15** — the points system
+makes an email owner level 2, not the old cap-3 level 3; and **cp36 must include
+35** — once the household key becomes `(lastName, postcode)` it collides with the
+soft-match key, so the soft-match scenario becomes a household in the cp36-51
+window.)
+
+**Watch for key-collision between rules.** Two rules keyed on the same tuple will
+interfere once a mutation ties them together. The soft-match (cp35, keyed on
+lastName+postcode) and the computed household (cp36, keyed on lastName+postcode)
+collide, so the soft-match is subsumed by the household-duplicate block until cp52
+folds duplicate detection back into the identity key. When you add a rule, check
+whether its discriminating tuple equals an existing rule's; if so, order/spec them
+so the interaction is intended, and make the affected tests assert the *combined*
+observable behaviour, not each rule in isolation.
 
 **Authoring pitfalls (each caused a false regression in run 202608070510).**
 - **Never put a digit in a name field.** The base app validates owner names as
