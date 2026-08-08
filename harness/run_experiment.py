@@ -391,31 +391,50 @@ def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
     return tampered
 
 
-def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: str,
-                         chain: int, cap_dir: str | None, provenance: dict | None,
-                         headline: str = "", snapshot: dict | None = None) -> None:
-    """Final 'results:' commit on the evolve branch. It persists ONLY the raw,
-    irreproducible capture (`capture/`), the run `provenance.json`, and a snapshot
-    of the analysis-shaping config (`config/`) — never any derived numbers. Every
-    metric (erosion, verbosity, correctness, coupling, ...) is recomputed from the
-    checkpoint commits + this capture by `analyze`, so the branch stays the single
-    source of truth without duplicating derived data. `headline` is a
-    human-readable one-liner for the commit message only.
-    """
+def commit_run_manifest(wt: str, branch: str, run_id: str, arm: str, strategy: str,
+                        chain: int, provenance: dict, snapshot: dict | None = None) -> None:
+    """First commit on the evolve branch: the run's static manifest — `provenance.json`
+    (everything known before the agent runs: run/model identity, harness SHA, tool and
+    agent-environment versions) and a snapshot of the analysis-shaping config (`config/`).
+
+    Written UP FRONT, not at the end, for two reasons: (1) an interrupted run stays
+    self-describing — the config that shaped its checkpoints and the control it ran under
+    travel with even a partial chain; (2) the control (tool/agent environment) is recorded
+    as it was when the run began, before any drift over a multi-hour chain. The
+    checkpoint->agent-SHA map is deliberately NOT here — it is derivable from the
+    per-checkpoint capture records (which encode no-op turns as an empty sha), so `analyze`
+    reads it from there and provenance never needs rewriting."""
     out_dir = os.path.join(wt, "evolve-results")
     os.makedirs(out_dir, exist_ok=True)
-    capture.assemble_into(cap_dir, out_dir)
-    if provenance is not None:
-        capture.write_json(os.path.join(out_dir, "provenance.json"), provenance)
+    capture.write_json(os.path.join(out_dir, "provenance.json"), provenance)
     if snapshot:
         capture.snapshot_config(snapshot.get("config"), snapshot.get("checkpoints"),
                                 snapshot.get("astgrep_rules"), out_dir)
+    subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
+    msg = f"manifest: {arm}/{strategy}/chain{chain} - run {run_id}"
+    c = subprocess.run(["git", "-C", wt, "commit", "-m", msg, "--", "evolve-results"],
+                       capture_output=True, text=True)
+    print(f"  manifest commit on {branch}: "
+          + ("ok" if c.returncode == 0 else (c.stdout.strip() or c.stderr.strip())[:120]))
 
+
+def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: str,
+                         chain: int, cap_dir: str | None, headline: str = "") -> None:
+    """Terminal 'results:' commit — the chain's completion marker. Provenance + config
+    already landed in the manifest commit and each checkpoint's raw capture in its reset
+    commit, so this normally adds nothing; it runs `assemble_into` as a backstop (persisting
+    any staged capture not already committed) and always lands a commit — empty if there is
+    nothing new — carrying the summary `headline`. Its presence on the branch is the signal
+    that the chain finished rather than dying partway. Never persists derived numbers; every
+    metric is recomputed by `analyze` from the checkpoint commits + capture."""
+    out_dir = os.path.join(wt, "evolve-results")
+    os.makedirs(out_dir, exist_ok=True)
+    capture.assemble_into(cap_dir, out_dir)
     subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
     msg = f"results: {arm}/{strategy}/chain{chain} - run {run_id} (raw capture)"
     if headline:
         msg += "\n\n" + headline
-    c = subprocess.run(["git", "-C", wt, "commit", "-m", msg, "--", "evolve-results"],
+    c = subprocess.run(["git", "-C", wt, "commit", "--allow-empty", "-m", msg, "--", "evolve-results"],
                        capture_output=True, text=True)
     print(f"  results commit on {branch}: "
           + ("ok" if c.returncode == 0 else (c.stdout.strip() or c.stderr.strip())[:120]))
@@ -539,6 +558,16 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     wt, branch = make_worktree(arm_cfg, cfg["paths"]["work_root"], arm, strategy, chain, run_id)
     base_commit = git(["-C", wt, "rev-parse", "HEAD"])  # base_ref commit; subsystem = files changed since
     print(f"\n=== {arm}/{strategy}/chain{chain}  branch={branch}  worktree={wt} ===")
+
+    # First commit on the branch: the run's static manifest (provenance + config
+    # snapshot), written before any checkpoint so a partial run is self-describing and
+    # the control is captured before it can drift. The checkpoint->sha map is NOT here;
+    # analyze derives it from the per-checkpoint capture records. Static provenance only.
+    prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra={
+        "arm": arm, "strategy": strategy, "chain": chain, "branch": branch,
+        "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
+    })
+    commit_run_manifest(wt, branch, run_id, arm, strategy, chain, prov, cfg.get("_snapshot"))
 
     # Capture artifacts are staged HERE (a sibling of the worktree) during the
     # chain, then copied into evolve-results/capture/ at the results commit — so
@@ -743,19 +772,14 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # rebuilt copy (no leftover Cp01..cpK gate tests or agent build output).
         shutil.rmtree(sandbox, ignore_errors=True)
 
-    # Final commit on the evolve branch: persist ONLY the raw capture + provenance
-    # (nothing derived, nothing goes to the harness repo). The commit message
-    # carries a derived one-liner for at-a-glance history — text only, not data.
-    prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra={
-        "arm": arm, "strategy": strategy, "chain": chain, "branch": branch,
-        "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
-        "checkpoint_shas": {c["checkpoint"]: c["commit_sha"] for c in captures},
-    })
+    # Terminal 'results:' commit: a completion marker. Provenance + config already
+    # landed in the manifest commit and each checkpoint's raw capture in its reset
+    # commit, so this normally adds nothing — it backstops any unstaged capture and
+    # carries a derived one-liner for at-a-glance history (text only, not data).
     n_done = len(captures)
     headline = (f"checkpoints={n_done} strict_pass={strict_count}/{n_done} "
                 f"regressions={regr_count} (derived numbers recomputed by analyze)")
-    commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline,
-                         snapshot=cfg.get("_snapshot"))
+    commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, headline)
     shutil.rmtree(sandbox, ignore_errors=True)  # the agent's history-less working copy
 
 

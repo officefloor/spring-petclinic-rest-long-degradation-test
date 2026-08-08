@@ -119,8 +119,9 @@ The agent turns are the costly, irreproducible part of a run. So the runner's jo
 is split in two:
 
 - **Capture** — the per-checkpoint information that is *gone forever* if not
-  recorded at the instant the agent runs, staged outside the worktree and
-  committed into `evolve-results/capture/`:
+  recorded at the instant the agent runs, staged outside the worktree as the agent
+  runs, then copied in and committed into `evolve-results/capture/` **as part of that
+  checkpoint's reset commit (COMMIT 2)** — so each checkpoint commit is self-contained:
   - `cpNN.json` — the `request` (the spec **and** rendered prompt, so a checkpoint
     is self-describing without the harness repo); the agent envelope (cost/tokens
     incl. cache-creation, model, session id, stop reason, turns, durations) plus
@@ -128,7 +129,7 @@ is split in two:
     cost/tokens and wait seconds, so true wall-clock and total (incl. wasted) cost
     are recoverable; the **raw `{test_id: passed}` map** + per-test timing/failure
     text (the atom behind regressions / Normalized Change / Zero-Regression Rate);
-    pinned/acceptance flags; and the checkpoint→commit SHAs;
+    pinned/acceptance flags; and this checkpoint's own `commit_sha` / base SHAs;
   - `cpNN.agent.jsonl` — the **full agent event stream** (every tool call, file
     read, command) — the behaviour trace, otherwise discarded;
   - `cpNN.agent.diff` — the **true agent delta**, diffed *before* CLAUDE.md is
@@ -137,12 +138,17 @@ is split in two:
     checkpoint commit can't reconstruct;
   - `cpNN.build.log` — the **full build + test console**, so a test that errors
     before producing a Surefire report (e.g. context startup) still leaves a trace;
-  - `provenance.json` — model, harness git SHA, tool versions, the
-    **checkpoint→SHA map** (`""` for a no-op checkpoint that made no commit), and
-    the **agent environment** — the CLI invocation flags plus hashes of the
-    settings files and names of MCP servers / relevant env vars (hashes and names
-    only, never contents or values, so the experiment's *control* is recorded
-    without leaking secrets);
+Two run-level artifacts are **not** per-checkpoint capture — they are written **up
+front in the branch's first `manifest:` commit** (`commit_run_manifest`), so a run
+that dies partway is still self-describing and the control is recorded before it can
+drift over a long chain:
+  - `provenance.json` — model, harness git SHA, tool versions, and the **agent
+    environment** (the CLI invocation flags plus hashes of the settings files and
+    names of MCP servers / relevant env vars — hashes and names only, never contents
+    or values, so the experiment's *control* is recorded without leaking secrets). It
+    is **static**: no `checkpoint→SHA map` (that is derivable — each `cpNN.json`
+    carries its own `commit_sha`, `""` for a no-op turn — so `analyze` reads it from
+    the capture records and provenance never needs rewriting);
   - `config/` — a **snapshot of the analysis-shaping config** (`config.yaml`,
     `checkpoints.yaml`, `astgrep-rules/`), so the run is self-contained: `analyze`
     derives with the config that *shaped this run*, not whatever is live later.
@@ -159,18 +165,22 @@ Per-test `detail` also records **skipped** tests (excluded from scoring, so
 
 ### End of chain (`commit_chain_results`)
 
-A final `results:` commit on the evolve branch writes `evolve-results/` — **raw
-only**: `capture/` (the per-checkpoint records + agent streams + agent diffs
-above), `provenance.json`, and `config/` (the config snapshot). No derived table
-is stored. So each branch = 2N checkpoint commits (agent + reset per checkpoint) +
-1 raw-capture commit. Nothing is written to the harness repo.
+The final `results:` commit is a **completion marker** — an `--allow-empty` commit
+carrying the summary headline, plus an `assemble_into` backstop for any capture not
+already committed. Its presence on the branch means the chain *finished* (vs. dying
+partway). It normally adds nothing new: `provenance.json` + `config/` already landed
+in the **manifest** commit at the start, and each checkpoint's raw capture in its
+**reset** commit. No derived table is stored. So each branch =
+**1 manifest commit + 2N checkpoint commits (agent + reset per checkpoint) + 1
+results marker**. Nothing is written to the harness repo.
 
 ### Analysis (`analyze.py`, run separately)
 
 `analyze` **always recomputes** from the branches — the single source of truth is
 the checkpoint commits + `capture/`, and nothing derived is read back. It
-enumerates checkpoints from `provenance.checkpoint_shas` (so no-op checkpoints are
-included) and derives with the run's own `config/` snapshot (so metrics match how
+enumerates checkpoints from the per-checkpoint capture records' `commit_sha` (so
+no-op checkpoints, recorded as `""`, are included) and derives with the run's own
+`config/` snapshot (so metrics match how
 that run was configured, not the live config). For the selected run it materializes
 each checkpoint tree, runs `metrics.compute_all` over its source, re-scores
 correctness from the captured raw test map, and writes gitignored output to
@@ -318,17 +328,22 @@ The **evolve branches are the single source of truth**, and they carry **raw dat
 only** — every derived number is recomputed by `analyze`. Each
 `evolve/<run_id>/<strategy>/<arm>/chain<n>` branch is a self-contained record:
 
+- **1 manifest commit** (`manifest: …`) adding the run-level `provenance.json` +
+  `config/` up front (see below).
 - **2N checkpoint commits** (`cpNN agent <id>` + `cpNN reset <id>`) — the pure
-  agent delta and the harness normalisation for each of the N checkpoints.
-- 1 final `results:` commit adding `evolve-results/` — **raw capture only**:
+  agent delta, and the harness normalisation **plus that checkpoint's raw capture**,
+  for each of the N checkpoints:
   - `capture/cpNN.json` — the per-checkpoint record (spec + rendered prompt, agent
     envelope incl. all attempts, the raw `{test_id: passed}` map + per-test detail,
-    build flags, checkpoint→SHA map).
+    build flags, this checkpoint's `commit_sha` — `""` for a no-op turn).
   - `capture/cpNN.agent.jsonl` — the full agent event stream (behaviour trace).
   - `capture/cpNN.agent.diff` — the pre-normalisation agent delta.
   - `capture/cpNN.build.log` — the full build + test console.
-  - `provenance.json` — model, harness SHA, tool versions, checkpoint→SHA map,
-    secret-free agent environment.
+  - `capture/cpNN.probe.jsonl` — the cold-reader probe transcript (at probe checkpoints).
+- **1 final `results:` commit** — a completion marker (`--allow-empty` + capture
+  backstop). The run-level artifacts, written in the **manifest** commit:
+  - `provenance.json` — model, harness SHA, tool versions, secret-free agent
+    environment. **Static** — no checkpoint→SHA map (derived from `capture/`).
   - `config/` — a snapshot of `config.yaml` / `checkpoints.yaml` / `astgrep-rules`
     so the run is self-contained.
 
@@ -349,8 +364,9 @@ git -C ${HOME}/compare/spring diff <sha_cp05> <sha_cp15>     # any two checkpoin
 
 `analyze` **always recomputes** from the commits + `capture/` (no derived data is
 read back). It selects the run (`--run-id`, else latest), enumerates checkpoints
-from `provenance.checkpoint_shas` (so no-op checkpoints are included), materializes
-each checkpoint tree in a throwaway worktree, re-runs `metrics.compute_all`,
+from the capture records' `commit_sha` (so no-op checkpoints, recorded as `""`, are
+included), materializes each checkpoint tree in a throwaway worktree, re-runs
+`metrics.compute_all`,
 re-scores correctness from the captured raw test map, and writes **local,
 gitignored** output to `results/<run_id>/analysis/`.
 

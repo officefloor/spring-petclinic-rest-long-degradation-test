@@ -55,7 +55,13 @@ the ordered rule stream; `config.yaml` wires arms/paths/limits.
 
 Per chain, `make_worktree` cuts a fresh branch **`evolve/<run_id>/<strategy>/<arm>/chain<n>`**
 from the untouched `base_ref` (note the order: run_id first — the README's older
-`<strategy>/<arm>/chain/<run_id>` is wrong). Then for each checkpoint k, **two commits**:
+`<strategy>/<arm>/chain/<run_id>` is wrong). The branch **opens with a `manifest:`
+commit** (`commit_run_manifest`): the run's static `provenance.json` (run/model
+identity, harness SHA, `tool_versions`, `agent_env`, `base_commit` — but **no**
+`checkpoint_shas`) and the `config/` snapshot (`config.yaml`, `checkpoints.yaml`,
+`astgrep-rules/`). Written **up front, not at chain end**, so a partial run is
+self-describing and the control (tool/agent env) is captured before it can drift over
+a multi-hour chain. Then for each checkpoint k, **two commits**:
 
 1. **Agent view is set to ONLY this checkpoint's own test** (`set_agent_view`):
    the acceptance dir holds shared infra + `CpKTests.java` and *nothing else*.
@@ -71,14 +77,24 @@ from the untouched `base_ref` (note the order: run_id first — the README's old
    weakened visible test can't buy a false pass.
 5. **Gate** (`correctness.run_tests`) against that full suite → regressions become
    REAL: a failure on a prior rule the agent couldn't see is the signal.
-6. **COMMIT 2 `cpNN reset <id>`** — normalization + `set_agent_view(next cp)` so
-   cp(k+1) starts blind and its agent commit stays pure.
-7. **Structural metrics** over the agent commit (log-only; analyze recomputes).
-8. **Cold-reader probe** at `probe.at_checkpoints`.
-9. **Raw capture** written (`cpNN.json`, `.agent.jsonl`, `.agent.diff`, `.build.log`).
+6. **Structural metrics** over the agent commit (log-only; analyze recomputes).
+7. **Cold-reader probe** at `probe.at_checkpoints`.
+8. **Raw capture** (`cpNN.json`, `.agent.jsonl`, `.agent.diff`, `.build.log`, `.probe.jsonl`)
+   is copied into `evolve-results/capture/`. The gate outcome and probe are already in
+   hand, so the `cpNN.json` record is complete.
+9. **COMMIT 2 `cpNN reset <id>`** — normalization + `set_agent_view(next cp)` **and commits
+   this checkpoint's capture** (step 8), so cp(k+1) starts blind, its agent commit stays
+   pure, and each reset commit is self-contained (`git show <cpNN reset>:evolve-results/capture/cpNN.json`
+   is that checkpoint's result inline).
 
-End of chain: one `results:` commit persists **only raw** `evolve-results/`
-(`capture/`, `provenance.json`, `config/` snapshot). No derived table on the branch.
+End of chain: a `results:` commit is a **completion marker** (`commit_chain_results`) —
+an `--allow-empty` commit carrying the summary headline, plus an `assemble_into` backstop
+for any capture not already committed. Its presence on the branch means the chain finished
+(vs. dying partway). Provenance + config live in the **manifest** commit (start) and each
+checkpoint's raw capture in its **reset** commit, so this normally adds nothing. No derived
+table on the branch — `analyze` recomputes every metric, and derives the checkpoint→agent-SHA
+map from the per-checkpoint capture records' `commit_sha` (which encodes a no-op turn as `""`),
+**not** from provenance.
 
 ## The two design pillars added 2026-08 (do not regress these)
 
@@ -106,7 +122,9 @@ preserve this.**
 ### 3. History-less, sequence-blind sandbox (the agent can't tell it's checkpoint N)
 The agent does NOT run in the git worktree. Per checkpoint, `run_chain` builds a
 fresh **sandbox** (`<wt>-sandbox`, via `_prepare_agent_sandbox`) that is an rsync
-mirror of the worktree source with **`.git` and `target/` excluded**, plus a fresh
+mirror of the worktree source with **`.git`, `target/`, and `evolve-results/` excluded**
+(the last is critical: the per-checkpoint capture committed into the worktree — `cp01.json`,
+`cp02.json`, … — would otherwise leak the whole sequence to a later agent), plus a fresh
 acceptance dir holding ONLY the shared infra and **this checkpoint's own test renamed
 to the neutral `AcceptanceTest.java`** — no `CpNN` in the filename or class, and no
 `@Tag` (`_neutralize_test`, with a leak guard that raises if any `@Tag` or `cp\d+`
@@ -122,8 +140,9 @@ records the production-only delta; (5) tamper detection compares the sandbox's
 THE SANDBOX — pinned docs restored to base, neutral test swapped for the full authored
 cp01..cpK suite (real CpNN names for scoring); (7) `scrub_test_artifacts(sandbox)` runs
 `mvnw clean` then `run_tests(sandbox, …)`; (8) COMMIT 2 normalises the worktree (restore
-pinned docs); (9) the sandbox is wiped. The probe likewise runs in a fresh history-less
-mirror. Retries re-mirror the untouched worktree.
+pinned docs) **and commits this checkpoint's raw capture** under `evolve-results/capture/cpNN.*`;
+(9) the sandbox is wiped. The probe likewise runs in a fresh history-less mirror. Retries
+re-mirror the untouched worktree.
 
 **Why it exists:** at cp60 the agent `cd`-ed out of the worktree into the harness
 `acceptance/` suite AND ran `git log` at 27/60 checkpoints, reading the withheld

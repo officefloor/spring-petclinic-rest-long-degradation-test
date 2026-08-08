@@ -133,8 +133,9 @@ def _read_captures(repo: str, branch: str) -> dict[int, dict]:
 
 
 def _read_provenance(repo: str, branch: str) -> dict:
-    """The chain's provenance.json (base_commit + checkpoint_shas + versions).
-    Empty for pre-provenance runs."""
+    """The chain's provenance.json (base_commit + tool/agent versions), written up
+    front in the manifest commit. The checkpoint->sha map is NOT here; it is derived
+    from the per-checkpoint capture records. Empty for pre-provenance runs."""
     return _read_json_blob(repo, branch, "evolve-results/provenance.json") or {}
 
 
@@ -192,17 +193,19 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         caps = _read_captures(repo, branch)
         prov = _read_provenance(repo, branch)
 
-        # Checkpoint list + per-checkpoint commit SHA. Prefer the run's OWN record
-        # (provenance.checkpoint_shas): it lists EVERY checkpoint including no-ops
-        # (agent changed nothing -> no cpNN commit -> "" sha), which parsing commit
-        # messages would silently drop. Fall back to commit messages for
-        # pre-provenance runs.
-        if prov and prov.get("checkpoint_shas"):
+        # Checkpoint list + per-checkpoint commit SHA. Prefer the per-checkpoint
+        # capture records: each carries its OWN `commit_sha` ("" for a no-op turn
+        # where the agent changed nothing -> no cpNN commit), so the map lists EVERY
+        # checkpoint including no-ops, which parsing commit messages would silently
+        # drop. Fall back to the legacy provenance map (older runs stored it there),
+        # then to commit messages for pre-capture runs.
+        if caps:
+            shas = {k: (rec.get("commit_sha") or "") for k, rec in caps.items()}
+        elif prov.get("checkpoint_shas"):
             shas = {int(k): (v or "") for k, v in prov["checkpoint_shas"].items()}
-            base_commit = prov.get("base_commit") or ""
         else:
             shas = _cp_commits(repo, branch)
-            base_commit = ""
+        base_commit = prov.get("base_commit") or ""
         if not shas:
             continue
         ks = sorted(shas)
