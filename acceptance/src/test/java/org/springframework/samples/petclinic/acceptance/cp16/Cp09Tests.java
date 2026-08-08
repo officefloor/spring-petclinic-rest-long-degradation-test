@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp09 customer-code, UPDATED by cp16: customerCode is now '<CITY3>-<LAST3>-<NNNN>' with a per-city
- *  sequence. Two owners in the same city get consecutive NNNN. */
+/** customer-code: customerCode is now '<CITY3>-<LAST3>-<NNNN>' with a per-city
+ * sequence. Two owners in the same city get consecutive NNNN. */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 

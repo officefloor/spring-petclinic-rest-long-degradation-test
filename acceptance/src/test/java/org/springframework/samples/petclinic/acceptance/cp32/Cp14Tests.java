@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 
-/** cp14 membership-number, UPDATED by cp32: still '<customerCode>-M<YY>', now over the region-and-hash
- *  customerCode. Recomputed from the returned fields. */
+/** membership-number: still '<customerCode>-M<YY>', now over the region-and-hash
+ * customerCode. Recomputed from the returned fields. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 

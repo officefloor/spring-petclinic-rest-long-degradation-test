@@ -7,9 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp52 identity-key-v2: identityKey = SHA-256 hex over (normalizedTelephone | lowerEmail |
- *  soundex(lastName)); duplicate detection (409) uses it. The exact key depends on soundex, so the
- *  deterministic oracle is the collision (identical identity -> 409) plus the exact 64-hex shape. */
+/** identity-key-v2: identityKey = SHA-256 hex over (normalizedTelephone | lowerEmail |
+ * soundex(lastName)); duplicate detection (409) uses it. The exact key depends on soundex, so the
+ * deterministic oracle is the collision (identical identity -> 409) plus the exact 64-hex shape. */
 @Tag("cp52")
 class Cp52Tests extends AcceptanceBase {
 

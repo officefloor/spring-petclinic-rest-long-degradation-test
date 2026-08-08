@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household: UPDATED by cp12 — householdId is derived from the normalized address. */
+/** shares-household: — householdId is derived from the normalized address. */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 

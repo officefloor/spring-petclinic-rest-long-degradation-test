@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp37 telephone-display: 'telephoneDisplay' is the stored E.164 number formatted for humans
- *  (country code, space, national digits grouped in threes); raw 'telephone' stays E.164. A fixed
- *  input gives an exact expected display. */
+/** telephone-display: 'telephoneDisplay' is the stored E.164 number formatted for humans
+ * (country code, space, national digits grouped in threes); raw 'telephone' stays E.164. A fixed
+ * input gives an exact expected display. */
 @Tag("cp37")
 class Cp37Tests extends AcceptanceBase {
 

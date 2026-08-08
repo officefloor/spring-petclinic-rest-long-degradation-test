@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp21 audit-create, UPDATED by cp32: the audit line carries the new region-and-hash customerCode,
- *  alongside the owner id and registrationDate. */
+/** audit-create: the audit line carries the new region-and-hash customerCode,
+ * alongside the owner id and registrationDate. */
 @Tag("cp21")
 class Cp21Tests extends AcceptanceBase {
 

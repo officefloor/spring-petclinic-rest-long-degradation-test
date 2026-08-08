@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household: The request may set boolean 'sharesHousehold'. When true, allow an owner at an address alr... */
+/** shares-household: The request may set boolean 'sharesHousehold'. When true, allow an owner at an address alr... */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 

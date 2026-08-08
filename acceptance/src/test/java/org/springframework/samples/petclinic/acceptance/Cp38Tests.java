@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp38 email-blocklist: Reject with 400 when the owner's email domain is on a disposable-domain blocklist (mailina... */
+/** email-blocklist: Reject with 400 when the owner's email domain is on a disposable-domain blocklist (mailina... */
 @Tag("cp38")
 class Cp38Tests extends AcceptanceBase {
 

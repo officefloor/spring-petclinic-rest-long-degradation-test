@@ -6,10 +6,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp29 postcode: a 4-digit 'postcode' valid for the owner's city is stored and returned; a
- *  malformed postcode is rejected (400). Postcode is validated WHEN PRESENT but optional when
- *  absent, so every earlier requirement's minimal owner (which sends no postcode) stays valid at
- *  this and all later checkpoints -- the operative request contract stays backward-compatible. */
+/** postcode: a 4-digit 'postcode' valid for the owner's city is stored and returned; a
+ * malformed postcode is rejected (400). Postcode is validated WHEN PRESENT but optional when
+ * absent, so every earlier requirement's minimal owner (which sends no postcode) stays valid at
+ * this and all later checkpoints -- the operative request contract stays backward-compatible. */
 @Tag("cp29")
 class Cp29Tests extends AcceptanceBase {
 

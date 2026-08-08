@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp43 audit-enriched: the create AUDIT line must also carry membershipLevel and membershipNumber
- *  (the fields it already logged remain). */
+/** audit-enriched: the create AUDIT line must also carry membershipLevel and membershipNumber
+ * (the fields it already logged remain). */
 @Tag("cp43")
 class Cp43Tests extends AcceptanceBase {
 

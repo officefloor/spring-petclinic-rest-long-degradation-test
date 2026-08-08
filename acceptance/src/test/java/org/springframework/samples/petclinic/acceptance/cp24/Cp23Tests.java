@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold, UPDATED by cp24: the GOLD tier is gone. A 3-member household no longer yields a
- *  tier; the third member (unique firstName -> namesake 0, no email) is numeric membershipLevel 2. */
+/** tier-gold: the GOLD tier is gone. A 3-member household no longer yields a
+ * tier; the third member (unique firstName -> namesake 0, no email) is numeric membershipLevel 2. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 

@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp55 owner-segment, UPDATED by cp60: the segment is recomputed from the v2 identity but the rule
- *  (TIER by level, AREA by locality) is unchanged. A Sydney owner with an email is STANDARD_METRO. */
+/** owner-segment: the segment is recomputed from the v2 identity but the rule
+ * (TIER by level, AREA by locality) is unchanged. A Sydney owner with an email is STANDARD_METRO. */
 @Tag("cp55")
 class Cp55Tests extends AcceptanceBase {
 

@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp30 locality-postcode: locality is resolved by the postcode range first (NSW 2000-2099,
- *  VIC 3000-3099, QLD 4000-4099), falling back to the city. A VIC-range postcode on an unknown city
- *  therefore yields VIC, proving the postcode takes precedence. */
+/** locality-postcode: locality is resolved by the postcode range first (NSW 2000-2099,
+ * VIC 3000-3099, QLD 4000-4099), falling back to the city. A VIC-range postcode on an unknown city
+ * therefore yields VIC, proving the postcode takes precedence. */
 @Tag("cp30")
 class Cp30Tests extends AcceptanceBase {
 

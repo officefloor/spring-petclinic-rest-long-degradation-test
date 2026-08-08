@@ -6,9 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp36 household-hash: householdId is deterministic from (lastName, postcode) alone. Asserting the
- *  exact hash would couple to the internal normalization, so assert the observable contract: same
- *  lastName+postcode -> same householdId; a different lastName -> a different householdId. */
+/** household-hash: householdId is deterministic from (lastName, postcode) alone. Asserting the
+ * exact hash would couple to the internal normalization, so assert the observable contract: same
+ * lastName+postcode -> same householdId; a different lastName -> a different householdId. */
 @Tag("cp36")
 class Cp36Tests extends AcceptanceBase {
 

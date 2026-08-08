@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp09 customer-code, UPDATED by cp56: the customerCode field is removed (its identity role is now
- *  the memberId). */
+/** customer-code: the customerCode field is removed (its identity role is now
+ * the memberId). */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 

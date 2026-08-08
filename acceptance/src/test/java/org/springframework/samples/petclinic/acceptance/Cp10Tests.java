@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp10 household-duplicate: Reject creating an owner when another owner has the same lastName and the same address (co... */
+/** household-duplicate: Reject creating an owner when another owner has the same lastName and the same address (co... */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 

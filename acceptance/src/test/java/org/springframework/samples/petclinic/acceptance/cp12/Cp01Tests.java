@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp01 required-fields: UPDATED by cp12 (address-normalize) — an address blank after normalization is rejected. */
+/** required-fields: — an address blank after normalization is rejected. */
 @Tag("cp01")
 class Cp01Tests extends AcceptanceBase {
 

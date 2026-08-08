@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp10 household-duplicate, UPDATED by cp36: the household is keyed by the computed householdId
- *  (lastName + postcode). Two owners with the same lastName + postcode collide with 409 (no
- *  sharesHousehold), even with different addresses. */
+/** household-duplicate: the household is keyed by the computed householdId
+ * (lastName + postcode). Two owners with the same lastName + postcode collide with 409 (no
+ * sharesHousehold), even with different addresses. */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 

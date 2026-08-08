@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp02 telephone-normalize: UPDATED by cp08 (telephone-e164) — telephone is stored in E.164 form. */
+/** telephone-normalize: — telephone is stored in E.164 form. */
 @Tag("cp02")
 class Cp02Tests extends AcceptanceBase {
 

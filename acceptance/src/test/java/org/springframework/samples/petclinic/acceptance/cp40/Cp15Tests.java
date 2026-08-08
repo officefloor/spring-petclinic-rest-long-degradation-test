@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp15 membership-tier, UPDATED by cp40: membershipLevel now comes from points, not the old cap-3
- *  rule. A unique owner with an email scores 3 points (2 email + 1 namesake 0), which maps to
- *  level 2 (the 2-3 point band). The string tier stays gone. */
+/** membership-tier: membershipLevel now comes from points, not the old cap-3
+ * rule. A unique owner with an email scores 3 points (2 email + 1 namesake 0), which maps to
+ * level 2 (the 2-3 point band). The string tier stays gone. */
 @Tag("cp15")
 class Cp15Tests extends AcceptanceBase {
 

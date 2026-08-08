@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp12 address-normalize: Introduce address normalization applied whenever an owner is created: trim and collapse wh... */
+/** address-normalize: Introduce address normalization applied whenever an owner is created: trim and collapse wh... */
 @Tag("cp12")
 class Cp12Tests extends AcceptanceBase {
 

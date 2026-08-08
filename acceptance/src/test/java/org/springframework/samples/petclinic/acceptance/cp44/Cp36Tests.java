@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp36 household-hash, UPDATED by cp44: the household hash reads the structured postcode. Two
- *  structured owners with the same lastName + postcode share a householdId. */
+/** household-hash: the household hash reads the structured postcode. Two
+ * structured owners with the same lastName + postcode share a householdId. */
 @Tag("cp36")
 class Cp36Tests extends AcceptanceBase {
 

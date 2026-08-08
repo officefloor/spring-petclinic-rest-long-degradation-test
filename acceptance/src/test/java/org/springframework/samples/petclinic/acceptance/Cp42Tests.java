@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp42 timezone: 'timezone' is the IANA name from the pinned region-to-timezone table
- *  (NSW->Australia/Sydney, VIC->Australia/Melbourne, QLD->Australia/Brisbane). */
+/** timezone: 'timezone' is the IANA name from the pinned region-to-timezone table
+ * (NSW->Australia/Sydney, VIC->Australia/Melbourne, QLD->Australia/Brisbane). */
 @Tag("cp42")
 class Cp42Tests extends AcceptanceBase {
 

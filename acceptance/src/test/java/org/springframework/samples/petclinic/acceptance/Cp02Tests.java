@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp02 telephone-normalize: On create, normalize the telephone by removing every non-digit character, then require exa... */
+/** telephone-normalize: On create, normalize the telephone by removing every non-digit character, then require exa... */
 @Tag("cp02")
 class Cp02Tests extends AcceptanceBase {
 

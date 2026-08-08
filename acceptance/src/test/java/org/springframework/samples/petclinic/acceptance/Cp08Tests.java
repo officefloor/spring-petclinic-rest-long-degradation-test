@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp08 telephone-e164: Change how the telephone is handled. Telephone numbers must now be stored in E.164 form: k... */
+/** telephone-e164: Change how the telephone is handled. Telephone numbers must now be stored in E.164 form: k... */
 @Tag("cp08")
 class Cp08Tests extends AcceptanceBase {
 

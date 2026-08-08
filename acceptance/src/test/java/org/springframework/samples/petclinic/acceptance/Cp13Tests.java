@@ -5,14 +5,14 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp13 namesake-count: Return 'namesakeCount' = the number of existing owners (before this create) sharing the sa... */
+/** namesake-count: Return 'namesakeCount' = the number of existing owners (before this create) sharing the sa... */
 @Tag("cp13")
 class Cp13Tests extends AcceptanceBase {
 
 	@Test
 	void coreCountsNamesakes() throws Exception {
 		// The two owners share firstName+lastName (the namesake key) but use DIFFERENT postcodes so
-		// they never fall into the same computed household once cp36 keys householdId on
+		// they never fall into the same computed household once keys householdId on
 		// (lastName, postcode) -- otherwise the later household-duplicate block would 409 the setup.
 		String first = "Ann", last = uniqueLastName();
 		ObjectNode a = ownerNode();

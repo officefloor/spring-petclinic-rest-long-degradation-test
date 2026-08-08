@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp12 address-normalize, UPDATED by cp44: normalization (upper-case, collapse whitespace, expand
- *  ST->STREET) now applies to the structured address lines. */
+/** address-normalize: normalization (upper-case, collapse whitespace, expand
+ * ST->STREET) now applies to the structured address lines. */
 @Tag("cp12")
 class Cp12Tests extends AcceptanceBase {
 

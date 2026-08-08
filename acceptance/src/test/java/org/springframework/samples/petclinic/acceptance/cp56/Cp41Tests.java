@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
-/** cp41 code-collision, UPDATED by cp56: de-duplication now applies to the memberId. Distinct owners
- *  get distinct memberIds. */
+/** code-collision: de-duplication now applies to the memberId. Distinct owners
+ * get distinct memberIds. */
 @Tag("cp41")
 class Cp41Tests extends AcceptanceBase {
 

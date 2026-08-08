@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household, UPDATED by cp36: householdId is computed from lastName + postcode, so
- *  sharesHousehold only bypasses the block. Two same lastName+postcode owners share the householdId. */
+/** shares-household: householdId is computed from lastName + postcode, so
+ * sharesHousehold only bypasses the block. Two same lastName+postcode owners share the householdId. */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 

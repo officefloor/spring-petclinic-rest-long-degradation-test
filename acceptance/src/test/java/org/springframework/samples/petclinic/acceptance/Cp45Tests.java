@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp45 salutation: The request may include 'title' (MR/MRS/MS/DR). Return 'salutation' = title + ' ' + lastNa... */
+/** salutation: The request may include 'title' (MR/MRS/MS/DR). Return 'salutation' = title + ' ' + lastNa... */
 @Tag("cp45")
 class Cp45Tests extends AcceptanceBase {
 

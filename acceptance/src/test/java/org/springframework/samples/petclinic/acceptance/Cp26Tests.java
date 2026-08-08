@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp26 telephone-country-length: Validate the E.164 telephone's national-number length against its country code ('+61' requ... */
+/** telephone-country-length: Validate the E.164 telephone's national-number length against its country code ('+61' requ... */
 @Tag("cp26")
 class Cp26Tests extends AcceptanceBase {
 

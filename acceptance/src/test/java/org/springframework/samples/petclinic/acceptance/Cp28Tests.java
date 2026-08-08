@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp28 identity-key: Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTeleph... */
+/** identity-key: Consolidate all duplicate detection into a single derived 'identityKey' = normalizedTeleph... */
 @Tag("cp28")
 class Cp28Tests extends AcceptanceBase {
 

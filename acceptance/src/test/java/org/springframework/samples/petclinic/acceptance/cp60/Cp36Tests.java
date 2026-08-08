@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp36 household-hash, UPDATED by cp60: householdId moves under the nested 'identity' object and is
- *  gone from the top level. */
+/** household-hash: householdId moves under the nested 'identity' object and is
+ * gone from the top level. */
 @Tag("cp36")
 class Cp36Tests extends AcceptanceBase {
 

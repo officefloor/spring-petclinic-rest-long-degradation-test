@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp51 level-ceiling: a new owner's membershipLevel cannot exceed one above the current maximum
- *  in their household. Two owners in the same household (same lastName + postcode): the second's
- *  level must be at most the first's level + 1. */
+/** level-ceiling: a new owner's membershipLevel cannot exceed one above the current maximum
+ * in their household. Two owners in the same household (same lastName + postcode): the second's
+ * level must be at most the first's level + 1. */
 @Tag("cp51")
 class Cp51Tests extends AcceptanceBase {
 

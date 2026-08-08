@@ -6,8 +6,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp46 exclude-deleted: DELETE /api/owners/{id} soft-deletes (flags 'deleted' true, retains the
- *  record); the create endpoint's duplicate/identity checks then ignore deleted owners. */
+/** exclude-deleted: DELETE /api/owners/{id} soft-deletes (flags 'deleted' true, retains the
+ * record); the create endpoint's duplicate/identity checks then ignore deleted owners. */
 @Tag("cp46")
 class Cp46Tests extends AcceptanceBase {
 

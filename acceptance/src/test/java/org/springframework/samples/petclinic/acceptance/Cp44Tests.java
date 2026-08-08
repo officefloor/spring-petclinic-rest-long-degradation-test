@@ -6,9 +6,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp44 address-structured: structured addressLine1/city/postcode is accepted and normalized (cp12
- *  rules: upper-case, collapse whitespace, expand ST->STREET), and 'address' is the composed
- *  normalized string. The flat 'address' form stays accepted (backward-compatible). */
+/** address-structured: structured addressLine1/city/postcode is accepted and normalized (
+ * rules: upper-case, collapse whitespace, expand ST->STREET), and 'address' is the composed
+ * normalized string. The flat 'address' form stays accepted (backward-compatible). */
 @Tag("cp44")
 class Cp44Tests extends AcceptanceBase {
 

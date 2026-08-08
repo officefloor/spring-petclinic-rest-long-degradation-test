@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp39 tenure-cap, UPDATED by cp40: level 4 needs 6+ points, and the only route to 6 is tenure
- *  (+3), which a new owner (zero tenure) never has. A new owner with every other factor maxed scores
- *  5 points -> level 3, never 4. */
+/** tenure-cap: level 4 needs 6+ points, and the only route to 6 is tenure
+ * (+3), which a new owner (zero tenure) never has. A new owner with every other factor maxed scores
+ * 5 points -> level 3, never 4. */
 @Tag("cp39")
 class Cp39Tests extends AcceptanceBase {
 

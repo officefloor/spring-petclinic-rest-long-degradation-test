@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp25 email-unique: Reject creating an owner whose lower-cased email is already used by any other owner. Respo... */
+/** email-unique: Reject creating an owner whose lower-cased email is already used by any other owner. Respo... */
 @Tag("cp25")
 class Cp25Tests extends AcceptanceBase {
 

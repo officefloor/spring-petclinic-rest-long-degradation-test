@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp55 owner-segment: ownerSegment = '<TIER>_<AREA>'; TIER is STANDARD below membershipLevel 3,
- *  AREA is METRO for a known region (NSW/VIC/QLD) else REGIONAL. A new owner with an email scores
- *  membershipLevel 2 (STANDARD); a known city is METRO, an unknown city is REGIONAL. */
+/** owner-segment: ownerSegment = '<TIER>_<AREA>'; TIER is STANDARD below membershipLevel 3,
+ * AREA is METRO for a known region (NSW/VIC/QLD) else REGIONAL. A new owner with an email scores
+ * membershipLevel 2 (STANDARD); a known city is METRO, an unknown city is REGIONAL. */
 @Tag("cp55")
 class Cp55Tests extends AcceptanceBase {
 

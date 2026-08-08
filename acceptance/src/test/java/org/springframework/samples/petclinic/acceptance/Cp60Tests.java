@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp60 identity-v2: apiVersion is 2, the memberId/identityKey/householdId are grouped under a nested
- *  'identity' object, and those three are no longer at the top level. Exact structural contract. */
+/** identity-v2: apiVersion is 2, the memberId/identityKey/householdId are grouped under a nested
+ * 'identity' object, and those three are no longer at the top level. Exact structural contract. */
 @Tag("cp60")
 class Cp60Tests extends AcceptanceBase {
 

@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp15 membership-tier: Return 'membershipTier': 'SILVER' when namesakeCount is 0 and an email is present, otherwi... */
+/** membership-tier: Return 'membershipTier': 'SILVER' when namesakeCount is 0 and an email is present, otherwi... */
 @Tag("cp15")
 class Cp15Tests extends AcceptanceBase {
 

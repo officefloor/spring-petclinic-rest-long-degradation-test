@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp53 audit-event, UPDATED by cp60: the event moves to schema version 2 (adds 'schemaVersion' 2)
- *  and still carries the owner id and the primary identifier -- now the v2 memberId, read from the
- *  nested 'identity' object. */
+/** audit-event: the event moves to schema version 2 (adds 'schemaVersion' 2)
+ * and still carries the owner id and the primary identifier -- now the v2 memberId, read from the
+ * nested 'identity' object. */
 @Tag("cp53")
 class Cp53Tests extends AcceptanceBase {
 

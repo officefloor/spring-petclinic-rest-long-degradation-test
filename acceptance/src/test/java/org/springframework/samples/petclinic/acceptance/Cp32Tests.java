@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp32 global-id: Redesign owner identity. The customerCode must become '<REGION>-<HASH8>' where REGION is t... */
+/** global-id: Redesign owner identity. The customerCode must become '<REGION>-<HASH8>' where REGION is t... */
 @Tag("cp32")
 class Cp32Tests extends AcceptanceBase {
 

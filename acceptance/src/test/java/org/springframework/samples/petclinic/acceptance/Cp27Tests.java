@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp27 contact-preference: Return 'contactPreference' = 'EMAIL' when an email is present, otherwise 'PHONE'.... */
+/** contact-preference: Return 'contactPreference' = 'EMAIL' when an email is present, otherwise 'PHONE'.... */
 @Tag("cp27")
 class Cp27Tests extends AcceptanceBase {
 

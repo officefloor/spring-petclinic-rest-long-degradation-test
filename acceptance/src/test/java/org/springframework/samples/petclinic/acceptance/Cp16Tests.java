@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp16 customer-code-city: Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased... */
+/** customer-code-city: Change the customerCode format to '<CITY3>-<LAST3>-<NNNN>' where CITY3 is the upper-cased... */
 @Tag("cp16")
 class Cp16Tests extends AcceptanceBase {
 

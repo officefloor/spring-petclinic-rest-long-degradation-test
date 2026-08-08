@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp03 telephone-unique: UPDATED by cp08 — duplicate telephones are compared as E.164. */
+/** telephone-unique: — duplicate telephones are compared as E.164. */
 @Tag("cp03")
 class Cp03Tests extends AcceptanceBase {
 

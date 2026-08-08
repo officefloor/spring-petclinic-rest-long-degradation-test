@@ -7,8 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp59 problem-json: rejections return an RFC7807 application/problem+json body with a 'status'
- *  member equal to the HTTP status. Assert the exact content type and status value. */
+/** problem-json: rejections return an RFC7807 application/problem+json body with a 'status'
+ * member equal to the HTTP status. Assert the exact content type and status value. */
 @Tag("cp59")
 class Cp59Tests extends AcceptanceBase {
 

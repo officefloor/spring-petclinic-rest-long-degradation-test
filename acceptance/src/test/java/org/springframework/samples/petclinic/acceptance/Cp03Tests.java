@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp03 telephone-unique: Reject creating an owner whose normalized telephone is already used by any other owner. Re... */
+/** telephone-unique: Reject creating an owner whose normalized telephone is already used by any other owner. Re... */
 @Tag("cp03")
 class Cp03Tests extends AcceptanceBase {
 

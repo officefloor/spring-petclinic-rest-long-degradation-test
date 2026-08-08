@@ -7,9 +7,9 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** cp20 business-day: the default registration date must fall on a business day (a weekend rolls
- *  forward to Monday). Can't force the server's clock black-box, so assert the invariant that holds
- *  every day: the default registrationDate is never a Saturday or Sunday. */
+/** business-day: the default registration date must fall on a business day (a weekend rolls
+ * forward to Monday). Can't force the server's clock black-box, so assert the invariant that holds
+ * every day: the default registrationDate is never a Saturday or Sunday. */
 @Tag("cp20")
 class Cp20Tests extends AcceptanceBase {
 

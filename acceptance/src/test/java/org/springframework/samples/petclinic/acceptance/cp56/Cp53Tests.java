@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp53 audit-event, UPDATED by cp56: customerCode is unified into memberId, so the structured event
- *  must now carry the memberId as the owner's primary identifier (there is no customerCode to log).
- *  Verifies the event switched identifiers rather than logging a stale/removed field. */
+/** audit-event: customerCode is unified into memberId, so the structured event
+ * must now carry the memberId as the owner's primary identifier (there is no customerCode to log).
+ * Verifies the event switched identifiers rather than logging a stale/removed field. */
 @Tag("cp53")
 class Cp53Tests extends AcceptanceBase {
 

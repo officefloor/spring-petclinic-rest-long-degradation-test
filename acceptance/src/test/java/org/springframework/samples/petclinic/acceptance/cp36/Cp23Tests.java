@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold, UPDATED by cp36: household membership now keys off the computed householdId
- *  (lastName + postcode). Three members share it; the third (unique firstName, no email) is numeric
- *  membershipLevel 2 with no tier. */
+/** tier-gold: household membership now keys off the computed householdId
+ * (lastName + postcode). Three members share it; the third (unique firstName, no email) is numeric
+ * membershipLevel 2 with no tier. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 

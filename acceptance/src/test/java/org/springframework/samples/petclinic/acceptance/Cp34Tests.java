@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp34 age-band: The request may include 'birthDate' (ISO). When present, return 'ageBand' as 'MINOR' (unde... */
+/** age-band: The request may include 'birthDate' (ISO). When present, return 'ageBand' as 'MINOR' (unde... */
 @Tag("cp34")
 class Cp34Tests extends AcceptanceBase {
 

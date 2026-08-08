@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp06 initials: Return 'initials' as the upper-cased first letters of firstName and lastName, dot-separate... */
+/** initials: Return 'initials' as the upper-cased first letters of firstName and lastName, dot-separate... */
 @Tag("cp06")
 class Cp06Tests extends AcceptanceBase {
 

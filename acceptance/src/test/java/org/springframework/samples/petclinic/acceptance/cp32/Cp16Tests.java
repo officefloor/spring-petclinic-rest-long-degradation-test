@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 
-/** cp16 customer-code-city, UPDATED by cp32: the city-prefixed sequence format is gone, replaced by
- *  '<REGION>-<HASH8>'. Assert the exact region-and-hash value. */
+/** customer-code-city: the city-prefixed sequence format is gone, replaced by
+ * '<REGION>-<HASH8>'. Assert the exact region-and-hash value. */
 @Tag("cp16")
 class Cp16Tests extends AcceptanceBase {
 

@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold: membershipTier is 'GOLD' when the owner's household has 3+ members after this
- *  create. Build a shared household (same lastName + address, sharesHousehold) and assert the third
- *  member is GOLD. */
+/** tier-gold: membershipTier is 'GOLD' when the owner's household has 3+ members after this
+ * create. Build a shared household (same lastName + address, sharesHousehold) and assert the third
+ * member is GOLD. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 

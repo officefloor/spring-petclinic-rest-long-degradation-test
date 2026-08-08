@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp32 global-id, UPDATED by cp56: customerCode is replaced by memberId ('<REGION><FY><HASH8><CHK>').
- *  The region prefix and computed HASH8 are exact; customerCode is gone. */
+/** global-id: customerCode is replaced by memberId ('<REGION><FY><HASH8><CHK>').
+ * The region prefix and computed HASH8 are exact; customerCode is gone. */
 @Tag("cp32")
 class Cp32Tests extends AcceptanceBase {
 

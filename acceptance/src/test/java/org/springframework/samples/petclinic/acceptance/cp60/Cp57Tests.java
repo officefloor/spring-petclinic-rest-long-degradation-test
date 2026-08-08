@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** cp57 welcome-notify, UPDATED by cp60: the NOTIFY line still carries the owner id and the memberId,
- *  which is now read from the nested 'identity' object. */
+/** welcome-notify: the NOTIFY line still carries the owner id and the memberId,
+ * which is now read from the nested 'identity' object. */
 @Tag("cp57")
 class Cp57Tests extends AcceptanceBase {
 

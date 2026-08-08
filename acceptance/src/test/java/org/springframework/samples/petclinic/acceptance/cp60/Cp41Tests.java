@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
-/** cp41 code-collision, UPDATED by cp60: memberId (now under 'identity') stays unique across distinct
- *  owners. */
+/** code-collision: memberId (now under 'identity') stays unique across distinct
+ * owners. */
 @Tag("cp41")
 class Cp41Tests extends AcceptanceBase {
 

@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp03 telephone-unique, UPDATED by cp28: duplicate detection is now the single identityKey
- *  (telephone|email|householdId). Two owners with the same identity collide with 409. */
+/** telephone-unique: duplicate detection is now the single identityKey
+ * (telephone|email|householdId). Two owners with the same identity collide with 409. */
 @Tag("cp03")
 class Cp03Tests extends AcceptanceBase {
 
@@ -16,7 +16,7 @@ class Cp03Tests extends AcceptanceBase {
 		createOwnerOk(a);
 		// A pure full duplicate: identical in every identity-bearing field, so it must collide (409)
 		// under every later version of the key. Do NOT tweak b (e.g. sharesHousehold), which would
-		// de-sync the householdId and let the keys differ before cp36 makes householdId computed.
+		// de-sync the householdId and let the keys differ before makes householdId computed.
 		createOwner(a.deepCopy()).andExpect(status().isConflict());
 	}
 }

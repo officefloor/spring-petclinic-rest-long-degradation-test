@@ -6,9 +6,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp29 postcode, UPDATED by cp44: postcode validation reads the structured 'postcode'. A valid one is
- *  stored; a postcode out of the city's region range is rejected (Sydney is NSW 2000-2099, so 3000
- *  is invalid). */
+/** postcode: postcode validation reads the structured 'postcode'. A valid one is
+ * stored; a postcode out of the city's region range is rejected (Sydney is NSW 2000-2099, so 3000
+ * is invalid). */
 @Tag("cp29")
 class Cp29Tests extends AcceptanceBase {
 

@@ -103,6 +103,37 @@ arms. A fresh login-only config dir per call guarantees a pristine, stateless
 Claude; the real `~/.claude` is never read or written. **If you touch `run_agent`,
 preserve this.**
 
+### 3. History-less, sequence-blind sandbox (the agent can't tell it's checkpoint N)
+The agent does NOT run in the git worktree. Per checkpoint, `run_chain` builds a
+fresh **sandbox** (`<wt>-sandbox`, via `_prepare_agent_sandbox`) that is an rsync
+mirror of the worktree source with **`.git` and `target/` excluded**, plus a fresh
+acceptance dir holding ONLY the shared infra and **this checkpoint's own test renamed
+to the neutral `AcceptanceTest.java`** — no `CpNN` in the filename or class, and no
+`@Tag` (`_neutralize_test`, with a leak guard that raises if any `@Tag` or `cp\d+`
+survives). The test sources' comments are also kept free of `cpNN`. So the agent sees
+one test with no number, no git history (can't `git log` the `cp01 agent …` / `cp02 …`
+sequence or `git show` prior tests), and no prior build output.
+
+The worktree carries **only production code + pinned docs** — no acceptance tests. The
+9-step per-checkpoint flow: (1-3) agent works in the sandbox; (4) `mirror_source(sandbox,
+wt, extra_excludes=(acceptance/,))` copies the PRODUCTION result back and COMMIT 1
+records the production-only delta; (5) tamper detection compares the sandbox's
+`AcceptanceTest.java` to the regenerated neutral version; (6) the gate is prepared IN
+THE SANDBOX — pinned docs restored to base, neutral test swapped for the full authored
+cp01..cpK suite (real CpNN names for scoring); (7) `scrub_test_artifacts(sandbox)` runs
+`mvnw clean` then `run_tests(sandbox, …)`; (8) COMMIT 2 normalises the worktree (restore
+pinned docs); (9) the sandbox is wiped. The probe likewise runs in a fresh history-less
+mirror. Retries re-mirror the untouched worktree.
+
+**Why it exists:** at cp60 the agent `cd`-ed out of the worktree into the harness
+`acceptance/` suite AND ran `git log` at 27/60 checkpoints, reading the withheld
+mutative tests and the whole sequence; and the filename `Cp60Tests`/`@Tag("cp60")`
+handed it the number outright. Also keep `work_root` OUTSIDE the harness repo (config
+default `${HOME}/pe-work`) so the agent's cwd has no ancestor path to
+`acceptance/`/`checkpoints.yaml`. If you touch the agent-turn flow, preserve: agent runs
+in the sandbox (never the worktree); sandbox has no `.git`; the visible test is the
+neutral `AcceptanceTest.java`; the worktree stays production-only.
+
 ## The acceptance suite (`acceptance/`)
 
 Black-box MockMvc tests (`@SpringBootTest`, full app boot) so both arms are judged

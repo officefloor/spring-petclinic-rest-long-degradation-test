@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp05 display-name: When an owner is created, return 'displayName' formatted exactly as 'LastName, FirstName'... */
+/** display-name: When an owner is created, return 'displayName' formatted exactly as 'LastName, FirstName'... */
 @Tag("cp05")
 class Cp05Tests extends AcceptanceBase {
 

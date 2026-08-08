@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 
-/** cp31 check-digit: 'checkDigit' is the Luhn check digit over the digits of the customerCode. The
- *  test recomputes Luhn from the returned customerCode and asserts the exact digit. */
+/** check-digit: 'checkDigit' is the Luhn check digit over the digits of the customerCode. The
+ * test recomputes Luhn from the returned customerCode and asserts the exact digit. */
 @Tag("cp31")
 class Cp31Tests extends AcceptanceBase {
 

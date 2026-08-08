@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** cp57 welcome-notify: on successful create, a NOTIFY log line carries the owner id and the
- *  memberId. */
+/** welcome-notify: on successful create, a NOTIFY log line carries the owner id and the
+ * memberId. */
 @Tag("cp57")
 class Cp57Tests extends AcceptanceBase {
 

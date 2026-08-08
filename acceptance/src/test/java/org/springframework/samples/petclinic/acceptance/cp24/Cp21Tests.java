@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp21 audit-create, UPDATED by cp24: the create audit line records the numeric membershipLevel
- *  (instead of a tier), alongside the owner id it already logged. */
+/** audit-create: the create audit line records the numeric membershipLevel
+ * (instead of a tier), alongside the owner id it already logged. */
 @Tag("cp21")
 class Cp21Tests extends AcceptanceBase {
 

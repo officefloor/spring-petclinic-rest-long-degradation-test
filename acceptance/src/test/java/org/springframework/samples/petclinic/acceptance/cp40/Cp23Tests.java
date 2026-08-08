@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp23 tier-gold, UPDATED by cp40: a large household now adds points (not a GOLD tier). The third
- *  member of a household (same lastName+postcode) with an email scores 5 points
- *  (2 email + 1 namesake 0 + 2 household-of-3), mapping to level 3. */
+/** tier-gold: a large household now adds points (not a GOLD tier). The third
+ * member of a household (same lastName+postcode) with an email scores 5 points
+ * (2 email + 1 namesake 0 + 2 household-of-3), mapping to level 3. */
 @Tag("cp23")
 class Cp23Tests extends AcceptanceBase {
 

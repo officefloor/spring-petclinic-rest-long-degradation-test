@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 
-/** cp09 customer-code, UPDATED by cp32: customerCode = '<REGION>-<HASH8>', REGION from the postcode,
- *  HASH8 = SHA-256(telephone + lastName)[0:8] upper hex. Recomputed exactly from the response. */
+/** customer-code: customerCode = '<REGION>-<HASH8>', REGION from the postcode,
+ * HASH8 = SHA-256(telephone + lastName)[0:8] upper hex. Recomputed exactly from the response. */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 

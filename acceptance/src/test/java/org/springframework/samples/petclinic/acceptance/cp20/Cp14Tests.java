@@ -6,9 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp14 membership-number, UPDATED by cp20: the YY segment uses the business-day-adjusted
- *  registration date. Supplying a Saturday whose Monday roll stays in the same year, the YY still
- *  matches the returned (adjusted) registrationDate's year. */
+/** membership-number: the YY segment uses the business-day-adjusted
+ * registration date. Supplying a Saturday whose Monday roll stays in the same year, the YY still
+ * matches the returned (adjusted) registrationDate's year. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 

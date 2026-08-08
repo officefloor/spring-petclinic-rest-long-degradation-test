@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp48 fiscal-year: Move date-derived values to a fiscal-year basis, where the fiscal year starts on 1 July. R... */
+/** fiscal-year: Move date-derived values to a fiscal-year basis, where the fiscal year starts on 1 July. R... */
 @Tag("cp48")
 class Cp48Tests extends AcceptanceBase {
 

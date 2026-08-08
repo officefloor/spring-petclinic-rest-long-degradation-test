@@ -7,8 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp28 identity-key, UPDATED by cp52: the identityKey is now a 64-hex SHA-256 (over
- *  telephone|lowerEmail|soundex(lastName)); a repeated full identity still collides with 409. */
+/** identity-key: the identityKey is now a 64-hex SHA-256 (over
+ * telephone|lowerEmail|soundex(lastName)); a repeated full identity still collides with 409. */
 @Tag("cp28")
 class Cp28Tests extends AcceptanceBase {
 

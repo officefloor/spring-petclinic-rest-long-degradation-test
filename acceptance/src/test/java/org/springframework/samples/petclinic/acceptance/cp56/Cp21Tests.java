@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp21 audit-create, UPDATED by cp56: customerCode is gone from the audit line; it still carries the
- *  owner id and registrationDate (stable identifiers). */
+/** audit-create: customerCode is gone from the audit line; it still carries the
+ * owner id and registrationDate (stable identifiers). */
 @Tag("cp21")
 class Cp21Tests extends AcceptanceBase {
 

@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp01 required-fields: Reject creating an owner that is missing or blank in any of firstName, lastName, address,... */
+/** required-fields: Reject creating an owner that is missing or blank in any of firstName, lastName, address,... */
 @Tag("cp01")
 class Cp01Tests extends AcceptanceBase {
 

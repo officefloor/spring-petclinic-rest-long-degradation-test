@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp10 household-duplicate: UPDATED by cp12 — addresses are compared after normalization. */
+/** household-duplicate: — addresses are compared after normalization. */
 @Tag("cp10")
 class Cp10Tests extends AcceptanceBase {
 

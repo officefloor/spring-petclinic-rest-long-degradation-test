@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp07 registration-date, UPDATED by cp20: the effective registration date rolls off weekends to the
- *  next Monday (supplied dates too). 2026-01-03 is a Saturday -> 2026-01-05 (Mon); a weekday is kept. */
+/** registration-date: the effective registration date rolls off weekends to the
+ * next Monday (supplied dates too). 2026-01-03 is a Saturday -> 2026-01-05 (Mon); a weekday is kept. */
 @Tag("cp07")
 class Cp07Tests extends AcceptanceBase {
 

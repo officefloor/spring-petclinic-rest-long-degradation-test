@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp30 locality-postcode, UPDATED by cp44: locality reads the structured postcode. A Sydney owner
- *  with postcode 2000 resolves locality "NSW". */
+/** locality-postcode: locality reads the structured postcode. A Sydney owner
+ * with postcode 2000 resolves locality "NSW". */
 @Tag("cp30")
 class Cp30Tests extends AcceptanceBase {
 

@@ -6,7 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp04 email-format: An owner may include 'email'. When present it must be a syntactically valid address; store... */
+/** email-format: An owner may include 'email'. When present it must be a syntactically valid address; store... */
 @Tag("cp04")
 class Cp04Tests extends AcceptanceBase {
 

@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp24 membership-levels: Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creatio... */
+/** membership-levels: Replace the string membership tier with a numeric 'membershipLevel' from 1 to 3 on creatio... */
 @Tag("cp24")
 class Cp24Tests extends AcceptanceBase {
 

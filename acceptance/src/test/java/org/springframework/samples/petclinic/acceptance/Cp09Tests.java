@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp09 customer-code: Assign 'customerCode' formatted '<LAST3>-<NNNN>' where LAST3 is the upper-cased first thre... */
+/** customer-code: Assign 'customerCode' formatted '<LAST3>-<NNNN>' where LAST3 is the upper-cased first thre... */
 @Tag("cp09")
 class Cp09Tests extends AcceptanceBase {
 

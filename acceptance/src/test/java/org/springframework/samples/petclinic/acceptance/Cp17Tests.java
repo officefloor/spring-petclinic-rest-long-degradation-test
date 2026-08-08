@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp17 locality: locality is the region from the pinned city-to-region table (Sydney->NSW,
- *  Melbourne->VIC, Brisbane->QLD), or "UNKNOWN" for any other city. */
+/** locality: locality is the region from the pinned city-to-region table (Sydney->NSW,
+ * Melbourne->VIC, Brisbane->QLD), or "UNKNOWN" for any other city. */
 @Tag("cp17")
 class Cp17Tests extends AcceptanceBase {
 

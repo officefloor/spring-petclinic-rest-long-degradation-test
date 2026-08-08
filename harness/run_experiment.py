@@ -300,6 +300,71 @@ def scrub_test_artifacts(wt: str, cfg: dict) -> None:
     shutil.rmtree(os.path.join(wt, "target"), ignore_errors=True)
 
 
+def mirror_source(src: str, dst: str, extra_excludes: tuple = ()) -> None:
+    """Mirror `src` -> `dst` (an exact copy) of SOURCE files only: always exclude `.git`
+    and `target/`, plus any `extra_excludes` (paths relative to the roots). Gives the
+    agent a history-less sandbox -- no `.git` (can't `git log` the sequence), no
+    `target/` (no prior build artifacts). `--delete` makes `dst` an exact mirror, so
+    re-mirroring discards a failed attempt; mirroring the sandbox back onto the worktree
+    propagates the agent's file deletions while the excludes preserve the worktree's own
+    `.git`/`target/` and (via extra_excludes) its harness-managed acceptance tests."""
+    os.makedirs(dst, exist_ok=True)
+    ex = ["--exclude=.git", "--exclude=/target/"] + [f"--exclude={e}" for e in extra_excludes]
+    subprocess.run(["rsync", "-a", "--delete", *ex,
+                    src.rstrip("/") + "/", dst.rstrip("/") + "/"],
+                   check=True, capture_output=True, text=True)
+
+
+# The single acceptance test the agent sees while working, renamed so NOTHING hints at a
+# checkpoint number or a sequence: no CpNN in the filename or class, and no @Tag. (The
+# test sources' comments are kept free of cpNN too, so the neutralized file has no leak.)
+NEUTRAL_TEST = "AcceptanceTest.java"
+
+
+def _neutralize_test(text: str) -> str:
+    """Rewrite a CpNNTests.java source so it carries no checkpoint-sequence hint: drop the
+    `@Tag(...)` line and its `Tag` import, and rename `CpNNTests` -> `AcceptanceTest`
+    EVERYWHERE (class decl, any constructor, any reference). Then a leak guard raises if
+    any `@Tag` or `cp<digits>` token survives -- so a future test that leaks in an
+    unforeseen way halts the run loudly instead of silently tipping off the agent."""
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("@Tag(") or s == "import org.junit.jupiter.api.Tag;":
+            continue
+        out.append(re.sub(r"\bCp\d+Tests\b", "AcceptanceTest", line))
+    result = "\n".join(out) + "\n"
+    leak = re.search(r"@Tag\b|\bcp\d+\b", result, re.IGNORECASE)
+    if leak:
+        raise RuntimeError(f"neutralized test still leaks a checkpoint hint: {leak.group(0)!r}")
+    return result
+
+
+def _neutral_test_text(cfg: dict, cp: dict) -> str:
+    """The neutralized (AcceptanceTest) source for this checkpoint's own authored test."""
+    src = os.path.join(cfg["acceptance"]["src_dir"], _own_test(cp))
+    return _neutralize_test(open(src).read())
+
+
+def _prepare_agent_sandbox(wt: str, sandbox: str, cfg: dict, cp: dict) -> None:
+    """Build the agent's history-less sandbox for one attempt: mirror the worktree source
+    (production + pinned docs; no .git/target — the worktree carries no acceptance tests),
+    then build a fresh acceptance dir holding ONLY the shared infra + this checkpoint's own
+    test, renamed to the neutral AcceptanceTest.java. The agent sees one test with no CpNN
+    name, no @Tag and no sequence hint -- plus no git history and no prior build output."""
+    mirror_source(wt, sandbox)
+    acc_src = cfg["acceptance"]["src_dir"]
+    acc = os.path.join(sandbox, cfg["acceptance"]["dest_subpath"])
+    shutil.rmtree(acc, ignore_errors=True)
+    os.makedirs(acc, exist_ok=True)
+    for s in cfg["acceptance"].get("shared", []):
+        src = os.path.join(acc_src, s)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(acc, os.path.basename(s)))
+    with open(os.path.join(acc, NEUTRAL_TEST), "w") as fh:
+        fh.write(_neutral_test_text(cfg, cp))
+
+
 def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
     """Basenames among the agent-VISIBLE tests (shared + own CpNN) that the agent
     changed or deleted vs their authored source. Reported as acceptance_touched;
@@ -352,18 +417,21 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
           + ("ok" if c.returncode == 0 else (c.stdout.strip() or c.stderr.strip())[:120]))
 
 
-def _run_agent_turn(cfg: dict, wt: str, model: str, prompt: str, cap_dir: str,
-                    stream_file: str, preagent_ref: str):
-    """Run the agent for one checkpoint, retrying on a token/session limit or a
-    transient failure. A limit waits for the quota reset; a transient failure backs
-    off short. Each retry hard-resets the worktree to `preagent_ref` first. Returns
-    (final AgentResult, per-attempt log) where the last log entry is the successful
-    try. Raises RuntimeError if the retry caps are exceeded."""
+def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prompt: str,
+                    cap_dir: str, stream_file: str):
+    """Run the agent for one checkpoint IN THE SANDBOX, retrying on a token/session
+    limit or a transient failure. Each attempt rebuilds the sandbox fresh: a history-less
+    copy of the worktree (no `.git`, no `target/`) whose ONLY acceptance test is the
+    current one, renamed to the neutral AcceptanceTest.java (no CpNN, no @Tag). So the
+    agent works from the current source alone -- no git history, no prior build output,
+    no hint of a checkpoint sequence. The worktree is never touched. A limit waits for the
+    quota reset; a transient failure backs off short. Returns (final AgentResult, log)."""
     limits = cfg.get("limits", {})
     attempts = transient_attempts = 0
     attempt_log: list[dict] = []  # every try (failed/limited too); last = success
     while True:
-        ar = agent.run_agent(prompt, cwd=wt, model=model,
+        _prepare_agent_sandbox(wt, sandbox, cfg, cp)   # fresh; discards any failed attempt
+        ar = agent.run_agent(prompt, cwd=sandbox, model=model,
                              timeout=cfg.get("agent_timeout", 3600),
                              capture_path=os.path.join(cap_dir, stream_file))
         att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
@@ -378,9 +446,6 @@ def _run_agent_turn(cfg: dict, wt: str, model: str, prompt: str, cap_dir: str,
         attempts += 1
         if attempts > limits.get("max_attempts", 500):
             raise RuntimeError("exceeded max retry attempts; aborting run")
-        subprocess.run(["git", "-C", wt, "reset", "--hard", preagent_ref],
-                       capture_output=True, text=True)
-        subprocess.run(["git", "-C", wt, "clean", "-fdq"], capture_output=True, text=True)
         if ar.limit_reached:
             transient_attempts = 0
             att["wait_s"] = wait_for_window(ar, cfg)
@@ -479,6 +544,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     shutil.rmtree(cap_dir, ignore_errors=True)
     os.makedirs(cap_dir, exist_ok=True)
 
+    # The agent works in this history-less sandbox (a copy of the worktree source with
+    # no .git and no target/), never in the worktree itself, so it cannot read the
+    # checkpoint git history or prior build output. Re-mirrored fresh each agent turn.
+    sandbox = wt + "-sandbox"
+    shutil.rmtree(sandbox, ignore_errors=True)
+
     # Derived numbers below are computed ONLY to narrate progress in the log — they
     # are never persisted. The branch stores raw capture; analyze recomputes.
     prior_passing: set[str] = set()
@@ -499,45 +570,32 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             print(f"    type   : MUTATIVE (revises prior rules {cp.get('mutates', [])})", flush=True)
         print(f"    spec   : {cp['spec']}", flush=True)
 
-        # 0. Ensure the agent-view is set: shared infra + ONLY this checkpoint's own
-        # test. For k>=2 the PREVIOUS checkpoint's reset commit (COMMIT 2) already set
-        # it, so HEAD holds only CpK; cp01 sets it here. The agent never sees a prior
-        # requirement test — so it cannot use them as a checklist, and a change that
-        # breaks earlier behaviour truly regresses (measured after the agent turn).
-        if k == 1:
-            set_agent_view(wt, cfg, cp)
+        acc_sub = cfg["acceptance"]["dest_subpath"].rstrip("/")
+        acc_sandbox = os.path.join(sandbox, acc_sub)
+        pin_files = cfg.get("isolation", {}).get("pin_files", [])
 
-        # Wipe build output BEFORE the agent runs, so the previous checkpoint's
-        # compiled Cp01..Cp(k-1) test classes + Surefire reports in target/ can't
-        # reveal the checkpoint sequence to the (supposedly blind) agent.
-        scrub_test_artifacts(wt, cfg)
+        # The worktree carries ONLY the accumulating production code + pinned docs — no
+        # acceptance tests (those live only in the sandbox). Its HEAD is the previous reset
+        # commit and stays there through the agent turn, so it is COMMIT 1's parent and the
+        # base for the production-only agent diff.
+        base_for_cp = git(["-C", wt, "rev-parse", "HEAD"])
 
-        # Snapshot the pre-agent state as a throwaway commit so a token-limit- or
-        # network-interrupted attempt can be rolled back and retried cleanly. It is
-        # undone (soft reset) before COMMIT 1, so it never enters real history.
-        git(["-C", wt, "add", "-A"])
-        subprocess.run(["git", "-C", wt, "commit", "-q", "--allow-empty",
-                        "-m", f"__preagent_cp{k:02d}__"], capture_output=True, text=True)
-        preagent_ref = git(["-C", wt, "rev-parse", "HEAD"])
-        base_for_cp = git(["-C", wt, "rev-parse", "HEAD~1"])  # prev reset commit (base_ref at cp01)
-
-        # 1. agent turn (fresh session, no carried context), with the token-limit /
-        # transient-failure retry loop. Retries roll back to the pre-agent state.
+        # 1-3. Agent turn in the neutral, HISTORY-LESS SANDBOX (fresh session, no carried
+        # context). _run_agent_turn rebuilds it each attempt: worktree source (no .git,
+        # no target/) + a fresh acceptance dir holding only the shared infra and THIS
+        # checkpoint's test as AcceptanceTest.java (no CpNN name, no @Tag). So the agent
+        # gets no git history, no prior build output, and no hint of a checkpoint sequence.
         prompt = build_prompt(template, cp["spec"])
         stream_file = f"cp{k:02d}.agent.jsonl"
-        ar, attempt_log = _run_agent_turn(cfg, wt, model, prompt, cap_dir,
-                                          stream_file, preagent_ref)
+        ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir, stream_file)
 
-        # Undo the snapshot commit (keep its contents staged) so COMMIT 1 (the
-        # agent commit) is parented on the pre-agent state and its diff is EXACTLY
-        # what the agent changed.
-        subprocess.run(["git", "-C", wt, "reset", "--soft", base_for_cp],
-                       capture_output=True, text=True)
-
-        # Capture the true agent delta (identical to COMMIT 1's diff, kept for
-        # convenience and to survive even if COMMIT 1 is empty).
+        # 4. Copy the agent's PRODUCTION result back onto the worktree (the sandbox-only
+        # acceptance dir is excluded; .git/target preserved), and capture the production-
+        # only delta on top of the previous reset.
+        mirror_source(sandbox, wt, extra_excludes=(acc_sub + "/",))
+        git(["-C", wt, "add", "-A"])
         diff_file = f"cp{k:02d}.agent.diff"
-        agent_diff = subprocess.run(["git", "-C", wt, "diff", preagent_ref],
+        agent_diff = subprocess.run(["git", "-C", wt, "diff", "--cached", base_for_cp],
                                     capture_output=True, text=True).stdout
         with open(os.path.join(cap_dir, diff_file), "w") as fh:
             fh.write(agent_diff)
@@ -549,45 +607,45 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if ar.error:
             row["notes"] = ar.error[:200]
 
-        # Record what the agent touched, but DO NOT undo it yet — COMMIT 1 must
-        # preserve exactly what the agent did (incl. any CLAUDE.md edit or
-        # acceptance-test tamper). Normalisation happens in COMMIT 2 below.
-        touched_pins = [pf for pf in cfg.get("isolation", {}).get("pin_files", [])
+        # 5. Tamper detection: compare the sandbox's AcceptanceTest.java with the neutral
+        # version regenerated from the authored test — any difference means the agent edited
+        # its own test. Flag a pinned-doc edit too (the agent's CLAUDE.md was copied back).
+        neutral_path = os.path.join(acc_sandbox, NEUTRAL_TEST)
+        agent_test = open(neutral_path).read() if os.path.isfile(neutral_path) else ""
+        acceptance_touched = [] if agent_test == _neutral_test_text(cfg, cp) else [_own_test(cp)]
+        touched_pins = [pf for pf in pin_files
                         if git(["-C", wt, "status", "--porcelain", "--", pf], check=False)]
-        acceptance_touched = detect_agent_tamper(wt, cfg, cp)
         row["pinned_touched"] = ",".join(touched_pins)
         row["acceptance_touched"] = ",".join(acceptance_touched)
 
-        # 2. COMMIT 1 — the AGENT commit: `git show` on it is EXACTLY the agent's
-        # change for this checkpoint. An empty commit (no changes) => no-op checkpoint.
-        git(["-C", wt, "add", "-A"])
+        # COMMIT 1 — the AGENT commit: `git show` on it is EXACTLY the agent's production
+        # change (incl. any CLAUDE.md edit). An empty commit => a no-op checkpoint.
         c1 = subprocess.run(["git", "-C", wt, "commit", "-m", f"cp{k:02d} agent {cp['id']}"],
                             capture_output=True, text=True)
         agent_sha = git(["-C", wt, "rev-parse", "HEAD"]) if c1.returncode == 0 else ""
 
-        # 3. Normalise for the next run: restore the pinned docs to base (CLAUDE.md
-        # must be identical at every checkpoint — it can never become accumulating
-        # cross-checkpoint memory) and reset the acceptance tests to authored —
-        # BOTH before the gate, so a weakened test or an edited guide can never
-        # produce a false pass. These land in COMMIT 2 below.
-        for pf in cfg.get("isolation", {}).get("pin_files", []):
-            restored = subprocess.run(["git", "-C", wt, "checkout", arm_cfg["base_ref"], "--", pf],
+        # 6. Prepare the GATE in the SANDBOX (never the worktree): restore the pinned docs
+        # to their base version so an agent edit can't sway the gate, then swap the neutral
+        # test for the FULL authored cp01..cpK suite (real CpNN names, so scoring by class
+        # works). These are the priors the agent never saw, so a silent break shows up as a
+        # real regression.
+        for pf in pin_files:
+            base_txt = subprocess.run(["git", "-C", wt, "show", f"{arm_cfg['base_ref']}:{pf}"],
                                       capture_output=True, text=True)
-            if restored.returncode != 0:  # agent-created (not in base_ref) -> drop it
-                fpath = os.path.join(wt, pf)
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-        # Bring back EVERY prior test (authored, mutative-updated priors winning) plus
-        # the authored current test — the full cp01..cpK suite the agent never saw —
-        # so the gate below measures what its change silently broke.
-        install_measurement_suite(wt, cfg, checkpoints, k)
+            dst = os.path.join(sandbox, pf)
+            if base_txt.returncode == 0:
+                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                with open(dst, "w") as fh:
+                    fh.write(base_txt.stdout)
+            elif os.path.exists(dst):
+                os.remove(dst)
+        shutil.rmtree(acc_sandbox, ignore_errors=True)
+        install_measurement_suite(sandbox, cfg, checkpoints, k)
 
-        # 4. correctness gate (runs the full cp01..cpK authored suite against the
-        # agent's production code + pinned CLAUDE.md). Regressions are now REAL: the
-        # agent had no sight of the priors it may have broken.
-        outcome = correctness.run_tests(wt, k, cfg)
-        # Full build + test console (raw): a test that errors before producing a
-        # Surefire report leaves no trace otherwise. Capped to keep the commit sane.
+        # 7. correctness gate IN THE SANDBOX: mvn clean, then run the full cp01..cpK suite
+        # against the agent's production code. The console is retained for capture.
+        scrub_test_artifacts(sandbox, cfg)
+        outcome = correctness.run_tests(sandbox, k, cfg)
         build_log_file = None
         if outcome.console:
             build_log_file = f"cp{k:02d}.build.log"
@@ -603,13 +661,18 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
 
-        # 5. COMMIT 2 — the RESET commit: the harness normalisation (pinned docs)
-        # plus setting the NEXT checkpoint's agent-view — shared infra + only cp(K+1)'s
-        # own test, with the measurement suite's priors removed again. So cp(K+1)'s
-        # agent starts blind and its agent commit stays pure. Kept even if empty, so
-        # every checkpoint is a clean two-commit boundary.
-        if k < n:
-            set_agent_view(wt, cfg, checkpoints[k])  # 0-indexed: next checkpoint
+        # 8. COMMIT 2 — the RESET commit: normalise the worktree by restoring the pinned
+        # docs to base (CLAUDE.md can never become accumulating cross-checkpoint memory).
+        # No acceptance tests are threaded through the worktree; the next checkpoint's
+        # neutral test is built fresh into the sandbox by _run_agent_turn. Kept even if
+        # empty, so every checkpoint is a clean two-commit boundary.
+        for pf in pin_files:
+            restored = subprocess.run(["git", "-C", wt, "checkout", arm_cfg["base_ref"], "--", pf],
+                                      capture_output=True, text=True)
+            if restored.returncode != 0:  # agent-created (not in base_ref) -> drop it
+                fpath = os.path.join(wt, pf)
+                if os.path.exists(fpath):
+                    os.remove(fpath)
         git(["-C", wt, "add", "-A"])
         subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
                         "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
@@ -632,7 +695,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         run_probe = (k in at) if at else ((k == 1) or (phase_for(k - 1, n) != phase))
         probe_record = None
         if probe_cfg.get("enabled", True) and run_probe:
-            pr = agent.probe(cfg["probe"]["question"], cwd=wt, model=model,
+            # The probe is a read-only agent too, so run it in a fresh HISTORY-LESS mirror
+            # of the worktree (production + pinned docs, no .git) — it must not be able to
+            # `git log` the checkpoint sequence either.
+            mirror_source(wt, sandbox)
+            pr = agent.probe(cfg["probe"]["question"], cwd=sandbox, model=model,
                              expected=cfg["probe"].get("expected"),
                              capture_path=os.path.join(cap_dir, f"cp{k:02d}.probe.jsonl"))
             row.update({
@@ -648,7 +715,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # SHAs) referencing the stream + agent-diff files already written to cap_dir.
         rec = capture.checkpoint_record(
             k, cp["id"], phase,
-            {"commit": agent_sha, "reset": reset_sha, "preagent": preagent_ref,
+            {"commit": agent_sha, "reset": reset_sha, "preagent": base_for_cp,
              "prev": base_for_cp, "base": base_commit},
             ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
@@ -663,6 +730,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         _log_checkpoint(row, where, wt, base_for_cp, agent_sha,
                         cfg.get("acceptance", {}).get("dest_subpath"), outcome)
 
+        # 9. Wipe the sandbox so the next checkpoint always starts from a clean, fully
+        # rebuilt copy (no leftover Cp01..cpK gate tests or agent build output).
+        shutil.rmtree(sandbox, ignore_errors=True)
+
     # Final commit on the evolve branch: persist ONLY the raw capture + provenance
     # (nothing derived, nothing goes to the harness repo). The commit message
     # carries a derived one-liner for at-a-glance history — text only, not data.
@@ -676,6 +747,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                 f"regressions={regr_count} (derived numbers recomputed by analyze)")
     commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, prov, headline,
                          snapshot=cfg.get("_snapshot"))
+    shutil.rmtree(sandbox, ignore_errors=True)  # the agent's history-less working copy
 
 
 def main() -> int:

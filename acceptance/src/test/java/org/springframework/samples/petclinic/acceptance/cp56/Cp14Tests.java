@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp14 membership-number, UPDATED by cp56: the membershipNumber field is removed (unified into the
- *  memberId). */
+/** membership-number: the membershipNumber field is removed (unified into the
+ * memberId). */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 

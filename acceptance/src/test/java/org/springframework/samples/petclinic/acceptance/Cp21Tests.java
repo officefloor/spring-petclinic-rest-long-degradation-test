@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp21 audit-create: on successful create, an AUDIT log line carries the owner id, the
- *  customerCode and the registrationDate. */
+/** audit-create: on successful create, an AUDIT log line carries the owner id, the
+ * customerCode and the registrationDate. */
 @Tag("cp21")
 class Cp21Tests extends AcceptanceBase {
 

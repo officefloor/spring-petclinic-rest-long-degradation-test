@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household, UPDATED by cp28: household members still share a householdId, and the
- *  identityKey is exactly telephone|email|householdId (email empty here). */
+/** shares-household: household members still share a householdId, and the
+ * identityKey is exactly telephone|email|householdId (email empty here). */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 

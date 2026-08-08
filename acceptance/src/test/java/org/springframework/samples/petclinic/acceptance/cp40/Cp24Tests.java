@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp24 membership-levels, UPDATED by cp40: membershipLevel now comes from points. A new owner with
- *  an email scores 3 points (2 email + 1 namesake 0), which maps to level 2. */
+/** membership-levels: membershipLevel now comes from points. A new owner with
+ * an email scores 3 points (2 email + 1 namesake 0), which maps to level 2. */
 @Tag("cp24")
 class Cp24Tests extends AcceptanceBase {
 

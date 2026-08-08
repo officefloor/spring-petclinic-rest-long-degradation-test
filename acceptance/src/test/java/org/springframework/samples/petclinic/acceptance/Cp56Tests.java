@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp56 member-id: customerCode and membershipNumber are unified into 'memberId' =
- *  '<REGION><FY><HASH8><CHK>'. Assert the exact, computable sub-values: the pinned region prefix and
- *  the SHA-256 HASH8 over (telephone + lastName); and that the two old fields are gone. */
+/** member-id: customerCode and membershipNumber are unified into 'memberId' =
+ * '<REGION><FY><HASH8><CHK>'. Assert the exact, computable sub-values: the pinned region prefix and
+ * the SHA-256 HASH8 over (telephone + lastName); and that the two old fields are gone. */
 @Tag("cp56")
 class Cp56Tests extends AcceptanceBase {
 

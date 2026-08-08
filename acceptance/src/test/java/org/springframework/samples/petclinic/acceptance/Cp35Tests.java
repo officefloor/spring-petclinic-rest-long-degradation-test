@@ -5,9 +5,9 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp35 soft-match: a new owner that is not a hard duplicate but shares an existing owner's
- *  lastName and postcode (different telephone) is still created, with 'possibleDuplicate' true and
- *  'possibleDuplicateOf' set to the matching owner id. */
+/** soft-match: a new owner that is not a hard duplicate but shares an existing owner's
+ * lastName and postcode (different telephone) is still created, with 'possibleDuplicate' true and
+ * 'possibleDuplicateOf' set to the matching owner id. */
 @Tag("cp35")
 class Cp35Tests extends AcceptanceBase {
 

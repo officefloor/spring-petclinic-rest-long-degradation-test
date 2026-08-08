@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp48 fiscal-year, UPDATED by cp56: fiscalYear remains an 'FY<YY>' field (its 2-digit year is now
- *  also embedded in the memberId). */
+/** fiscal-year: fiscalYear remains an 'FY<YY>' field (its 2-digit year is now
+ * also embedded in the memberId). */
 @Tag("cp48")
 class Cp48Tests extends AcceptanceBase {
 

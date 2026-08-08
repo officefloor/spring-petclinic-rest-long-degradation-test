@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp28 identity-key, UPDATED by cp36: the identityKey now uses the computed householdId. A repeated
- *  full identity (same telephone / household) still collides with 409. */
+/** identity-key: the identityKey now uses the computed householdId. A repeated
+ * full identity (same telephone / household) still collides with 409. */
 @Tag("cp28")
 class Cp28Tests extends AcceptanceBase {
 

@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp46 exclude-deleted, UPDATED by cp52: the v2 identity key still ignores soft-deleted owners, so a
- *  create matching only a DELETE-d owner still succeeds. */
+/** exclude-deleted: the v2 identity key still ignores soft-deleted owners, so a
+ * create matching only a DELETE-d owner still succeeds. */
 @Tag("cp46")
 class Cp46Tests extends AcceptanceBase {
 

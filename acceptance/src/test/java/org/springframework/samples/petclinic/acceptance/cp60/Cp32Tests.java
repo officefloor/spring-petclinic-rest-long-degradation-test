@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-/** cp32 global-id, UPDATED by cp60: the memberId (successor to customerCode) is now under the nested
- *  'identity' object; the top-level memberId and customerCode are gone. */
+/** global-id: the memberId (successor to customerCode) is now under the nested
+ * 'identity' object; the top-level memberId and customerCode are gone. */
 @Tag("cp32")
 class Cp32Tests extends AcceptanceBase {
 

@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp07 registration-date: When no registration date is supplied, set it to the server's current date and return 'reg... */
+/** registration-date: When no registration date is supplied, set it to the server's current date and return 'reg... */
 @Tag("cp07")
 class Cp07Tests extends AcceptanceBase {
 

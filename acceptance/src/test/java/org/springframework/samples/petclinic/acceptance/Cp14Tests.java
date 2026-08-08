@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.JsonNode;
 
-/** cp14 membership-number: 'membershipNumber' = '&lt;customerCode&gt;-M&lt;YY&gt;', YY = last two
- *  digits of the registrationDate year. Derived from the owner's own fields, so seed-independent. */
+/** membership-number: 'membershipNumber' = '&lt;customerCode&gt;-M&lt;YY&gt;', YY = last two
+ * digits of the registrationDate year. Derived from the owner's own fields, so seed-independent. */
 @Tag("cp14")
 class Cp14Tests extends AcceptanceBase {
 

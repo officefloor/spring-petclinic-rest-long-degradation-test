@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp11 shares-household, UPDATED by cp60: householdId now lives under the nested 'identity' object.
- *  Two owners with the same lastName + postcode still share it. */
+/** shares-household: householdId now lives under the nested 'identity' object.
+ * Two owners with the same lastName + postcode still share it. */
 @Tag("cp11")
 class Cp11Tests extends AcceptanceBase {
 

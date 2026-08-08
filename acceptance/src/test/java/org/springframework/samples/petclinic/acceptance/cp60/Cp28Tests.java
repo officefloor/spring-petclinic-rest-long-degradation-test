@@ -5,8 +5,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import tools.jackson.databind.JsonNode;
 
-/** cp28 identity-key, UPDATED by cp60: the identityKey (rederived v2) lives under the nested
- *  'identity' object and is still a 64-hex SHA-256. */
+/** identity-key: the identityKey (rederived v2) lives under the nested
+ * 'identity' object and is still a 64-hex SHA-256. */
 @Tag("cp28")
 class Cp28Tests extends AcceptanceBase {
 

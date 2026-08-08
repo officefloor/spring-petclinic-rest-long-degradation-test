@@ -6,8 +6,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import tools.jackson.databind.node.ObjectNode;
 
-/** cp50 idempotency: a create that repeats with an already-seen 'Idempotency-Key' returns the
- *  originally created owner with 200, instead of creating a duplicate (which would otherwise 409). */
+/** idempotency: a create that repeats with an already-seen 'Idempotency-Key' returns the
+ * originally created owner with 200, instead of creating a duplicate (which would otherwise 409). */
 @Tag("cp50")
 class Cp50Tests extends AcceptanceBase {
 
