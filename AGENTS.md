@@ -160,6 +160,27 @@ the agent-turn flow, preserve: agent runs in the sandbox under `sandbox_root` (n
 worktree); sandbox has no `.git`; the visible test is the neutral `AcceptanceTest.java`;
 the worktree stays production-only.
 
+### 3b. Filesystem confinement of the agent (Landlock) — the sandbox is not enough
+A clean sandbox does NOT confine the agent: the process can read the whole disk. In a
+run this bit hard — cp01 ran `find /`, reached `~/.local/share/Trash` (a prior run,
+moved to Trash not hard-deleted, holding all 60 `CpNN` tests) and grepped generated
+sources there; the harness `acceptance/` (124 tests) and `checkpoints.yaml` are equally
+reachable by `find /`. The withheld material can't be deleted (it's the source of truth),
+so `agent.run_agent` confines the agent PROCESS instead, via **Landlock** (`harness/landlock.py`,
+kernel LSM — no root, no bwrap, no user-namespace; bwrap is unusable here because Ubuntu's
+`apparmor_restrict_unprivileged_userns=1` blocks unprivileged userns). A `preexec_fn`
+allowlists only the sandbox + toolchain (`/usr /etc /opt /bin /lib* /sbin /proc
+/run/systemd/resolve`, `~/.local/share/claude`, `~/.local/bin`; rw `~/sandbox ~/.m2 /tmp
+/dev` + the throwaway cfg dir) and `landlock_restrict_self`; everything else returns EACCES,
+inherited by every child the agent spawns and impossible to lift. Gated by
+`isolation.agent_confinement.enabled` and **fail-closed**: `verify_denied` runs the same
+confinement over a throwaway `sh` and, if any sentinel (`checkpoints.yaml`, `acceptance/`,
+HARNESS_DIR, `work_root`) is still readable — or Landlock is unavailable — the turn is
+**refused** (no agent runs) rather than run un-blinded. Check support with
+`python harness/landlock_selftest.py` (expect `OVERALL: PASS`). The probe is confined too.
+NOTE the sentinel test must read per type — `cat` a file, `ls` a directory — because
+Landlock does not restrict `stat()`, so `ls <file>` would false-positive.
+
 ## The acceptance suite (`acceptance/`)
 
 Black-box MockMvc tests (`@SpringBootTest`, full app boot) so both arms are judged

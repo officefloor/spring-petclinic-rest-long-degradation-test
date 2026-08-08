@@ -413,6 +413,14 @@ time. Report either honestly.
   `CLAUDE_CONFIG_DIR` seeded with only the login credentials, so Claude Code
   auto-memory can't write project "learnings" that leak across checkpoints or,
   asymmetrically, between arms. The real `~/.claude` is never read or written.
+- **Filesystem confinement (Landlock).** A clean sandbox isn't enough — the agent
+  process can still `find /` the rest of the disk (the harness `acceptance/` suite,
+  `checkpoints.yaml`, and prior runs sitting in Trash all leak the withheld
+  sequence). So `agent.run_agent` restricts the agent — and every child it spawns —
+  to the sandbox + toolchain via Landlock (`isolation.agent_confinement`, no root),
+  denying everything else. It **fails closed**: if a withheld sentinel is still
+  readable, or Landlock is unavailable, the checkpoint is refused rather than run
+  un-blinded. Verify with `python harness/landlock_selftest.py`.
 - **Structural metrics are Java-only** and use identical tools/thresholds for
   both arms, so OfficeFloor's file-spreading cannot distort LOC; YAML LOC is
   logged separately (`yaml_loc`).

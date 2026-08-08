@@ -48,6 +48,26 @@ from . import agent, capture, correctness, expand_path, metrics
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _confine_config(cfg: dict) -> dict | None:
+    """Landlock confinement settings for the agent turn + probe, or None if
+    disabled. `sentinels` are withheld paths that MUST be unreadable from inside
+    the sandbox — the agent's fail-closed self-check refuses to run if any is
+    still reachable, so the leak that exposed the CpNN suite via `find /` (harness
+    acceptance/, checkpoints.yaml, prior runs in Trash) cannot silently recur."""
+    ic = cfg.get("isolation", {}).get("agent_confinement", {})
+    if not ic.get("enabled", False):
+        return None
+    sentinels = [p for p in (cfg.get("checkpoints_file"),
+                             cfg.get("acceptance", {}).get("src_dir"),
+                             HARNESS_DIR,
+                             cfg.get("paths", {}).get("work_root")) if p]
+    return {"enabled": True,
+            "ro": list(ic.get("extra_ro_binds", [])),
+            "rw": list(ic.get("extra_rw_binds", [])),
+            "sentinels": sentinels}
+
+
 CSV_FIELDS = [
     "run_id", "branch",
     "arm", "strategy", "chain", "checkpoint", "checkpoint_id", "phase",
@@ -456,7 +476,8 @@ def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prom
         _prepare_agent_sandbox(wt, sandbox, cfg, cp)   # fresh; discards any failed attempt
         ar = agent.run_agent(prompt, cwd=sandbox, model=model,
                              timeout=cfg.get("agent_timeout", 3600),
-                             capture_path=os.path.join(cap_dir, stream_file))
+                             capture_path=os.path.join(cap_dir, stream_file),
+                             confine=_confine_config(cfg))
         att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
                "cost_usd": ar.cost_usd, "input_tokens": ar.input_tokens,
                "output_tokens": ar.output_tokens, "cache_read_tokens": ar.cache_read_tokens,
@@ -732,7 +753,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             mirror_source(wt, sandbox)
             pr = agent.probe(cfg["probe"]["question"], cwd=sandbox, model=model,
                              expected=cfg["probe"].get("expected"),
-                             capture_path=os.path.join(cap_dir, f"cp{k:02d}.probe.jsonl"))
+                             capture_path=os.path.join(cap_dir, f"cp{k:02d}.probe.jsonl"),
+                             confine=_confine_config(cfg))
             row.update({
                 "probe_cost_usd": round(pr["probe_cost_usd"], 4),
                 "probe_input_tokens": pr["probe_input_tokens"],

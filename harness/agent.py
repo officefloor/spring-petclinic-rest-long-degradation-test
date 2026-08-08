@@ -36,6 +36,8 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+from . import landlock
+
 
 # Read-only toolset the cold-reader probe is restricted to.
 PROBE_TOOLS = "Read,Grep,Glob,Bash"
@@ -227,7 +229,8 @@ def _print_event(ev: dict, prefix: str) -> None:
 
 def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
               allowed_tools: Optional[str] = None, stream: bool = True,
-              label: str = "claude", capture_path: Optional[str] = None) -> AgentResult:
+              label: str = "claude", capture_path: Optional[str] = None,
+              confine: Optional[dict] = None) -> AgentResult:
     """Run one fresh headless agent turn in `cwd`, streaming events to the
     console. No session is resumed. Returns the parsed terminal result, or an
     error result on timeout / missing completion.
@@ -235,7 +238,13 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     If `capture_path` is set, every raw stream event is written there verbatim
     (overwritten per call, so a retried checkpoint keeps only the successful
     attempt's stream). This is the agent's full behaviour trace — tool calls,
-    files read, commands run — which is irreproducible and lost otherwise."""
+    files read, commands run — which is irreproducible and lost otherwise.
+
+    If `confine` is set (dict from `isolation.agent_confinement`), the agent — and
+    every child it spawns — is Landlock-restricted to the sandbox + toolchain, so it
+    cannot read the withheld tests/specs anywhere on the filesystem. Fails CLOSED:
+    if Landlock is unavailable or the sentinel self-check finds withheld material
+    still readable, the turn is refused (no agent runs) rather than run un-blinded."""
     cmd = ["claude", "-p", prompt, *invocation_flags(model, allowed_tools)]
 
     # Isolate Claude's config/memory to a fresh login-only dir for this one call,
@@ -246,15 +255,47 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     if cfg_dir:
         child_env["CLAUDE_CONFIG_DIR"] = cfg_dir
 
+    # Filesystem confinement (see landlock.py). Built here so the sandbox (=cwd) and
+    # the throwaway cfg_dir are in the allowlist; refused if it can't be enforced.
+    preexec = None
+    if confine and confine.get("enabled", True):
+        if landlock.abi_version() < 1:
+            if cfg_dir:
+                shutil.rmtree(cfg_dir, ignore_errors=True)
+            return AgentResult(ok=False, error="agent_confinement enabled but Landlock "
+                               "unavailable on this host; refusing to run agent unconfined")
+        ro, rw = landlock.default_allowlist(cwd, cfg_dir)
+        ro += list(confine.get("ro", []))
+        rw += list(confine.get("rw", []))
+        sentinels = list(confine.get("sentinels", []))
+        if sentinels:
+            try:
+                leaked = landlock.verify_denied(ro, rw, sentinels)
+            except Exception as e:
+                if cfg_dir:
+                    shutil.rmtree(cfg_dir, ignore_errors=True)
+                return AgentResult(ok=False, error=f"confinement self-check could not run "
+                                   f"({e}); refusing to run agent unconfined")
+            if leaked:
+                if cfg_dir:
+                    shutil.rmtree(cfg_dir, ignore_errors=True)
+                return AgentResult(ok=False, error="confinement LEAK — withheld material "
+                                   f"still readable, refusing to run: {leaked}")
+        preexec = landlock.make_preexec(ro, rw)
+
     try:
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True,
-            env=child_env)
+            env=child_env, preexec_fn=preexec)
     except FileNotFoundError:
         if cfg_dir:
             shutil.rmtree(cfg_dir, ignore_errors=True)
         return AgentResult(ok=False, error="`claude` CLI not found on PATH")
+    except Exception as e:
+        if cfg_dir:
+            shutil.rmtree(cfg_dir, ignore_errors=True)
+        return AgentResult(ok=False, error=f"failed to launch confined agent: {e}")
 
     stderr_buf: list[str] = []
     drain = threading.Thread(target=lambda: stderr_buf.extend(proc.stderr), daemon=True)
@@ -342,7 +383,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
 
 
 def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = None,
-          timeout: int = 900, capture_path: Optional[str] = None) -> dict:
+          timeout: int = 900, capture_path: Optional[str] = None,
+          confine: Optional[dict] = None) -> dict:
     """Cold-reader comprehension probe (read-only).
 
     Re-asked verbatim at each phase boundary. As the Spring hotspot method
@@ -352,7 +394,7 @@ def probe(question: str, cwd: str, model: str, expected: Optional[list[str]] = N
     """
     res = run_agent(question, cwd=cwd, model=model, timeout=timeout,
                     allowed_tools=PROBE_TOOLS, label="probe",
-                    capture_path=capture_path)
+                    capture_path=capture_path, confine=confine)
     recall = None
     if expected:
         text = res.result_text.lower()

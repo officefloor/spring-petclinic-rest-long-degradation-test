@@ -171,6 +171,19 @@ probe:
 isolation:
   pin_files: ["CLAUDE.md"]
 
+  # Filesystem confinement for the agent turn (Linux Landlock; no root/bwrap). The
+  # blind-agent design removes the withheld tests from the sandbox and git history,
+  # but the agent process could still `find /` the rest of the disk — reaching the
+  # harness acceptance/ suite, checkpoints.yaml, and prior runs left in Trash. With
+  # this on, the agent (and every child it spawns) is restricted to the sandbox +
+  # toolchain; everything else returns EACCES. Fails CLOSED: if Landlock is missing
+  # or the sentinel self-check finds withheld material readable, the turn is refused.
+  # Verify support with:  python harness/landlock_selftest.py   (expect OVERALL: PASS)
+  agent_confinement:
+    enabled: true
+    extra_ro_binds: []   # extra read-only paths (toolchain not under /usr,/opt,~/.local)
+    extra_rw_binds: []   # extra writable paths (e.g. an alternate Maven repo)
+
 paths:
   # work_root holds the per-chain git WORKTREES (production tree + .git history +
   # capture staging), under <work_root>/<run_id>/<arm>-<strategy>-chain<n>.
