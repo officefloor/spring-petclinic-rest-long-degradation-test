@@ -149,6 +149,16 @@ makes an email owner level 2, not the old cap-3 level 3; and **cp36 must include
 soft-match key, so the soft-match scenario becomes a household in the cp36-51
 window.)
 
+The highest-yield audit is **field removal/relocation**: whenever a mutation
+removes a field (cp56 removes customerCode/membershipNumber/checkDigit) or moves
+one (cp60 relocates memberId/identityKey/householdId under `identity`), grep the
+resolved prior suite for every reader of that field — `jsonPath("$.field")` AND
+Java `.get("field")` — and confirm each reader's checkpoint is in `mutates`. The
+run itself is the ground-truth audit: if a run is green through checkpoint N, every
+mutation up to N has a complete `mutates` list; gaps only ever surface as a prior
+test that flips to failing right at a mutative checkpoint (e.g. cp52 removed the
+same-name+postcode 409 but forgot Cp10).
+
 **Watch for key-collision between rules.** Two rules keyed on the same tuple will
 interfere once a mutation ties them together. The soft-match (cp35, keyed on
 lastName+postcode) and the computed household (cp36, keyed on lastName+postcode)
@@ -170,6 +180,18 @@ observable behaviour, not each rule in isolation.
   on one arm and failed on the other — a false signal). "Identical in every field
   collides" is the one invariant that survives all three identity-key mutations
   (cp28, cp36 makes householdId computed, cp52 switches to a soundex key).
+
+**NEVER edit an existing acceptance `.java` file (or `AcceptanceBase`) while a run
+is in flight.** The harness re-reads the `.java` tree every checkpoint
+(`install_measurement_suite`/`set_agent_view`), so any edit to a file already in
+the resolved set takes effect immediately -- for the current chain AND every
+remaining chain -- while `checkpoints.yaml` (loaded once at startup) does NOT
+update, so the manifest and the files desync. This bit hard once: strengthening the
+base `Cp53Tests.java` mid-run to assert `customerCode` (removed at cp56) NPE-d
+cp56-60 in every remaining chain, because the running manifest never mutated 53.
+Only two things are safe to change mid-run: `checkpoints.yaml` (ignored until the
+next launch) and brand-NEW `cpNN/CpMM` files that the running manifest does not yet
+reference (never installed). Apply all `.java` edits with the run stopped.
 
 **The generator is superseded.** `acceptance/scaffold_tests.py` originally
 generated the whole tree from `checkpoints.yaml`, but the tests were then

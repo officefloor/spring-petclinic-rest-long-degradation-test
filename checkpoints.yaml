@@ -224,13 +224,13 @@ checkpoints:
   # --- cp52 MUTATIVE (reach 4, scattered): identity key v2 ---
   - id: identity-key-v2
     type: mutative
-    mutates: [28, 35, 46, 38]
-    tests: [Cp52Tests.java, cp52/Cp28Tests.java, cp52/Cp35Tests.java, cp52/Cp46Tests.java, cp52/Cp38Tests.java]
-    spec: "Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first. This changes existing behaviour: the soft-match must now trigger when the identityKey differs but soundex(lastName) and postcode match."
+    mutates: [28, 35, 46, 38, 10]
+    tests: [Cp52Tests.java, cp52/Cp28Tests.java, cp52/Cp35Tests.java, cp52/Cp46Tests.java, cp52/Cp38Tests.java, cp52/Cp10Tests.java]
+    spec: "Redesign the identity key: identityKey = SHA-256 hex over (normalizedTelephone + '|' + lowerEmail + '|' + soundex(lastName)); duplicate detection (409) uses this key, still ignoring owners flagged deleted and still applying the email-domain blocklist first. This changes existing behaviour: the soft-match must now trigger when the identityKey differs but soundex(lastName) and postcode match. Because the telephone is part of the key, two owners with the same lastName and postcode but DIFFERENT telephones are no longer a hard household duplicate: they are created as a soft match (not rejected with 409). Duplicate detection is now the single identity key, so the separate household-duplicate 409 block from the computed householdId no longer applies."
 
   # --- cp53-55: event log, capacity warning, segment (additive) ---
   - id: audit-event
-    spec: "In addition to the audit line, emit an immutable structured event via AUDIT: a JSON object {seq, ownerId, customerCode, membershipLevel, event:'OWNER_CREATED'} where seq is a monotonically increasing integer across creates."
+    spec: "In addition to the audit line, emit an immutable structured event via AUDIT: a JSON object {seq, ownerId, customerCode, membershipLevel, event:'OWNER_CREATED'} where seq is a monotonically increasing integer across creates. The event must carry the owner's current primary identifier: the customerCode here, and whatever replaces it later (so when the customerCode is unified into the memberId, the event carries the memberId instead)."
   - id: capacity-warning
     spec: "Return 'capacityWarning' true when the owner's city already has between 40 and 49 owners (approaching the capacity limit of 50); the hard rejection at 50 is unchanged."
   - id: owner-segment
@@ -239,9 +239,9 @@ checkpoints:
   # --- cp56 MUTATIVE (reach 5, scattered): unified memberId ---
   - id: member-id
     type: mutative
-    mutates: [32, 41, 48, 43, 55, 9, 14, 16, 21, 31]
-    tests: [Cp56Tests.java, cp56/Cp32Tests.java, cp56/Cp41Tests.java, cp56/Cp48Tests.java, cp56/Cp43Tests.java, cp56/Cp55Tests.java, cp56/Cp09Tests.java, cp56/Cp14Tests.java, cp56/Cp16Tests.java, cp56/Cp21Tests.java, cp56/Cp31Tests.java]
-    spec: "Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>': the region code, the 2-digit fiscal year, the 8 upper-hex HASH8 (the same SHA-256-over-(normalizedTelephone+lastName) first-8-hex used by the region-and-hash identity), and a single Luhn check digit CHK computed over the digits of <REGION><FY><HASH8>. Remove the separate customerCode and membershipNumber fields. This changes existing behaviour: collision handling applies to the memberId, and the fiscal-year value, the audit record and the owner segment must all reference the memberId."
+    mutates: [32, 41, 48, 43, 55, 9, 14, 16, 21, 31, 53]
+    tests: [Cp56Tests.java, cp56/Cp32Tests.java, cp56/Cp41Tests.java, cp56/Cp48Tests.java, cp56/Cp43Tests.java, cp56/Cp55Tests.java, cp56/Cp09Tests.java, cp56/Cp14Tests.java, cp56/Cp16Tests.java, cp56/Cp21Tests.java, cp56/Cp31Tests.java, cp56/Cp53Tests.java]
+    spec: "Unify the customerCode and membershipNumber into a single 'memberId' formatted '<REGION><FY><HASH8><CHK>': the region code, the 2-digit fiscal year, the 8 upper-hex HASH8 (the same SHA-256-over-(normalizedTelephone+lastName) first-8-hex used by the region-and-hash identity), and a single Luhn check digit CHK computed over the digits of <REGION><FY><HASH8>. Remove the separate customerCode and membershipNumber fields, and also remove the standalone 'checkDigit' field (it was derived from the now-removed customerCode; its Luhn digit is now the CHK segment inside memberId). This changes existing behaviour: collision handling applies to the memberId, and the fiscal-year value, the audit record and the owner segment must all reference the memberId."
 
   # --- cp57-59: notify, risk, problem+json (additive) ---
   - id: welcome-notify
