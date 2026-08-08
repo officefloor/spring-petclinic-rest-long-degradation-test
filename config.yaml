@@ -172,12 +172,23 @@ isolation:
   pin_files: ["CLAUDE.md"]
 
 paths:
-  # IMPORTANT: work_root MUST be OUTSIDE this harness repo. The agent runs with its
-  # cwd inside the worktree; if the worktree is a child of the harness repo, the
-  # agent can `cd ..` to the experimenter's acceptance/ suite and checkpoints.yaml
-  # and read the WITHHELD mutative-replacement tests + all future specs, defeating
-  # the blind-agent isolation (observed once at cp60). An absolute path here (${VARS}
-  # and ~ are expanded) is used as-is; a relative path would be anchored inside the
-  # repo, so keep this absolute and external.
+  # work_root holds the per-chain git WORKTREES (production tree + .git history +
+  # capture staging), under <work_root>/<run_id>/<arm>-<strategy>-chain<n>.
+  #
+  # sandbox_root IS the agent's sandbox directory itself: the project contents are
+  # mirrored directly under it, so its cwd looks like an ordinary project dir (e.g.
+  # named "sandbox") with NOTHING in the path — no run_id/arm/strategy/chain — that
+  # could hint at a checkpoint sequence. It is reused across chains (which run
+  # sequentially) and rebuilt fresh each turn; the harness deletes it wholesale, so it
+  # MUST be a dedicated directory (a home/root path is refused).
+  #
+  # Both MUST be absolute, EXTERNAL, and SEPARATE from each other (${VARS} and ~ are
+  # expanded; a relative path would be anchored inside this repo). Why: the agent's cwd
+  # is the sandbox. If it were a child of work_root (or of this repo), the agent could
+  # `cd ..` into a worktree and read its .git history (the cp01/cp02… sequence), the
+  # experimenter's acceptance/ suite, checkpoints.yaml, and all future specs — defeating
+  # the blind-agent isolation (observed once at cp60). A separate, flat sandbox_root
+  # gives the agent a tree with no worktree/.git/capture siblings to walk into.
   work_root: ${HOME}/pe-work
+  sandbox_root: ${HOME}/sandbox
   results_csv: results/records.csv

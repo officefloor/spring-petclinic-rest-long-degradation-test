@@ -580,7 +580,14 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # The agent works in this history-less sandbox (a copy of the worktree source with
     # no .git and no target/), never in the worktree itself, so it cannot read the
     # checkpoint git history or prior build output. Re-mirrored fresh each agent turn.
-    sandbox = wt + "-sandbox"
+    # It IS `sandbox_root` directly (project contents sit right under it): a plain dir
+    # named e.g. "sandbox", with NOTHING in the path — no run_id/arm/strategy/chain — to
+    # hint at a checkpoint sequence, and no worktree/.git/capture sibling to `cd ..` into.
+    # Reused across chains, which run sequentially and wipe it each turn. The harness
+    # rmtree's it wholesale, so refuse a home/root path.
+    sandbox = cfg["paths"]["sandbox_root"]
+    if not sandbox or os.path.abspath(sandbox) in ("/", os.path.expanduser("~")):
+        raise RuntimeError(f"paths.sandbox_root must be a dedicated directory, not {sandbox!r}")
     shutil.rmtree(sandbox, ignore_errors=True)
 
     # Derived numbers below are computed ONLY to narrate progress in the log — they
@@ -815,6 +822,7 @@ def main() -> int:
 
     cfg["checkpoints_file"] = resolve(cfg["checkpoints_file"])
     cfg["paths"]["work_root"] = resolve(cfg["paths"]["work_root"])
+    cfg["paths"]["sandbox_root"] = resolve(cfg["paths"].get("sandbox_root") or "${HOME}/sandbox")
     cfg["paths"]["results_csv"] = resolve(cfg["paths"]["results_csv"])
     if cfg.get("tools", {}).get("astgrep_rules"):
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])

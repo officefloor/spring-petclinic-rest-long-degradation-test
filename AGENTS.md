@@ -121,8 +121,13 @@ preserve this.**
 
 ### 3. History-less, sequence-blind sandbox (the agent can't tell it's checkpoint N)
 The agent does NOT run in the git worktree. Per checkpoint, `run_chain` builds a
-fresh **sandbox** (`<wt>-sandbox`, via `_prepare_agent_sandbox`) that is an rsync
-mirror of the worktree source with **`.git`, `target/`, and `evolve-results/` excluded**
+fresh **sandbox** at **`sandbox_root`** itself (config default `${HOME}/sandbox`, via
+`_prepare_agent_sandbox`) — a plain project directory with the source mirrored **directly
+under it**, on a **separate tree from `work_root`**. So the agent's cwd looks like an
+ordinary `sandbox/` project: **nothing in the path** (no run_id/arm/strategy/chain) hints
+at a checkpoint sequence, and there is no worktree/`.git`/capture sibling to `cd ..` into.
+It is reused across chains (which run sequentially) and rebuilt fresh each turn. It is an
+rsync mirror of the worktree source with **`.git`, `target/`, and `evolve-results/` excluded**
 (the last is critical: the per-checkpoint capture committed into the worktree — `cp01.json`,
 `cp02.json`, … — would otherwise leak the whole sequence to a later agent), plus a fresh
 acceptance dir holding ONLY the shared infra and **this checkpoint's own test renamed
@@ -147,11 +152,13 @@ re-mirror the untouched worktree.
 **Why it exists:** at cp60 the agent `cd`-ed out of the worktree into the harness
 `acceptance/` suite AND ran `git log` at 27/60 checkpoints, reading the withheld
 mutative tests and the whole sequence; and the filename `Cp60Tests`/`@Tag("cp60")`
-handed it the number outright. Also keep `work_root` OUTSIDE the harness repo (config
-default `${HOME}/pe-work`) so the agent's cwd has no ancestor path to
-`acceptance/`/`checkpoints.yaml`. If you touch the agent-turn flow, preserve: agent runs
-in the sandbox (never the worktree); sandbox has no `.git`; the visible test is the
-neutral `AcceptanceTest.java`; the worktree stays production-only.
+handed it the number outright. Also keep **both** `sandbox_root` (config default
+`${HOME}/sandbox`) and `work_root` (`${HOME}/pe-work`) OUTSIDE the harness repo and
+**separate from each other**, so the agent's cwd (the sandbox) has no ancestor or
+sibling path to a worktree's `.git` or to `acceptance/`/`checkpoints.yaml`. If you touch
+the agent-turn flow, preserve: agent runs in the sandbox under `sandbox_root` (never the
+worktree); sandbox has no `.git`; the visible test is the neutral `AcceptanceTest.java`;
+the worktree stays production-only.
 
 ## The acceptance suite (`acceptance/`)
 
