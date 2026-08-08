@@ -66,16 +66,23 @@ safe_rm() {
   rm -rf -- "$t"
 }
 
-echo "Harness:   $HARNESS_DIR"
-echo "Compare:   $BASE"
-echo "Work root: $WORK_ROOT"
-echo "Sandbox:   $SANDBOX_ROOT"
-[ "$REMOVE_VENV" = 1 ]    && echo "Also:      $HARNESS_DIR/.venv"
-[ "$REMOVE_RESULTS" = 1 ] && echo "Also:      $HARNESS_DIR/results"
+# Show the target as either present (will be removed) or already absent (skipped).
+show() { if [ -e "$2" ]; then printf '  %-13s %s\n' "$1" "$2"
+         else printf '  %-13s %s  (not present — skipped)\n' "$1" "$2"; fi; }
+
+echo "Harness repo — KEPT, never deleted:"
+echo "  $HARNESS_DIR"
+echo
+echo "WILL DELETE these directories:"
+show "compare"   "$BASE"
+show "work_root" "$WORK_ROOT"
+show "sandbox"   "$SANDBOX_ROOT"
+[ "$REMOVE_RESULTS" = 1 ] && show "results" "$HARNESS_DIR/results"
+[ "$REMOVE_VENV" = 1 ]    && show "venv"    "$HARNESS_DIR/.venv"
 echo
 
 if [ "$ASSUME_YES" != 1 ]; then
-  read -r -p "Delete the above? This cannot be undone. [y/N] " reply
+  read -r -p "Delete the directories listed under WILL DELETE? This cannot be undone. [y/N] " reply
   case "$reply" in y|Y|yes|YES) ;; *) echo "aborted."; exit 0 ;; esac
 fi
 
