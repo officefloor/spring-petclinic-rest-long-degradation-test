@@ -283,6 +283,23 @@ def install_measurement_suite(wt: str, cfg: dict, checkpoints: list[dict], k: in
         _copy_authored(cfg, entry, dest)
 
 
+def scrub_test_artifacts(wt: str, cfg: dict) -> None:
+    """Wipe the build output so the agent cannot infer the checkpoint SEQUENCE from
+    it. The previous checkpoint's gate compiled and reported Cp01..Cp(k-1), leaving
+    their compiled test classes and Surefire reports in target/; the agent runs with
+    its cwd in the worktree and can read them (observed at cp60, where the agent
+    enumerated the stale reports to deduce a sequence exists). Run `mvnw clean`, then
+    remove target/ outright to be certain even if clean fails. target/ is gitignored,
+    so this never affects a commit; the post-agent gate recompiles what it needs."""
+    try:
+        subprocess.run(["./mvnw", "-q", "-B", "clean"], cwd=wt,
+                       capture_output=True, text=True,
+                       timeout=(cfg.get("build") or {}).get("timeout", 1800))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass  # the rmtree below is the guaranteed backstop
+    shutil.rmtree(os.path.join(wt, "target"), ignore_errors=True)
+
+
 def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
     """Basenames among the agent-VISIBLE tests (shared + own CpNN) that the agent
     changed or deleted vs their authored source. Reported as acceptance_touched;
@@ -489,6 +506,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # breaks earlier behaviour truly regresses (measured after the agent turn).
         if k == 1:
             set_agent_view(wt, cfg, cp)
+
+        # Wipe build output BEFORE the agent runs, so the previous checkpoint's
+        # compiled Cp01..Cp(k-1) test classes + Surefire reports in target/ can't
+        # reveal the checkpoint sequence to the (supposedly blind) agent.
+        scrub_test_artifacts(wt, cfg)
 
         # Snapshot the pre-agent state as a throwaway commit so a token-limit- or
         # network-interrupted attempt can be rolled back and retried cleanly. It is

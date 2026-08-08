@@ -172,5 +172,12 @@ isolation:
   pin_files: ["CLAUDE.md"]
 
 paths:
-  work_root: work
+  # IMPORTANT: work_root MUST be OUTSIDE this harness repo. The agent runs with its
+  # cwd inside the worktree; if the worktree is a child of the harness repo, the
+  # agent can `cd ..` to the experimenter's acceptance/ suite and checkpoints.yaml
+  # and read the WITHHELD mutative-replacement tests + all future specs, defeating
+  # the blind-agent isolation (observed once at cp60). An absolute path here (${VARS}
+  # and ~ are expanded) is used as-is; a relative path would be anchored inside the
+  # repo, so keep this absolute and external.
+  work_root: ${HOME}/pe-work
   results_csv: results/records.csv
