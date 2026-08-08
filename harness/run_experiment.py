@@ -309,7 +309,11 @@ def mirror_source(src: str, dst: str, extra_excludes: tuple = ()) -> None:
     propagates the agent's file deletions while the excludes preserve the worktree's own
     `.git`/`target/` and (via extra_excludes) its harness-managed acceptance tests."""
     os.makedirs(dst, exist_ok=True)
-    ex = ["--exclude=.git", "--exclude=/target/"] + [f"--exclude={e}" for e in extra_excludes]
+    # /evolve-results/ holds the committed per-checkpoint capture (test results, logs,
+    # agent streams) — it must NEVER reach the sandbox (it would leak the whole checkpoint
+    # sequence to the agent), and must be preserved on copy-back, so exclude it always.
+    ex = (["--exclude=.git", "--exclude=/target/", "--exclude=/evolve-results/"]
+          + [f"--exclude={e}" for e in extra_excludes])
     subprocess.run(["rsync", "-a", "--delete", *ex,
                     src.rstrip("/") + "/", dst.rstrip("/") + "/"],
                    check=True, capture_output=True, text=True)
@@ -661,11 +665,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
 
-        # 8. COMMIT 2 — the RESET commit: normalise the worktree by restoring the pinned
-        # docs to base (CLAUDE.md can never become accumulating cross-checkpoint memory).
-        # No acceptance tests are threaded through the worktree; the next checkpoint's
-        # neutral test is built fresh into the sandbox by _run_agent_turn. Kept even if
-        # empty, so every checkpoint is a clean two-commit boundary.
+        # 8. Normalise the worktree: restore the pinned docs to base (CLAUDE.md can never
+        # become accumulating cross-checkpoint memory). No acceptance tests are threaded
+        # through the worktree; the next checkpoint's neutral test is built fresh into the
+        # sandbox by _run_agent_turn.
         for pf in pin_files:
             restored = subprocess.run(["git", "-C", wt, "checkout", arm_cfg["base_ref"], "--", pf],
                                       capture_output=True, text=True)
@@ -673,14 +676,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                 fpath = os.path.join(wt, pf)
                 if os.path.exists(fpath):
                     os.remove(fpath)
-        git(["-C", wt, "add", "-A"])
-        subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
-                        "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
-        reset_sha = git(["-C", wt, "rev-parse", "HEAD"])
 
-        # 6. structural metrics — LOGGING ONLY (analyze recomputes them). Measured
-        # over the AGENT commit (base_for_cp..agent), so the log shows the agent's
-        # delta. Clean the jscpd scratch dir so it can never leak into a later commit.
+        # Structural metrics — LOGGING ONLY (analyze recomputes them). Over the AGENT commit
+        # (base_for_cp..agent). Clean the jscpd scratch so it can never leak into a commit.
         metrics_cur = agent_sha or "HEAD"
         mrow, _ = metrics.compute_all(
             wt, arm_cfg, cfg["tools"], base_commit, base_for_cp, metrics_cur,
@@ -688,16 +686,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         row.update(mrow)
         shutil.rmtree(os.path.join(wt, ".jscpd-report"), ignore_errors=True)
 
-        # 7. cold-reader probe. Runs at the checkpoints listed in probe.at_checkpoints
-        # (default: the first checkpoint of each phase).
+        # Cold-reader probe (read-only), at probe.at_checkpoints. Runs in a fresh
+        # HISTORY-LESS mirror so it can't `git log` the sequence either.
         probe_cfg = cfg.get("probe", {})
         at = probe_cfg.get("at_checkpoints")
         run_probe = (k in at) if at else ((k == 1) or (phase_for(k - 1, n) != phase))
         probe_record = None
         if probe_cfg.get("enabled", True) and run_probe:
-            # The probe is a read-only agent too, so run it in a fresh HISTORY-LESS mirror
-            # of the worktree (production + pinned docs, no .git) — it must not be able to
-            # `git log` the checkpoint sequence either.
             mirror_source(wt, sandbox)
             pr = agent.probe(cfg["probe"]["question"], cwd=sandbox, model=model,
                              expected=cfg["probe"].get("expected"),
@@ -708,23 +703,37 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                 "probe_cache_read_tokens": pr["probe_cache_read_tokens"],
                 "probe_recall": ("" if pr["probe_recall"] is None else round(pr["probe_recall"], 3)),
             })
-            probe_record = pr  # raw probe (text/cost/tokens) goes into the capture record
+            probe_record = pr
 
-        # RAW capture for this checkpoint: the irreproducible half (agent envelope,
-        # the raw test-result map, build output, pinned/acceptance flags, commit
-        # SHAs) referencing the stream + agent-diff files already written to cap_dir.
+        # Build this checkpoint's RAW capture record, then stage the WHOLE per-checkpoint
+        # capture (record + build log + agent stream + diff + probe) into the worktree
+        # under evolve-results/capture/, so COMMIT 2 carries it — each reset commit is
+        # self-contained with its own test results and logs. The agent never sees it:
+        # evolve-results/ is excluded from every sandbox mirror. 'reset' is left blank (it
+        # is COMMIT 2's own not-yet-made hash; analyze derives from the agent commit shas).
         rec = capture.checkpoint_record(
             k, cp["id"], phase,
-            {"commit": agent_sha, "reset": reset_sha, "preagent": base_for_cp,
+            {"commit": agent_sha, "reset": "", "preagent": base_for_cp,
              "prev": base_for_cp, "base": base_commit},
             ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
             attempts=attempt_log, spec=cp["spec"], prompt=prompt,
             ckpt_type=cp.get("type", "additive"), mutates=mutated)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
+        wt_cap = os.path.join(wt, "evolve-results", "capture")
+        os.makedirs(wt_cap, exist_ok=True)
+        for f in os.listdir(cap_dir):
+            if f.startswith(f"cp{k:02d}."):
+                shutil.copy2(os.path.join(cap_dir, f), os.path.join(wt_cap, f))
         captures.append(rec)
         strict_count += 1 if row["strict_pass"] is True else 0
         regr_count += int(row["regressions"] or 0)
+
+        # COMMIT 2 — the RESET commit: worktree normalisation + this checkpoint's capture.
+        # Kept even if empty, so every checkpoint is a clean two-commit boundary.
+        git(["-C", wt, "add", "-A"])
+        subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
+                        "-m", f"cp{k:02d} reset {cp['id']}"], capture_output=True, text=True)
 
         # Key metrics + failing tests + changed files for this checkpoint, so progress is visible.
         _log_checkpoint(row, where, wt, base_for_cp, agent_sha,
