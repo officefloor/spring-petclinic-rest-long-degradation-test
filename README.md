@@ -239,6 +239,13 @@ officefloor}` on the right branches and installs the Python deps into `.venv`
 (override the source with `PETCLINIC_FORK=<url>` or the location with
 `COMPARE_DIR=<dir>`). Then activate the venv and dry-run.
 
+**Reset** — `./clean.sh` is the inverse of `setup.sh`: it removes the arm repos
+(and every `evolve/<run_id>/…` branch) and the whole `work_root` working area
+(worktrees, sandboxes, capture, analyze scratch). It prompts first (skip with
+`-y`), keeps `.venv` and `results/` unless you pass `--venv` / `--results`, and
+honours the same `COMPARE_DIR=` / `WORK_ROOT=` overrides. Run
+`./clean.sh -y && ./setup.sh` for a full clean rebuild.
+
 The base branch is only ever **read** as a start point — it is never modified.
 
 1. **Do NOT pre-commit the acceptance suite to the base branch.** The tests stay
