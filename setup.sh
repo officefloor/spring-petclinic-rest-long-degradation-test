@@ -3,8 +3,8 @@
 # One-shot setup for PetClinic-Evolve. Creates the two arm repos under
 # ${HOME}/compare and installs the Python deps into a local venv.
 #
-#   ${HOME}/compare/spring       -> branch spring-compare
-#   ${HOME}/compare/officefloor  -> branch officefloor-compare
+#   ${HOME}/compare/spring       -> branch spring-compare-no-tests
+#   ${HOME}/compare/officefloor  -> branch officefloor-compare-no-tests
 #
 # Override the source fork with:  PETCLINIC_FORK=<git-url> ./setup.sh
 #
@@ -34,8 +34,11 @@ clone_arm() {
   git -C "$path" rev-parse --abbrev-ref HEAD | sed "s/^/   on branch /"
 }
 
-clone_arm spring spring-compare
-clone_arm officefloor officefloor-compare
+# Base branches MUST match config.yaml arms.*.base_ref. The *-no-tests branches carry
+# the app plus its test dependencies but no pre-existing test suite, so the only tests in
+# play are the harness-injected acceptance suite (see README "One-time repo setup").
+clone_arm spring spring-compare-no-tests
+clone_arm officefloor officefloor-compare-no-tests
 
 echo
 echo "== Python venv + deps =="
@@ -50,13 +53,13 @@ echo "   venv ready at $HARNESS_DIR/.venv"
 echo
 echo "Setup complete."
 echo
-echo "IMPORTANT (headroom): spring-compare / officefloor-compare are the finished"
-echo "comparison apps, so some of the 20 checkpoints may already be implemented and"
+echo "IMPORTANT (headroom): the *-no-tests base branches are the finished"
+echo "comparison apps, so some checkpoints may already be implemented and"
 echo "will start green (no degradation signal). Strip those behaviours on the base"
 echo "branches, or drop those checkpoints, before a real run."
 echo
 echo "Next:"
 echo "  cd $HARNESS_DIR"
 echo "  source .venv/bin/activate"
-echo "  python -m harness.run_experiment --config config.yaml --dry-run"
-echo "  python -m harness.run_experiment --config config.yaml --arm spring --chain 0 --max-checkpoints 1"
+echo "  python -m harness.run_experiment --config config.yaml --test-mode blind --dry-run"
+echo "  python -m harness.run_experiment --config config.yaml --test-mode blind --arm spring --chain 0 --max-checkpoints 1"
