@@ -344,6 +344,19 @@ def mirror_source(src: str, dst: str, extra_excludes: tuple = ()) -> None:
 # test sources' comments are kept free of cpNN too, so the neutralized file has no leak.)
 NEUTRAL_TEST = "AcceptanceTest.java"
 
+# Testing modes (required --test-mode). They differ ONLY in what acceptance tests the
+# agent SEES while it works. The post-agent gate always installs and runs the FULL authored
+# cp01..cpK suite either way, so the correctness/regression measurement is identical across
+# modes; the variable is the agent's test visibility, not how it is scored.
+#   blind: the agent sees ONLY this checkpoint's own test, neutralised to AcceptanceTest.java
+#          (no CpNN name, no @Tag). It cannot see prior tests or infer the sequence.
+#   full:  the agent sees the FULL regression suite up to this checkpoint (cp01..cpK, with
+#          real CpNN names), so it can run and preserve every accumulated rule as it works.
+TEST_MODES = {
+    "blind": "blind (single current test only; prior tests hidden)",
+    "full":  "full regression suite (cp01..cpK visible to the agent)",
+}
+
 
 def _neutralize_test(text: str) -> str:
     """Rewrite a CpNNTests.java source so it carries no checkpoint-sequence hint: drop the
@@ -370,23 +383,41 @@ def _neutral_test_text(cfg: dict, cp: dict) -> str:
     return _neutralize_test(open(src).read())
 
 
-def _prepare_agent_sandbox(wt: str, sandbox: str, cfg: dict, cp: dict) -> None:
-    """Build the agent's history-less sandbox for one attempt: mirror the worktree source
-    (production + pinned docs; no .git/target — the worktree carries no acceptance tests),
-    then build a fresh acceptance dir holding ONLY the shared infra + this checkpoint's own
-    test, renamed to the neutral AcceptanceTest.java. The agent sees one test with no CpNN
-    name, no @Tag and no sequence hint -- plus no git history and no prior build output."""
-    mirror_source(wt, sandbox)
-    acc_src = cfg["acceptance"]["src_dir"]
-    acc = os.path.join(sandbox, cfg["acceptance"]["dest_subpath"])
+def _install_agent_view(acc: str, cfg: dict, cp: dict, checkpoints: list[dict]) -> None:
+    """Populate a fresh acceptance dir with what the agent may SEE while it works, per
+    `cfg['test_mode']`:
+      blind: shared infra + this checkpoint's own test, neutralised to AcceptanceTest.java
+             (no CpNN name, no @Tag) -- the agent cannot infer the sequence.
+      full:  the full authored cp01..cpK suite (shared infra + every prior/current CpNNTests,
+             mutative priors winning, real CpNN names) -- the agent sees the whole regression
+             suite up to now."""
     shutil.rmtree(acc, ignore_errors=True)
     os.makedirs(acc, exist_ok=True)
-    for s in cfg["acceptance"].get("shared", []):
-        src = os.path.join(acc_src, s)
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(acc, os.path.basename(s)))
-    with open(os.path.join(acc, NEUTRAL_TEST), "w") as fh:
-        fh.write(_neutral_test_text(cfg, cp))
+    mode = cfg.get("test_mode")
+    if mode == "blind":
+        acc_src = cfg["acceptance"]["src_dir"]
+        for s in cfg["acceptance"].get("shared", []):
+            src = os.path.join(acc_src, s)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(acc, os.path.basename(s)))
+        with open(os.path.join(acc, NEUTRAL_TEST), "w") as fh:
+            fh.write(_neutral_test_text(cfg, cp))
+    elif mode == "full":
+        for entry in _authored_set(cfg, checkpoints, cp["n"]).values():
+            _copy_authored(cfg, entry, acc)
+    else:
+        raise RuntimeError(f"unknown test_mode {mode!r}; pass --test-mode blind|full")
+
+
+def _prepare_agent_sandbox(wt: str, sandbox: str, cfg: dict, cp: dict,
+                           checkpoints: list[dict]) -> None:
+    """Build the agent's history-less sandbox for one attempt: mirror the worktree source
+    (production + pinned docs; no .git/target — the worktree carries no acceptance tests),
+    then build a fresh acceptance dir holding the agent view for the active test_mode
+    (`_install_agent_view`). No git history and no prior build output either way."""
+    mirror_source(wt, sandbox)
+    acc = os.path.join(sandbox, cfg["acceptance"]["dest_subpath"])
+    _install_agent_view(acc, cfg, cp, checkpoints)
 
 
 def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
@@ -409,6 +440,33 @@ def detect_agent_tamper(wt: str, cfg: dict, cp: dict) -> list[str]:
         if current != open(src, "rb").read():
             tampered.append(base)
     return tampered
+
+
+def _detect_sandbox_tamper(acc_sandbox: str, cfg: dict, cp: dict,
+                           checkpoints: list[dict]) -> list[str]:
+    """Acceptance basenames the agent changed or deleted in the SANDBOX vs their authored
+    source, matched to the active test_mode's visible set. Recorded as acceptance_touched;
+    the gate reinstalls the authored suite afterwards, so tamper never buys a pass.
+      blind: the one neutral AcceptanceTest.java vs the regenerated neutral source.
+      full:  every visible cp01..cpK file (shared + CpNNTests) vs its authored source."""
+    mode = cfg.get("test_mode")
+    if mode == "blind":
+        neutral_path = os.path.join(acc_sandbox, NEUTRAL_TEST)
+        agent_test = open(neutral_path).read() if os.path.isfile(neutral_path) else ""
+        return [] if agent_test == _neutral_test_text(cfg, cp) else [_own_test(cp)]
+    if mode == "full":
+        touched = []
+        for entry in _authored_set(cfg, checkpoints, cp["n"]).values():
+            base = os.path.basename(entry)
+            src = os.path.join(cfg["acceptance"]["src_dir"], entry)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(acc_sandbox, base)
+            current = open(dst, "rb").read() if os.path.isfile(dst) else None
+            if current != open(src, "rb").read():
+                touched.append(base)
+        return touched
+    raise RuntimeError(f"unknown test_mode {mode!r}; pass --test-mode blind|full")
 
 
 def commit_run_manifest(wt: str, branch: str, run_id: str, arm: str, strategy: str,
@@ -461,7 +519,7 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
 
 
 def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prompt: str,
-                    cap_dir: str, stream_file: str):
+                    cap_dir: str, stream_file: str, checkpoints: list[dict]):
     """Run the agent for one checkpoint IN THE SANDBOX, retrying on a token/session
     limit or a transient failure. Each attempt rebuilds the sandbox fresh: a history-less
     copy of the worktree (no `.git`, no `target/`) whose ONLY acceptance test is the
@@ -473,7 +531,7 @@ def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prom
     attempts = transient_attempts = 0
     attempt_log: list[dict] = []  # every try (failed/limited too); last = success
     while True:
-        _prepare_agent_sandbox(wt, sandbox, cfg, cp)   # fresh; discards any failed attempt
+        _prepare_agent_sandbox(wt, sandbox, cfg, cp, checkpoints)  # fresh; discards any failed attempt
         ar = agent.run_agent(prompt, cwd=sandbox, model=model,
                              timeout=cfg.get("agent_timeout", 3600),
                              capture_path=os.path.join(cap_dir, stream_file),
@@ -570,8 +628,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     branch_preview = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
 
     if dry_run:
-        print(f"[dry-run] {arm}/{strategy}/chain{chain}: {n} checkpoints from "
-              f"{arm_cfg['repo']}@{arm_cfg['base_ref']} -> branch {branch_preview}")
+        print(f"[dry-run] {arm}/{strategy}/chain{chain} [test-mode={cfg['test_mode']}]: "
+              f"{n} checkpoints from {arm_cfg['repo']}@{arm_cfg['base_ref']} -> branch {branch_preview}")
         for cp in checkpoints[: (max_cp or n)]:
             print(f"    cp{cp['n']:02d} [{phase_for(cp['n'], n)}] {cp['id']}")
         return
@@ -587,6 +645,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra={
         "arm": arm, "strategy": strategy, "chain": chain, "branch": branch,
         "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
+        "test_mode": cfg["test_mode"],   # which acceptance-view the agent worked under
     })
     commit_run_manifest(wt, branch, run_id, arm, strategy, chain, prov, cfg.get("_snapshot"))
 
@@ -627,6 +686,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
                     "checkpoint": k, "checkpoint_id": cp["id"], "phase": phase})
         where = f"run {run_id} | {arm}/{strategy} chain{chain}"
         print(f"\n--- {where} | cp{k:02d} [{phase}] {cp['id']} — running agent ---", flush=True)
+        print(f"    test   : {TEST_MODES[cfg['test_mode']]}", flush=True)
         if cp.get("type") == "mutative":
             print(f"    type   : MUTATIVE (revises prior rules {cp.get('mutates', [])})", flush=True)
         print(f"    spec   : {cp['spec']}", flush=True)
@@ -648,7 +708,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # gets no git history, no prior build output, and no hint of a checkpoint sequence.
         prompt = build_prompt(template, cp["spec"])
         stream_file = f"cp{k:02d}.agent.jsonl"
-        ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir, stream_file)
+        ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir,
+                                          stream_file, checkpoints)
 
         # 4. Copy the agent's PRODUCTION result back onto the worktree (the sandbox-only
         # acceptance dir is excluded; .git/target preserved), and capture the production-
@@ -668,12 +729,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         if ar.error:
             row["notes"] = ar.error[:200]
 
-        # 5. Tamper detection: compare the sandbox's AcceptanceTest.java with the neutral
-        # version regenerated from the authored test — any difference means the agent edited
-        # its own test. Flag a pinned-doc edit too (the agent's CLAUDE.md was copied back).
-        neutral_path = os.path.join(acc_sandbox, NEUTRAL_TEST)
-        agent_test = open(neutral_path).read() if os.path.isfile(neutral_path) else ""
-        acceptance_touched = [] if agent_test == _neutral_test_text(cfg, cp) else [_own_test(cp)]
+        # 5. Tamper detection (mode-aware): compare the agent-visible tests in the sandbox to
+        # their authored source — any difference means the agent edited a test it could see
+        # (blind: its one neutral test; full: any of the cp01..cpK suite). Flag a pinned-doc
+        # edit too (the agent's CLAUDE.md was copied back).
+        acceptance_touched = _detect_sandbox_tamper(acc_sandbox, cfg, cp, checkpoints)
         touched_pins = [pf for pf in pin_files
                         if git(["-C", wt, "status", "--porcelain", "--", pf], check=False)]
         row["pinned_touched"] = ",".join(touched_pins)
@@ -815,6 +875,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--test-mode", required=True, choices=sorted(TEST_MODES),
+                    help="REQUIRED, no default. Which acceptance tests the agent sees while "
+                         "it works. 'blind' = only this checkpoint's own test, neutralised "
+                         "(prior tests hidden). 'full' = the full cp01..cpK regression suite "
+                         "(real CpNN names). The post-agent gate runs the full suite either way.")
     ap.add_argument("--arm", action="append", help="restrict to arm(s); default all")
     ap.add_argument("--strategy", help="override active prompt strategy")
     ap.add_argument("--chain", type=int, help="run a single chain index")
@@ -828,6 +893,10 @@ def main() -> int:
 
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
+
+    # Test mode is a per-run choice, not a config default: it MUST be selected on the CLI
+    # (argparse enforces required). Stored on cfg so the sandbox/tamper/provenance paths see it.
+    cfg["test_mode"] = args.test_mode
 
     # Resolve the harness's own relative paths against the config file's
     # directory, so the whole tree can be moved without editing paths.
@@ -869,6 +938,7 @@ def main() -> int:
     strategy = args.strategy or cfg["active_strategy"]
     chains = [args.chain] if args.chain is not None else range(cfg["chains"])
     print(f"run_id = {run_id}")
+    print(f"test mode = {args.test_mode}: {TEST_MODES[args.test_mode]}")
 
     # The run persists NO derived CSV — only raw capture onto the evolve branches.
     # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1,

@@ -329,20 +329,29 @@ Every run has a **`run_id`** (default: current time as `YYYYMMDDHHMM`, or pass
 `--arm`/`--chain` re-runs just that cell (e.g. to redo a chain lost to an auth
 stall) without touching completed chains.
 
+`--test-mode` is **required** on every run (no default). It selects which acceptance
+tests the agent sees while it works. `blind` gives it only this checkpoint's own test,
+neutralised (prior tests hidden). `full` gives it the whole cp01..cpK regression suite
+with real `CpNN` names. The post-agent gate runs the full authored suite either way, so
+the correctness scoring is identical across modes. Only the agent's test visibility
+changes. The chosen mode is printed at the top of each checkpoint and recorded in
+`provenance.json` (`test_mode`), so a chain's mode is always recoverable.
+
 ```bash
-# sanity-check wiring without spending tokens (shows the branch names):
-python -m harness.run_experiment --config config.yaml --dry-run
+# sanity-check wiring without spending tokens (shows the branch names + mode):
+python -m harness.run_experiment --config config.yaml --test-mode blind --dry-run
 
 # smoke test the full loop (one cell, first checkpoint only):
-python -m harness.run_experiment --config config.yaml --arm spring --chain 0 --max-checkpoints 1
+python -m harness.run_experiment --config config.yaml --test-mode blind --arm spring --chain 0 --max-checkpoints 1
 
-# full default run (all arms, active_strategy, all chains):
-python -m harness.run_experiment --config config.yaml
+# full default run (all arms, active_strategy, all chains), blind vs full-suite conditions:
+python -m harness.run_experiment --config config.yaml --test-mode blind
+python -m harness.run_experiment --config config.yaml --test-mode full
 
 # a named run and the other prompt-intervention arms:
-python -m harness.run_experiment --config config.yaml --run-id sprint7-baseline
-python -m harness.run_experiment --config config.yaml --strategy anti_slop
-python -m harness.run_experiment --config config.yaml --strategy plan_first
+python -m harness.run_experiment --config config.yaml --test-mode blind --run-id sprint7-baseline
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy anti_slop
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy plan_first
 
 # analysis (recomputes from the branches' commits + capture; defaults to latest run_id):
 python -m harness.analyze --config config.yaml

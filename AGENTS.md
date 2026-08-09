@@ -108,6 +108,20 @@ signal. Implemented by `set_agent_view` / `install_measurement_suite` /
 `detect_agent_tamper` in `run_experiment.py`. `analyze` re-derives regressions
 from the captured raw test map, so this needs no analyze change.
 
+**Test modes (`--test-mode`, required, no default).** The above is the `blind` mode.
+A run must pick one of two modes on the CLI, and the choice only changes what the
+agent SEES while it works, never how it is scored (the gate always installs and runs
+the full authored cp01..cpK suite). `_install_agent_view` branches on `cfg['test_mode']`:
+- `blind`: shared infra + this checkpoint's own test, neutralised to `AcceptanceTest.java`
+  (no CpNN, no @Tag). The pessimistic condition, measuring resistance to silent breakage.
+- `full`: the full authored cp01..cpK suite (real CpNN names, mutative priors winning,
+  capped at k so future checkpoints stay hidden). The optimistic condition, measuring
+  what it costs to stay correct when the agent can run the accumulated regression suite.
+Tamper detection is mode-aware (`_detect_sandbox_tamper`): blind compares the one neutral
+test, full compares every visible cp01..cpK file. The mode is printed at each checkpoint
+head and stored in `provenance.json` (`test_mode`), so a chain's mode is always recoverable.
+If you add a mode, extend `TEST_MODES`, `_install_agent_view` and `_detect_sandbox_tamper`.
+
 ### 2. Per-call config/memory isolation
 Each `claude -p` runs under a throwaway `CLAUDE_CONFIG_DIR` seeded with **only the
 login credentials** (`_seed_clean_config_dir` in `agent.py`). Without this, Claude
@@ -306,11 +320,15 @@ false-match:
 
 ## Running it
 
+`--test-mode {blind,full}` is REQUIRED on every run (no default); see the blind-agent
+pillar above for what each mode shows the agent.
+
 ```bash
-python -m harness.run_experiment --config config.yaml --dry-run          # wiring check
-python -m harness.run_experiment --config config.yaml --arm spring --chain 0 --max-checkpoints 12   # smoke
-python -m harness.run_experiment --config config.yaml                     # full run (chains × 2 arms)
-python -m harness.run_experiment --config config.yaml --run-id <id> --arm officefloor --chain 2      # re-run ONE chain into an existing run
+python -m harness.run_experiment --config config.yaml --test-mode blind --dry-run          # wiring check
+python -m harness.run_experiment --config config.yaml --test-mode blind --arm spring --chain 0 --max-checkpoints 12   # smoke
+python -m harness.run_experiment --config config.yaml --test-mode blind                     # full run, blind condition (chains × 2 arms)
+python -m harness.run_experiment --config config.yaml --test-mode full                      # full run, full-suite condition
+python -m harness.run_experiment --config config.yaml --test-mode blind --run-id <id> --arm officefloor --chain 2      # re-run ONE chain into an existing run
 python -m harness.analyze --config config.yaml --run-id <id>
 ```
 
