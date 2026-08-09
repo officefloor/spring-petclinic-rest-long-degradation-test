@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-The developer/agent guide for this repository is **[AGENTS.md](./AGENTS.md)** —
-architecture and module map, the checkpoint lifecycle, the design pillars that
+The developer/agent guide for this repository is **[AGENTS.md](./AGENTS.md)**. It
+covers the architecture and module map, the checkpoint lifecycle, the design pillars that
 must not regress (blind-agent regression measurement, per-call config/memory
 isolation), the acceptance-suite determinism + `mutates` discipline,
 resilience/auth classification, how to run and analyze, and the 2026-08 gotchas.
@@ -12,5 +12,5 @@ experiment's rationale and metrics see `README.md` (AGENTS.md supersedes the
 README wherever they disagree).
 
 > Note: this is the harness repo's own guide. It is **not** the `CLAUDE.md` the
-> experiment pins into each arm's base repo (`isolation.pin_files`) — that is a
+> experiment pins into each arm's base repo (`isolation.pin_files`). That is a
 > separate fixed guide handed to the checkpoint agent.

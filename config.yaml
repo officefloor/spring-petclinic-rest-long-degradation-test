@@ -39,7 +39,7 @@ acceptance:
 arms:
   spring:
     repo: ${HOME}/compare/spring       # ${VARS} and ~ are expanded from the environment
-    base_ref: spring-compare
+    base_ref: spring-compare-no-tests  # app + injected acceptance suite only; no pre-existing tests
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: []                       # Spring has no endpoint YAML
@@ -53,7 +53,7 @@ arms:
 
   officefloor:
     repo: ${HOME}/compare/officefloor
-    base_ref: officefloor-compare
+    base_ref: officefloor-compare-no-tests  # app + injected acceptance suite only; no pre-existing tests
     source_globs: ["src/main/java/**/*.java"]
     verbosity_dirs: ["src/main/java"]
     yaml_globs: ["src/main/resources/officefloor/**/*.yml"]
