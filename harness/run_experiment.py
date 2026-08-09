@@ -886,10 +886,15 @@ def main() -> int:
     ap.add_argument("--max-checkpoints", type=int)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--run-id", help="ties branches + results to this run "
-                    "(default: current time as YYYYMMDDHHMM)")
+                    "(default: current time as YYYYMMDDHHMM). The --test-mode is "
+                    "automatically prepended, so do NOT include it yourself.")
     args = ap.parse_args()
 
-    run_id = args.run_id or datetime.now().strftime("%Y%m%d%H%M")
+    # Fold the test mode into the run_id so blind and full runs can never collide on branch
+    # names or work dirs (the branch path is evolve/<run_id>/... and does not otherwise carry
+    # the mode). A run is thus self-identifying, e.g. blind-202608092351 / full-202608092351.
+    base_run_id = args.run_id or datetime.now().strftime("%Y%m%d%H%M")
+    run_id = f"{args.test_mode}-{base_run_id}"
 
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
