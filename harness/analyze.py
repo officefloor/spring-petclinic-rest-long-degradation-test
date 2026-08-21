@@ -373,6 +373,96 @@ def bootstrap_slope(chain_series: dict[int, list[tuple[int, float]]],
     return (point, float(lo), float(hi))
 
 
+def _mean_curve_slope(chain_series: dict[int, list[tuple[int, float]]],
+                      sample: list[int]) -> float:
+    """Slope of the checkpoint-averaged curve over the given (possibly resampled) chains."""
+    acc = _bucket_by_checkpoint(chain_series, sample)
+    ks = sorted(acc)
+    if len(ks) < 2:
+        return math.nan
+    return ols_slope(np.array(ks, dtype=float), np.array([np.mean(acc[k]) for k in ks]))
+
+
+def bootstrap_diff_slope(rows_a: list[dict], rows_b: list[dict], field: str,
+                         n_boot: int = 2000, seed: int = 0) -> tuple[float, float, float]:
+    """Bootstrap CI for slope(A) − slope(B): the PAIRED test the thesis needs.
+
+    Comparing each arm's slope CI to zero separately is not the same as testing that
+    the two arms differ; this resamples chains within each arm independently and takes
+    the slope difference per replicate. A returned CI that excludes 0 means the two
+    arms genuinely degrade at different rates on this metric.
+    """
+    sa, sb = series_by_chain(rows_a, field), series_by_chain(rows_b, field)
+    if not sa or not sb:
+        return (math.nan, math.nan, math.nan)
+    ka, kb = list(sa), list(sb)
+    point = _mean_curve_slope(sa, ka) - _mean_curve_slope(sb, kb)
+    rng = np.random.default_rng(seed)
+    diffs = []
+    for _ in range(n_boot):
+        da = _mean_curve_slope(sa, list(rng.choice(ka, len(ka), replace=True)))
+        db = _mean_curve_slope(sb, list(rng.choice(kb, len(kb), replace=True)))
+        if not (math.isnan(da) or math.isnan(db)):
+            diffs.append(da - db)
+    if not diffs:
+        return (point, math.nan, math.nan)
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return (point, float(lo), float(hi))
+
+
+def _rankdata(a: np.ndarray) -> np.ndarray:
+    """Tie-averaged ranks (scipy-free, for Spearman)."""
+    a = np.asarray(a, dtype=float)
+    order = a.argsort()
+    ranks = np.empty(len(a), dtype=float)
+    ranks[order] = np.arange(1, len(a) + 1)
+    _, inv, cnt = np.unique(a, return_inverse=True, return_counts=True)
+    sums = np.zeros(len(cnt))
+    np.add.at(sums, inv, ranks)
+    return (sums / cnt)[inv]
+
+
+def _spearman(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 3:
+        return math.nan
+    rx, ry = _rankdata(x), _rankdata(y)
+    if rx.std() == 0 or ry.std() == 0:
+        return math.nan
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+def spearman_ci(rows: list[dict], xf: str, yf: str,
+                n_boot: int = 1000, seed: int = 0) -> tuple[float, float, float, int]:
+    """Spearman ρ(xf, yf) over checkpoints with a chain-cluster bootstrap CI.
+
+    Chains are the resampling unit (checkpoints within a chain are not independent).
+    Returns (rho, ci_lo, ci_hi, n)."""
+    by_chain: dict[int, list[tuple[float, float]]] = defaultdict(list)
+    for r in rows:
+        xv, yv = _f(r.get(xf, "")), _f(r.get(yf, ""))
+        if not (math.isnan(xv) or math.isnan(yv)):
+            by_chain[int(r["chain"])].append((xv, yv))
+    chains = [c for c in by_chain if by_chain[c]]
+    pts = [p for c in chains for p in by_chain[c]]
+    n = len(pts)
+    if n < 5:
+        return (math.nan, math.nan, math.nan, n)
+    rho = _spearman(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]))
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(n_boot):
+        sample = rng.choice(chains, len(chains), replace=True)
+        pp = [p for c in sample for p in by_chain[c]]
+        if len(pp) >= 5:
+            b = _spearman(np.array([p[0] for p in pp]), np.array([p[1] for p in pp]))
+            if not math.isnan(b):
+                boots.append(b)
+    if not boots:
+        return (rho, math.nan, math.nan, n)
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    return (rho, float(lo), float(hi), n)
+
+
 def phase_means(rows: list[dict], field: str):
     order = ["Start", "Early", "Mid", "Late", "Final"]
     acc = defaultdict(list)
@@ -575,6 +665,59 @@ def main() -> int:
             if math.isnan(m):
                 continue
             lines.append(f"| {gk[0]}/{gk[1]} | {field} | {m:.4g} | {lo:.4g} | {hi:.4g} |")
+    lines.append("")
+
+    # Difference of slopes — the PAIRED test (per-arm CIs vs zero are not a between-arm test)
+    lines.append("## Difference of slopes (arm A − arm B; 95% bootstrap CI over chains)\n")
+    lines.append("A CI that excludes 0 means the two arms degrade at genuinely different rates on "
+                 "that metric — the actual between-arm test, not eyeballing two separate CIs.\n")
+    lines.append("| strategy | A − B | metric | slope diff | CI low | CI high | excludes 0 |")
+    lines.append("|---|---|---|---:|---:|---:|:--:|")
+    for strat in sorted({s for (_, s) in groups}):
+        arms = [a for (a, s) in groups if s == strat]
+        if len(arms) != 2:
+            continue
+        a1, a2 = (("spring", "officefloor") if {"spring", "officefloor"} <= set(arms)
+                  else tuple(sorted(arms, reverse=True)))
+        ra, rb = groups[(a1, strat)], groups[(a2, strat)]
+        for field in slope_fields:
+            d, lo, hi = bootstrap_diff_slope(ra, rb, field)
+            if math.isnan(d):
+                continue
+            excl = "yes" if (lo > 0 or hi < 0) else "no"
+            lines.append(f"| {strat} | {a1}−{a2} | {field} | {d:.4g} | {lo:.4g} | {hi:.4g} | {excl} |")
+    lines.append("")
+
+    # Impact-metric external validation — does per-checkpoint impact predict independent pain?
+    lines.append("## Impact-metric validation (Spearman ρ of `impact_composite` vs independent outcomes)\n")
+    lines.append("Within-arm correlation with signals measured *independently* of the git-diff impact "
+                 "computation (agent cost/time, comprehension, unintended breakage); 95% CI by chain-cluster "
+                 "bootstrap. A construct-validity check: does a change the metric scores as high-impact "
+                 "actually cost more and break more?\n")
+    lines.append("| arm/strategy | outcome | Spearman ρ | CI low | CI high | n |")
+    lines.append("|---|---|---:|---:|---:|---:|")
+    OUTCOMES = [("cost_usd", "agent $ (independent)"),
+                ("cache_read_tokens", "comprehension (independent)"),
+                ("duration_api_ms", "model time (independent)"),
+                ("true_regressions", "broke untouched rule (independent)"),
+                ("reedit_rate", "temporal coupling (git-derived)")]
+    for gk, grp in sorted(groups.items()):
+        for field, note in OUTCOMES:
+            rho, lo, hi, n = spearman_ci(grp, "impact_composite", field)
+            if math.isnan(rho):
+                continue
+            lines.append(f"| {gk[0]}/{gk[1]} | {note} | {rho:+.3f} | {lo:+.3f} | {hi:+.3f} | {n} |")
+    lines.append("")
+    lines.append("### `impact_composite` on checkpoints that caused a true regression vs not\n")
+    lines.append("| arm/strategy | median (true regression) | median (none) | n true-regr |")
+    lines.append("|---|---:|---:|---:|")
+    for gk, grp in sorted(groups.items()):
+        wtr = [_f(r.get("impact_composite", "")) for r in grp
+               if (_f(r.get("true_regressions", "")) or 0) > 0 and not math.isnan(_f(r.get("impact_composite", "")))]
+        ntr = [_f(r.get("impact_composite", "")) for r in grp
+               if (_f(r.get("true_regressions", "")) or 0) == 0 and not math.isnan(_f(r.get("impact_composite", "")))]
+        if wtr and ntr:
+            lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {np.median(ntr):.0f} | {len(wtr)} |")
     lines.append("")
 
     # Phase means
