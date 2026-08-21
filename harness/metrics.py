@@ -408,6 +408,159 @@ def entry_handler_stats(fns: list[dict], pattern: Optional[str]) -> dict:
     }
 
 
+def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
+                           cc_threshold: int = CC_THRESHOLD) -> dict:
+    """Erosion (Eq.3) restricted to the entry handler's OWN class file(s).
+
+    Whole-app and touched-file erosion are both dominated by architecture-neutral
+    leaf algorithms (soundex, phone/E.164 formatting, duplicate detection) that
+    BOTH arms implement and that carry irreducible branching wherever they land, so
+    they swamp the phenomenon this experiment is about: does the endpoint's handler
+    surface itself erode? This scopes erosion to the file(s) containing the matched
+    entry-handler function — the controller class for Spring (where addOwner and its
+    sibling helpers concentrate) and BuildOwner for OfficeFloor (expected to stay
+    flat as rules attach as separate wired functions). Because it is class-scoped it
+    excludes the shared leaf-algorithm classes for both arms, isolating the concentration
+    signal that `entry_cc`/`wmc_max` already show. A null/absent pattern (or no
+    match — e.g. before the handler exists) yields blanks."""
+    blank = {"erosion_handler": None, "erosion_handler_high_mass": None,
+             "erosion_handler_total_mass": None, "erosion_handler_hot_fns": None,
+             "erosion_handler_class": None, "erosion_handler_nfns": None}
+    if not pattern:
+        return dict(blank)
+    # Scope by the handler's CLASS FILE. The entry_handler convention is
+    # 'Class::method', and the class is what we want — every method that accreted
+    # onto the handler's class, not just the one entry method. Matching the file is
+    # also robust to lizard's checkpoint-to-checkpoint variation in whether it names
+    # a function 'Class::method' or bare 'method'; matching the method name blanks
+    # the metric exactly on the checkpoints where the handler bloats most.
+    m = re.match(r"([A-Za-z_]\w*)::", pattern)
+    files: set[str] = set()
+    if m:
+        stem = m.group(1) + ".java"
+        files = {f["file"] for f in fns if f["file"].split("/")[-1] == stem}
+    if not files:  # pattern not in Class::method form, or the class isn't present yet
+        rx = re.compile(pattern)
+        files = {f["file"] for f in fns if rx.search(f"{f['file']}::{f['name']}")}
+    if not files:
+        return dict(blank)
+    ed = erosion_detail([f for f in fns if f["file"] in files], cc_threshold)
+    return {
+        "erosion_handler": ed["erosion"],
+        "erosion_handler_high_mass": ed["high_mass"],
+        "erosion_handler_total_mass": ed["total_mass"],
+        "erosion_handler_hot_fns": ed["over_threshold"],
+        "erosion_handler_class": ", ".join(sorted(p.split("/")[-1] for p in files)),
+        "erosion_handler_nfns": ed["n_functions"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Structural-impact score: how much a rule's diff DISTURBS existing structure
+# vs. adds new isolated units. Unlike erosion (which is location-blind and charges
+# for intrinsic branchiness wherever it lands), impact is charged ONLY for
+# perturbing code that already existed -- a new isolated complex algorithm in its
+# own new file/class costs 0. Two sub-scores per checkpoint:
+#   mutation = Σ over MODIFIED existing functions of CC(f) · changed_lines(f)
+#   godclass = Σ over genuinely-NEW functions added to an EXISTING class of
+#              max(0, WMC_other_methods − floor) · CC(new)
+# Intended for ADDITIVE checkpoints; mutative steps revise prior rules by design,
+# so analyze discounts them (blanks these fields on mutative rows before slopes).
+# ---------------------------------------------------------------------------
+
+IMPACT_WMC_FLOOR = 20        # a class may hold this much CC-mass before new methods count as god-class growth
+IMPACT_RENAME_JACCARD = 0.6  # body-line Jaccard above which a within-commit 'new' name is really a rename
+IMPACT_LAMBDA = 0.23         # weight balancing godclass into the composite (~equalises the two sub-scores)
+
+
+def _parse_blob(worktree: str, ref: str, path: str) -> dict:
+    """name -> {cc, s, e, body} for the functions in path@ref (body = frozenset of
+    its stripped non-blank source lines, for within-commit rename matching)."""
+    try:
+        code = _git(worktree, ["show", f"{ref}:{path}"])
+        fl = lizard.analyze_file.analyze_source_code(path, code).function_list
+    except Exception:
+        return {}
+    L = code.splitlines()
+    out = {}
+    for f in fl:
+        out[f.name] = {
+            "cc": int(f.cyclomatic_complexity), "s": f.start_line, "e": f.end_line,
+            "body": frozenset(s.strip() for s in L[f.start_line - 1:f.end_line] if s.strip()),
+        }
+    return out
+
+
+def _line_overlap(s: int, e: int, ranges: list[tuple[int, int]]) -> int:
+    return sum(max(0, min(e, b) - max(s, a) + 1) for a, b in ranges)
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+
+def impact_stats(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
+                 wmc_floor: int = IMPACT_WMC_FLOOR, rename_j: float = IMPACT_RENAME_JACCARD,
+                 lam: float = IMPACT_LAMBDA) -> dict:
+    """Per-checkpoint structural-impact score (see section header).
+
+    A new file costs 0. A within-commit rename (a 'new' name whose body matches a
+    disappeared prev function, Jaccard >= rename_j) is scored as a mutation, not a
+    free addition, so edits can't hide behind renames. All refs share the worktree's
+    object DB, so prev_ref (= the agent commit's parent) resolves exactly as it does
+    for blast_radius_detail."""
+    blank = {"impact_mutation": None, "impact_godclass": None, "impact_composite": None,
+             "impact_new_files": None, "impact_new_fns": None, "impact_mut_fns": None,
+             "impact_renames": None}
+    try:
+        ns = _git(worktree, ["diff", "--name-status", "-M", "-C", prev_ref, cur_ref])
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return dict(blank)
+    mutation = godclass = 0.0
+    n_newfile = n_newfn = n_mutfn = n_ren = 0
+    for line in ns.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status, path = parts[0], parts[-1]
+        if not _is_prod_java(path):
+            continue
+        if status.startswith("A"):        # new file -> no blast on existing code
+            n_newfile += 1
+            continue
+        ranges = _changed_ranges(worktree, prev_ref, cur_ref, path)
+        if not ranges:
+            continue
+        cur = _parse_blob(worktree, cur_ref, path)
+        prev = _parse_blob(worktree, prev_ref, path)
+        wmc_prev = sum(v["cc"] for v in prev.values())
+        disappeared = [n for n in prev if n not in cur]
+        for name, f in cur.items():
+            d = _line_overlap(f["s"], f["e"], ranges)
+            if d == 0:
+                continue
+            if name in prev:              # modified existing function
+                mutation += f["cc"] * d
+                n_mutfn += 1
+            else:
+                best = max((_jaccard(f["body"], prev[dn]["body"]) for dn in disappeared), default=0.0)
+                if best >= rename_j:      # within-commit rename -> treat as mutation
+                    mutation += f["cc"] * d
+                    n_ren += 1
+                else:                     # genuinely new function into an existing class
+                    godclass += max(0.0, wmc_prev - wmc_floor) * f["cc"]
+                    n_newfn += 1
+    return {
+        "impact_mutation": round(mutation, 2),
+        "impact_godclass": round(godclass, 2),
+        "impact_composite": round(mutation + lam * godclass, 2),
+        "impact_new_files": n_newfile,
+        "impact_new_fns": n_newfn,
+        "impact_mut_fns": n_mutfn,
+        "impact_renames": n_ren,
+    }
+
+
 # ---------------------------------------------------------------------------
 # #3 Change spread: how many packages a rule's diff reaches into.
 # ---------------------------------------------------------------------------
@@ -486,8 +639,10 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     brd = blast_radius_detail(worktree, prev_ref, cur_ref)
     wmc = wmc_stats(touched_fns)                             # god-class over the subsystem
     eh = entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: found even if unchanged
+    ehe = handler_scoped_erosion(fns, arm_cfg.get("entry_handler"))  # erosion of the handler's own class
     spread = change_spread(worktree, prev_ref, cur_ref)
     reedit = reedit_stats(worktree, base_commit, prev_ref, cur_ref)  # temporal coupling vs base
+    imp = impact_stats(worktree, prev_ref, cur_ref)  # blast weighted by complexity disturbed
 
     row = {
         "erosion": ed["erosion"],
@@ -511,8 +666,10 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     row.update(brd)
     row.update(wmc)
     row.update(eh)
+    row.update(ehe)
     row.update(spread)
     row.update(reedit)
+    row.update(imp)
 
     details = {
         "erosion": ed,
@@ -526,8 +683,10 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "blast_radius_detail": brd,
         "wmc": wmc,
         "entry_handler": eh,
+        "erosion_handler": ehe,
         "change_spread": spread,
         "reedit": reedit,
+        "impact": imp,
         "functions": [{**f, "mass": round(_mass(f), 4)} for f in fns],
     }
     return row, details

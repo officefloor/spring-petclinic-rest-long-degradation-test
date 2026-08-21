@@ -81,6 +81,8 @@ CSV_FIELDS = [
     # structure (final numbers + the intermediates they are computed from)
     "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",  # whole app
     "erosion_scoped", "erosion_scoped_high_mass", "erosion_scoped_total_mass", "subsystem_nfns",  # touched-file subsystem
+    "erosion_handler", "erosion_handler_high_mass", "erosion_handler_total_mass",  # entry-handler class only
+    "erosion_handler_hot_fns", "erosion_handler_class", "erosion_handler_nfns",
     "verbosity", "verbosity_clone_lines", "verbosity_pattern_lines", "verbosity_union_lines",
     "java_loc", "yaml_loc",
     "hotspot_nloc", "hotspot_cc", "hotspot_fn", "fn_count", "fn_nloc_avg", "fn_nloc_max", "fn_cc_max",
@@ -91,6 +93,9 @@ CSV_FIELDS = [
     "wmc_max", "wmc_max_class", "wmc_max_methods", "wmc_max_nloc",
     "entry_cc", "entry_nloc", "entry_fn", "packages_touched",
     "reedit_body_lines", "reedit_prior_lines", "reedit_rate",
+    # structural-impact score: blast on existing code weighted by complexity disturbed
+    "impact_mutation", "impact_godclass", "impact_composite",
+    "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)

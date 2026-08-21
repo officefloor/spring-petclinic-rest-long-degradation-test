@@ -425,6 +425,7 @@ def regression_summary(rows: list[dict]) -> dict:
 METRICS_TO_PLOT = [
     ("erosion", "Structural erosion — whole app (SlopCodeBench Eq.3)"),
     ("erosion_scoped", "Structural erosion — touched-file subsystem"),
+    ("erosion_handler", "Structural erosion — entry-handler class only (concentration signal)"),
     ("verbosity", "Verbosity (SlopCodeBench Eq.4)"),
     ("cost_usd", "Cost per checkpoint (USD)"),
     ("duration_api_ms", "API time per checkpoint (ms, model inference)"),
@@ -437,6 +438,9 @@ METRICS_TO_PLOT = [
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
+    ("impact_mutation", "Impact — CC×lines of existing functions mutated (additive cps)"),
+    ("impact_godclass", "Impact — complexity fed into existing god-classes (additive cps)"),
+    ("impact_composite", "Impact — composite structural cost per rule (additive cps)"),
 ]
 
 
@@ -517,6 +521,19 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
 
+    # Additive-only discount for the impact metrics: mutative checkpoints revise
+    # prior rules by design (they intentionally re-touch existing code), so they say
+    # nothing about the architecture's placement discipline. Blank the impact fields
+    # on mutative rows AFTER the raw CSV is written (which keeps every checkpoint's
+    # true value for transparency) but before slopes/phase-means/plots — the generic
+    # machinery drops NaN/blank, so these curves become additive-only with no special
+    # casing. Mirrors the intended-vs-true regression discipline.
+    IMPACT_FIELDS = ["impact_mutation", "impact_godclass", "impact_composite"]
+    for r in rows:
+        if str(r.get("checkpoint_type", "")).strip() == "mutative":
+            for f in IMPACT_FIELDS:
+                r[f] = ""
+
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
         groups[group_key(r)].append(r)
@@ -528,10 +545,11 @@ def main() -> int:
     lines.append("## Degradation slopes m (OLS of metric on checkpoint; 95% bootstrap CI)\n")
     lines.append("| arm/strategy | metric | slope m | CI low | CI high |")
     lines.append("|---|---|---:|---:|---:|")
-    slope_fields = ["erosion", "erosion_scoped", "verbosity", "cost_usd",
+    slope_fields = ["erosion", "erosion_scoped", "erosion_handler", "verbosity", "cost_usd",
                     "cache_read_tokens", "duration_api_ms", "hotspot_cc",
                     "existing_fns_modified", "files_created",
-                    "wmc_max", "entry_cc", "packages_touched", "reedit_rate"]
+                    "wmc_max", "entry_cc", "packages_touched", "reedit_rate",
+                    "impact_mutation", "impact_godclass", "impact_composite"]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)
@@ -545,7 +563,8 @@ def main() -> int:
 
     # Phase means
     lines.append("## Phase-binned means\n")
-    for field in ["erosion", "verbosity", "cost_usd", "strict_pass"]:
+    for field in ["erosion", "erosion_handler", "impact_mutation", "impact_godclass",
+                  "verbosity", "cost_usd", "strict_pass"]:
         lines.append(f"### {field}")
         lines.append("| arm/strategy | Start | Early | Mid | Late | Final |")
         lines.append("|---|---:|---:|---:|---:|---:|")
