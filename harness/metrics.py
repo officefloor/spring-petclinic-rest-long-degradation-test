@@ -456,26 +456,35 @@ def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
 
 
 # ---------------------------------------------------------------------------
-# Structural-impact score: how much a rule's diff DISTURBS existing structure
-# vs. adds new isolated units. Unlike erosion (which is location-blind and charges
-# for intrinsic branchiness wherever it lands), impact is charged ONLY for
-# perturbing code that already existed -- a new isolated complex algorithm in its
-# own new file/class costs 0. Two sub-scores per checkpoint:
-#   mutation = Σ over MODIFIED existing functions of CC(f) · changed_lines(f)
-#   godclass = Σ over genuinely-NEW functions added to an EXISTING class of
-#              max(0, WMC_other_methods − floor) · CC(new)
+# Structural-impact score: how much a rule's diff DISTURBS existing structure,
+# weighted by the complexity of the CONTEXT it touches. Unlike erosion (which is
+# location-blind and charges for intrinsic branchiness wherever it lands), impact
+# weights every change by the surrounding class's complexity, so mutating a method
+# inside a heavy god-class costs far more than the same edit to an isolated unit.
+#
+# Per changed function the cost is a single uniform term:
+#     max(WMC_other, 1) · CC(f) · max(1, Δlines(f))        summed per function,
+# then the whole commit is multiplied by the number of production-Java files it
+# touches (`files_changed`) -- a spread penalty so that scattering one rule across
+# many classes (fragmentation without cohesion) is not free. WMC_other is the sum
+# of CC of the OTHER methods in the function's class (the context you must hold to
+# change it safely); a brand-new class has WMC_other = 0 -> floored to 1, so a new
+# isolated unit still costs max(1)·CC·nloc·files (small, but non-zero -- closing the
+# fragmentation loophole). Δlines is the changed-line count; for a new function that
+# is its own size. Reported as two sub-scores plus their sum:
+#     impact_mutation  = files · Σ(existing functions modified/renamed)
+#     impact_godclass  = files · Σ(new functions: new files + methods fed into classes)
+#     impact_composite = impact_mutation + impact_godclass   (both already commensurate)
 # Intended for ADDITIVE checkpoints; mutative steps revise prior rules by design,
 # so analyze discounts them (blanks these fields on mutative rows before slopes).
 # ---------------------------------------------------------------------------
 
-IMPACT_WMC_FLOOR = 20        # a class may hold this much CC-mass before new methods count as god-class growth
 IMPACT_RENAME_JACCARD = 0.6  # body-line Jaccard above which a within-commit 'new' name is really a rename
-IMPACT_LAMBDA = 0.23         # weight balancing godclass into the composite (~equalises the two sub-scores)
 
 
 def _parse_blob(worktree: str, ref: str, path: str) -> dict:
-    """name -> {cc, s, e, body} for the functions in path@ref (body = frozenset of
-    its stripped non-blank source lines, for within-commit rename matching)."""
+    """name -> {cc, nloc, s, e, body} for the functions in path@ref (body = frozenset
+    of its stripped non-blank source lines, for within-commit rename matching)."""
     try:
         code = _git(worktree, ["show", f"{ref}:{path}"])
         fl = lizard.analyze_file.analyze_source_code(path, code).function_list
@@ -485,7 +494,8 @@ def _parse_blob(worktree: str, ref: str, path: str) -> dict:
     out = {}
     for f in fl:
         out[f.name] = {
-            "cc": int(f.cyclomatic_complexity), "s": f.start_line, "e": f.end_line,
+            "cc": int(f.cyclomatic_complexity), "nloc": int(f.nloc),
+            "s": f.start_line, "e": f.end_line,
             "body": frozenset(s.strip() for s in L[f.start_line - 1:f.end_line] if s.strip()),
         }
     return out
@@ -500,24 +510,23 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
 
 
 def impact_stats(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
-                 wmc_floor: int = IMPACT_WMC_FLOOR, rename_j: float = IMPACT_RENAME_JACCARD,
-                 lam: float = IMPACT_LAMBDA) -> dict:
+                 rename_j: float = IMPACT_RENAME_JACCARD) -> dict:
     """Per-checkpoint structural-impact score (see section header).
 
-    A new file costs 0. A within-commit rename (a 'new' name whose body matches a
-    disappeared prev function, Jaccard >= rename_j) is scored as a mutation, not a
-    free addition, so edits can't hide behind renames. All refs share the worktree's
-    object DB, so prev_ref (= the agent commit's parent) resolves exactly as it does
-    for blast_radius_detail."""
+    A within-commit rename (a 'new' name whose body matches a disappeared prev
+    function, Jaccard >= rename_j) is scored as a mutation, not a free addition, so
+    edits can't hide behind renames. All refs share the worktree's object DB, so
+    prev_ref (= the agent commit's parent) resolves exactly as it does for
+    blast_radius_detail. The whole commit is scaled by `files_changed` (a spread
+    penalty), so the two sub-scores are the per-file sums already multiplied by it."""
     blank = {"impact_mutation": None, "impact_godclass": None, "impact_composite": None,
-             "impact_new_files": None, "impact_new_fns": None, "impact_mut_fns": None,
-             "impact_renames": None}
+             "impact_files_changed": None, "impact_new_files": None, "impact_new_fns": None,
+             "impact_mut_fns": None, "impact_renames": None}
     try:
         ns = _git(worktree, ["diff", "--name-status", "-M", "-C", prev_ref, cur_ref])
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return dict(blank)
-    mutation = godclass = 0.0
-    n_newfile = n_newfn = n_mutfn = n_ren = 0
+    new_files, mod_files, all_files = [], [], set()
     for line in ns.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
@@ -525,9 +534,19 @@ def impact_stats(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
         status, path = parts[0], parts[-1]
         if not _is_prod_java(path):
             continue
-        if status.startswith("A"):        # new file -> no blast on existing code
-            n_newfile += 1
-            continue
+        all_files.add(path)
+        (new_files if status.startswith("A") else mod_files).append(path)
+    files_changed = len(all_files)
+
+    mutation = addition = 0.0
+    n_newfn = n_mutfn = n_ren = 0
+    # New files: every function is new, WMC_other = 0 -> floored to 1; Δ = its size.
+    for path in new_files:
+        for f in _parse_blob(worktree, cur_ref, path).values():
+            addition += max(0, 1) * f["cc"] * max(1, f["nloc"])
+            n_newfn += 1
+    # Modified files: classify each touched function against the prev blob.
+    for path in mod_files:
         ranges = _changed_ranges(worktree, prev_ref, cur_ref, path)
         if not ranges:
             continue
@@ -540,21 +559,27 @@ def impact_stats(worktree: str, prev_ref: str, cur_ref: str = "HEAD",
             if d == 0:
                 continue
             if name in prev:              # modified existing function
-                mutation += f["cc"] * d
+                ctx = wmc_prev - prev[name]["cc"]
+                mutation += max(ctx, 1) * f["cc"] * max(1, d)
                 n_mutfn += 1
             else:
-                best = max((_jaccard(f["body"], prev[dn]["body"]) for dn in disappeared), default=0.0)
-                if best >= rename_j:      # within-commit rename -> treat as mutation
-                    mutation += f["cc"] * d
+                best_dn = max(disappeared, key=lambda dn: _jaccard(f["body"], prev[dn]["body"]),
+                              default=None)
+                if best_dn is not None and _jaccard(f["body"], prev[best_dn]["body"]) >= rename_j:
+                    ctx = wmc_prev - prev[best_dn]["cc"]  # within-commit rename -> mutation
+                    mutation += max(ctx, 1) * f["cc"] * max(1, d)
                     n_ren += 1
-                else:                     # genuinely new function into an existing class
-                    godclass += max(0.0, wmc_prev - wmc_floor) * f["cc"]
+                else:                     # genuinely new method into an existing class
+                    addition += max(wmc_prev, 1) * f["cc"] * max(1, d)
                     n_newfn += 1
+    impact_mutation = round(mutation * files_changed, 2)
+    impact_godclass = round(addition * files_changed, 2)
     return {
-        "impact_mutation": round(mutation, 2),
-        "impact_godclass": round(godclass, 2),
-        "impact_composite": round(mutation + lam * godclass, 2),
-        "impact_new_files": n_newfile,
+        "impact_mutation": impact_mutation,
+        "impact_godclass": impact_godclass,
+        "impact_composite": round(impact_mutation + impact_godclass, 2),
+        "impact_files_changed": files_changed,
+        "impact_new_files": len(new_files),
         "impact_new_fns": n_newfn,
         "impact_mut_fns": n_mutfn,
         "impact_renames": n_ren,

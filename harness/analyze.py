@@ -438,9 +438,9 @@ METRICS_TO_PLOT = [
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
-    ("impact_mutation", "Impact — CC×lines of existing functions mutated (additive cps)"),
-    ("impact_godclass", "Impact — complexity fed into existing god-classes (additive cps)"),
-    ("impact_composite", "Impact — composite structural cost per rule (additive cps)"),
+    ("impact_mutation", "Impact — context-weighted mutation of existing functions (additive cps)"),
+    ("impact_godclass", "Impact — context-weighted new-function additions (additive cps)"),
+    ("impact_composite", "Impact — max(WMC_other,1)·CC·max(1,Δlines)·files per rule (additive cps)"),
 ]
 
 

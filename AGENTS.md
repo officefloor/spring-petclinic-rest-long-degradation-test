@@ -42,12 +42,20 @@ statistics are the ones that measure placement and blast radius:
 - **Blast radius** — `existing_fns_modified`, zero-blast checkpoints, `files_created`.
 - **Concentration** — `entry_cc` and `wmc_max` (god-method / god-class), corroborated
   by `erosion_handler` (erosion scoped to the entry handler's own class).
-- **Structural impact** — `impact_composite` / `impact_godclass` / `impact_mutation`:
-  per-checkpoint blast on *existing* code weighted by the complexity disturbed
-  (`CC·Δlines` of mutated functions + `max(0, WMC_other−floor)·CC` of new methods fed
-  into existing classes; new files/isolated units cost 0). Additive-only (mutative
-  checkpoints discounted, like intended-vs-true regressions). In `blind-202608100006`
-  the Spring−OfficeFloor slope CIs are fully disjoint for `impact_composite`/`godclass`.
+- **Structural impact** — `impact_composite` / `impact_mutation` / `impact_godclass`:
+  per-checkpoint blast on existing code *weighted by the complexity of the context it
+  touches*. Each changed function contributes `max(WMC_other,1) · CC · max(1,Δlines)`
+  (WMC_other = Σ CC of the other methods in its class — the context you must hold to
+  change it safely), and the whole commit is scaled by `files_changed` (a spread
+  penalty). So mutating a method inside a heavy god-class costs far more than the same
+  edit to an isolated unit; a new isolated unit is floored to `max(1)·CC·nloc·files`
+  (small but non-zero, closing the fragmentation loophole). `impact_mutation` sums the
+  existing-function edits, `impact_godclass` the new-function additions, `impact_composite`
+  their sum. Additive-only (mutative checkpoints discounted, like intended-vs-true
+  regressions). In `blind-202608100006` the Spring−OfficeFloor slope CIs are fully
+  disjoint for `impact_composite` and `impact_mutation` (~12× and ~28×); `impact_godclass`
+  alone overlaps, since with the floor+spread both arms pay for additions — the
+  discrimination correctly lives in the context-weighted mutation term.
 
 **Whole-app `erosion` is demoted from decisive.** It is location-blind (it can't tell
 a CC-19 god-method from a CC-19 isolated single-responsibility algorithm) and is

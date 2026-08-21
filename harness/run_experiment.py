@@ -93,9 +93,9 @@ CSV_FIELDS = [
     "wmc_max", "wmc_max_class", "wmc_max_methods", "wmc_max_nloc",
     "entry_cc", "entry_nloc", "entry_fn", "packages_touched",
     "reedit_body_lines", "reedit_prior_lines", "reedit_rate",
-    # structural-impact score: blast on existing code weighted by complexity disturbed
+    # structural-impact score: context-weighted blast (max(WMC_other,1)·CC·max(1,Δlines)·files)
     "impact_mutation", "impact_godclass", "impact_composite",
-    "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
+    "impact_files_changed", "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
