@@ -25,7 +25,12 @@ methods from two benchmarks:
 The thesis under test: as changes accumulate on one subsystem, the Spring
 hotspot method erodes (complexity concentrates, per-change comprehension cost
 climbs) while OfficeFloor stays flat (each change is a new small function, so
-existing units never grow). **Erosion slope is the decisive statistic.**
+existing units never grow). The **decisive statistics** are *blast radius* and
+*concentration* — does complexity pile into one method/class (`entry_cc`,
+`wmc_max`, handler-scoped erosion) — plus the **structural-impact score** (the
+context-weighted cost of each change). Whole-app **erosion** is reported for
+SlopCodeBench comparability but is **not** decisive here: it is location-blind and
+dominated by architecture-neutral leaf algorithms (see the metrics glossary below).
 
 ## How a run executes (start to finish)
 
@@ -93,17 +98,18 @@ Then, for each checkpoint `k` (1→N), in this exact order. Each checkpoint prod
    checkpoint is a clean two-commit boundary.
 6. **Structural metrics** (Java production source only, `metrics.compute_all`),
    measured over the **agent commit** (`base_for_cp..agent`, i.e. the pure agent
-   delta): `lizard` gives per-function CC/SLOC. Erosion is reported **twice**: `erosion`
-   over the whole app (SlopCodeBench-comparable) and `erosion_scoped` over a
-   **dynamic subsystem**: the production-Java files changed since `base_ref`
-   (cumulative `git diff`). Scoping stops one god method being diluted across ~280
-   unrelated functions, and because the subsystem is the touched-file set, a **new
-   class the agent creates is automatically included** (no fixed-glob blind spot).
-   The **hotspot** (single highest-CC function, with its name in `hotspot_fn`) is
-   taken over that same subsystem. Both erosions carry their `high_mass`/
-   `total_mass` terms; `verbosity` carries its clone/pattern/union line counts;
-   plus function-package size and blast radius (which excludes the injected tests
-   via a git pathspec). Every structural number here is a **pure function of the
+   delta): `lizard` gives per-function CC/SLOC. Erosion is reported over **three
+   scopes**: `erosion` over the whole app (SlopCodeBench-comparable), `erosion_scoped`
+   over a **dynamic subsystem** (the production-Java files changed since `base_ref`,
+   cumulative `git diff`), and `erosion_handler` over the entry handler's own class.
+   Scoping stops one god method being diluted across ~280 unrelated functions, and
+   because the subsystem is the touched-file set, a **new class the agent creates is
+   automatically included** (no fixed-glob blind spot). The **hotspot** (single
+   highest-CC function, with its name in `hotspot_fn`) is taken over that same
+   subsystem. The erosions carry their `high_mass`/`total_mass` terms; `verbosity`
+   carries its clone/pattern/union line counts; plus WMC/entry-handler, function-package
+   size, blast radius (which excludes the injected tests via a git pathspec), and the
+   context-weighted **structural-impact** score. Every structural number here is a **pure function of the
    committed source + git history**, so it is computed **only to narrate the
    progress log**, never persisted; `analyze` recomputes it. See *Capture vs.
    derive* below.
@@ -407,26 +413,135 @@ re-scores correctness from the captured raw test map, and writes **local,
 gitignored** output to `results/<run_id>/analysis/`.
 
 It reports the degradation slope `m` with a 95% bootstrap CI over chains, per
-arm/strategy, for `erosion`, `verbosity`, `cost_usd`, `cache_read_tokens`,
-`duration_api_ms`, `hotspot_cc`; phase-binned means; EvoScore (γ ∈ {1, 1.5, 2});
-Zero-Regression Rate (over `regressions` and `true_regressions`); and the
-pinned-doc (`CLAUDE.md`) touch rate per arm.
+arm/strategy, for the three erosion scopes, `verbosity`, `cost_usd`,
+`cache_read_tokens`, `duration_api_ms`, `hotspot_cc`, `fn_nloc_max`,
+`existing_fns_modified`, `files_created`, `wmc_max`, `entry_cc`,
+`packages_touched`, `reedit_rate`, and the impact family (`impact_mutation` /
+`impact_godclass` / `impact_composite`, each in all / additive-only / mutative-only
+slices); phase-binned means; EvoScore (γ ∈ {1, 1.5, 2}); Zero-Regression Rate (over
+`regressions` and `true_regressions`); and the pinned-doc (`CLAUDE.md`) touch rate.
+Every metric is defined in the **Metrics glossary** below.
 
 **Adding a metric applies it to every past run.** Structural metrics need only
 the commits; correctness/agent columns come from `capture/`. Add it to
 `metrics.compute_all` and re-run `analyze`; no agent re-invocation.
 
-**Confirms the thesis** if `m_erosion(spring) > 0` (CI excludes 0),
-`m_erosion(officefloor) ≈ 0`, and the spring-minus-officefloor slope CI excludes
-0, with the same pattern for verbosity and comprehension cost, higher
-OfficeFloor EvoScore at γ>1, and higher OfficeFloor Zero-Regression Rate in the
-Late/Final phases. The strong form: OfficeFloor lowers the **slope**
-structurally, which SlopCodeBench found prompting could not do (it only lowered
-the intercept, at higher cost).
+**Confirms the thesis** if the *concentration* slopes climb for Spring and stay
+flat for OfficeFloor with disjoint CIs — `entry_cc`, `wmc_max`, handler-scoped
+erosion, and above all the **structural-impact** score (`impact_composite` /
+`impact_mutation`) — while blast radius (`existing_fns_modified`) and coupling
+(`reedit_rate`) stay lower for OfficeFloor, and OfficeFloor shows higher EvoScore at
+γ>1 and fewer true regressions. The strong form: OfficeFloor lowers the **slope**
+structurally, which SlopCodeBench found prompting could not do (it only lowered the
+intercept, at higher cost). (Whole-app `erosion` is *not* part of this test — see the
+glossary.)
 
-**Refutes it** if OfficeFloor erosion also climbs (a wiring "god pipeline" or an
-accreting shared function) or Spring stays flat because the agent refactors each
-time. Report either honestly.
+**Refutes it** if the impact/concentration slopes also climb for OfficeFloor (a
+wiring "god pipeline" or an accreting shared function) or Spring stays flat because
+the agent refactors each time. Report either honestly.
+
+## Metrics glossary
+
+Every column `analyze` recomputes per checkpoint, grouped as in
+`run_experiment.CSV_FIELDS`. Structural metrics are over **production Java only**
+(YAML wiring is counted separately, never mixed into a Java denominator), with
+identical tools/thresholds for both arms.
+
+**Identity / bookkeeping** — `run_id`, `branch`; `arm`, `strategy`, `chain`,
+`checkpoint`; `checkpoint_id` (the rule's id); `checkpoint_type` (`additive` or
+`mutative` — a mutative rule revises prior rules); `phase` (checkpoint binned into
+Start/Early/Mid/Late/Final).
+
+**Process (agent cost/effort)** — `agent_ok`; `cost_usd`; `input_tokens`,
+`output_tokens`, `cache_read_tokens` (the last a comprehension-cost proxy — how much
+context it re-read); `num_turns`; `duration_ms`, `duration_api_ms` (wall-clock;
+model-inference time).
+
+**Correctness (black-box acceptance suite; SlopCodeBench + SWE-CI)**
+
+| field | definition |
+|---|---|
+| `build_ok` | the project compiled |
+| `total_selected` | tests selected for this checkpoint |
+| `strict_pass` | **all** selected tests green |
+| `iso_pass` | all *non-regression* tests (this checkpoint's Core+Error+Func) green |
+| `core_pass` | all **Core** (happy-path) tests green |
+| `core_p/t`, `error_p/t`, `func_p/t`, `regr_p/t` | pass/total for Core, Error-handling, hidden Functionality, and Regression suites |
+| `regressions` | tests green *before* this checkpoint, red *after* (`prior − now`) |
+| `true_regressions` | regressions on prior checkpoints a **mutative** step did not intend to change — the safety signal (broke a rule it wasn't asked to touch); for additive checkpoints all regressions are "true" |
+| `normalized_change` | SWE-CI asymmetric Normalized Change in [−1,1]: improvement `(passed−base)/(target−base)`, regression `(passed−base)/base` |
+
+**Erosion (SlopCodeBench Eq. 3)** — `mass(f)=CC·√SLOC`; a function is "eroded" when
+`CC>10`; `erosion = Σ_{CC>10} mass / Σ_all mass` (fraction of complexity-mass in
+over-threshold functions), reported over three scopes:
+
+| field | scope |
+|---|---|
+| `erosion` (+ `_high_mass`, `_total_mass`, `_hot_fns`) | **whole app** (SlopCodeBench-comparable). *Not decisive here — location-blind, leaf-algorithm-dominated.* |
+| `erosion_scoped` (+ intermediates, `subsystem_nfns`) | **touched-file subsystem** (files changed since base) |
+| `erosion_handler` (+ intermediates, `_class`, `_nfns`) | the **entry-handler's own class only** — the clean concentration signal (Spring's controller erodes; OfficeFloor's `BuildOwner` stays flat) |
+
+**Verbosity (SlopCodeBench Eq. 4)** — `verbosity = |clone-lines ∪ ast-grep-flagged
+lines| / LOC` (jscpd duplication ∪ ast-grep anti-patterns); `verbosity_clone_lines`,
+`verbosity_pattern_lines`, `verbosity_union_lines` are the components. `java_loc`,
+`yaml_loc` are the two LOC pools (kept separate).
+
+**Hotspot & function-size (lizard)** — `hotspot_cc` / `hotspot_nloc` / `hotspot_fn`:
+the single highest-CC function in the touched subsystem (CC, size, `File::method`).
+`fn_count`, `fn_nloc_avg`, `fn_nloc_max`, `fn_cc_max`: OfficeFloor's wired-function
+package distribution (healthy growth = count rises while avg/max stay flat).
+
+**Blast radius (how much pre-existing code a rule disturbs vs. adds)**
+
+| field | definition |
+|---|---|
+| `diff_added`, `diff_removed`, `files_touched` | raw diff shortstat |
+| `existing_fns_modified` | functions in **already-present** files the diff touched — the blast radius proper |
+| `files_modified`, `files_created` | already-present files touched; new production files added for the rule |
+| `churn_added`, `churn_removed` | production-line churn |
+
+**Concentration / coupling**
+
+| field | definition |
+|---|---|
+| `wmc_max` (+ `_class`, `_methods`, `_nloc`) | god-**class** indicator: highest Weighted-Methods-per-Class (Σ method CC) in the touched subsystem |
+| `entry_cc` (+ `_nloc`, `_fn`) | cyclomatic complexity of the **one** function the create endpoint routes through (`addOwner` / `BuildOwner::service`) — does the front door bloat |
+| `packages_touched` | distinct packages the rule's production-Java diff reaches (change spread) |
+| `reedit_rate` (+ `reedit_body_lines`, `reedit_prior_lines`) | temporal coupling: of the lines in functions this checkpoint edited, the share authored by **earlier** checkpoints |
+
+**Structural-impact score** — per changed function,
+`cost = max(WMC_other, 1) · CC · max(1, Δlines)`, where `WMC_other` = Σ CC of the
+*other* methods in that function's class (the context you must hold to change it
+safely); the whole commit is then multiplied by `files_changed` (a spread penalty).
+So mutating a method inside a heavy god-class costs far more than the same edit to an
+isolated unit; a brand-new class is floored to `1·CC·nloc·files` (small but non-zero,
+closing the fragmentation loophole). A within-commit **rename** (body Jaccard ≥ 0.6)
+is scored as a mutation, not a free addition.
+
+| field | definition |
+|---|---|
+| `impact_mutation` | Σ over **modified/renamed existing** functions, × `files_changed` |
+| `impact_godclass` | Σ over **new** functions (new files + methods fed into existing classes), × `files_changed` |
+| `impact_composite` | `impact_mutation + impact_godclass` |
+| `impact_files_changed` | distinct production-Java files the commit touched |
+| `impact_new_files`, `impact_new_fns`, `impact_mut_fns`, `impact_renames` | raw counts |
+
+Each of `impact_mutation/godclass/composite` is analyzed in three **slices** — all
+checkpoints, additive-only (`_add`), mutative-only (`_mut`) — as filtered views (a
+mutative checkpoint is a mandated rule revision, so the context weight makes it
+genuine architectural signal: the arm that isolated the concern pays less).
+
+**Probe & integrity (nullable)** — `probe_*`: the read-only cold-reader probe (cost,
+and `probe_recall` = how well a fresh agent recalls the accumulated rules);
+`pinned_touched` (pinned guide files the agent edited — should be empty);
+`acceptance_touched` (test files the agent edited — tamper signal, restored after
+detection); `notes`.
+
+**Derived scores in `summary.md`** — degradation **slope** `m` (OLS on checkpoint,
+95% bootstrap CI over chains); phase-binned means; **EvoScore** (SWE-CI, γ-weighted
+mean of `strict_pass`, γ ∈ {1, 1.5, 2}, higher γ rewarding staying green late);
+**Zero-Regression Rate** (over `regressions` and `true_regressions`); the
+intended-vs-true regression split; pinned-doc and acceptance-tamper rates.
 
 ## Isolation & fairness
 
