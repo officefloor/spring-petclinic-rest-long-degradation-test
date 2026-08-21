@@ -438,10 +438,21 @@ METRICS_TO_PLOT = [
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
-    ("impact_mutation", "Impact — context-weighted mutation of existing functions (additive cps)"),
-    ("impact_godclass", "Impact — context-weighted new-function additions (additive cps)"),
-    ("impact_composite", "Impact — max(WMC_other,1)·CC·max(1,Δlines)·files per rule (additive cps)"),
+    ("impact_mutation", "Impact — context-weighted mutation of existing functions"),
+    ("impact_godclass", "Impact — context-weighted new-function additions"),
+    ("impact_composite", "Impact — max(WMC_other,1)·CC·max(1,Δlines)·files per rule"),
 ]
+
+# The three impact sub-scores, each reported in three slices: all checkpoints (the
+# base field), additive-only (`_add`), and mutative-only (`_mut`). The derived view
+# columns are synthesised in main() off the base fields (blank on the other type).
+IMPACT_BASE_FIELDS = ["impact_mutation", "impact_godclass", "impact_composite"]
+_IMPACT_LABEL = {"impact_mutation": "mutation of existing functions",
+                 "impact_godclass": "new-function additions",
+                 "impact_composite": "composite (max(WMC_other,1)·CC·max(1,Δlines)·files)"}
+for _fld in IMPACT_BASE_FIELDS:
+    METRICS_TO_PLOT.append((_fld + "_add", f"Impact ({_IMPACT_LABEL[_fld]}) — ADDITIVE checkpoints only"))
+    METRICS_TO_PLOT.append((_fld + "_mut", f"Impact ({_IMPACT_LABEL[_fld]}) — MUTATIVE checkpoints only"))
 
 
 def plot_metric(groups: dict, field: str, title: str, out_path: str) -> None:
@@ -521,18 +532,21 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    # Additive-only discount for the impact metrics: mutative checkpoints revise
-    # prior rules by design (they intentionally re-touch existing code), so they say
-    # nothing about the architecture's placement discipline. Blank the impact fields
-    # on mutative rows AFTER the raw CSV is written (which keeps every checkpoint's
-    # true value for transparency) but before slopes/phase-means/plots — the generic
-    # machinery drops NaN/blank, so these curves become additive-only with no special
-    # casing. Mirrors the intended-vs-true regression discipline.
-    IMPACT_FIELDS = ["impact_mutation", "impact_godclass", "impact_composite"]
+    # Impact is reported in three slices — ALL checkpoints, ADDITIVE-only, MUTATIVE-only
+    # — so the split can be read directly. The per-checkpoint impact value is the same
+    # regardless of slice; the slices are just filtered VIEWS (a mutative checkpoint is a
+    # mandated rule revision, and the context weight makes it genuine architectural signal
+    # — the arm that isolated the concern pays less: Spring ~36k/mutative-cp vs OfficeFloor
+    # ~4.8k on blind-202608100006). Synthesise `_add`/`_mut` view columns off the raw
+    # (all-checkpoint) impact fields — blank on the other type, so the generic NaN-dropping
+    # slope/plot machinery yields the filtered curve with no special casing. Done after the
+    # raw CSV is written, so these derived views never bloat the CSV.
     for r in rows:
-        if str(r.get("checkpoint_type", "")).strip() == "mutative":
-            for f in IMPACT_FIELDS:
-                r[f] = ""
+        is_mut = str(r.get("checkpoint_type", "")).strip() == "mutative"
+        for f in IMPACT_BASE_FIELDS:
+            v = r.get(f, "")
+            r[f + "_add"] = "" if is_mut else v   # additive-only view
+            r[f + "_mut"] = v if is_mut else ""    # mutative-only view
 
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
@@ -550,6 +564,8 @@ def main() -> int:
                     "existing_fns_modified", "files_created",
                     "wmc_max", "entry_cc", "packages_touched", "reedit_rate",
                     "impact_mutation", "impact_godclass", "impact_composite"]
+    # each impact sub-score also sliced additive-only (_add) and mutative-only (_mut)
+    slope_fields += [f + s for f in IMPACT_BASE_FIELDS for s in ("_add", "_mut")]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)

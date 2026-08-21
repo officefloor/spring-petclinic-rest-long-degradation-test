@@ -51,8 +51,9 @@ statistics are the ones that measure placement and blast radius:
   edit to an isolated unit; a new isolated unit is floored to `max(1)·CC·nloc·files`
   (small but non-zero, closing the fragmentation loophole). `impact_mutation` sums the
   existing-function edits, `impact_godclass` the new-function additions, `impact_composite`
-  their sum. Additive-only (mutative checkpoints discounted, like intended-vs-true
-  regressions). In `blind-202608100006` the Spring−OfficeFloor slope CIs are fully
+  their sum. Computed over ALL checkpoints — mutative steps (mandated rule revisions)
+  are genuine signal here: they force both arms to revise the same concern and the arm
+  that isolated it pays less. In `blind-202608100006` the Spring−OfficeFloor slope CIs are fully
   disjoint for `impact_composite` and `impact_mutation` (~12× and ~28×); `impact_godclass`
   alone overlaps, since with the floor+spread both arms pay for additions — the
   discrimination correctly lives in the context-weighted mutation term.
@@ -64,6 +65,72 @@ both arms implement — so on `blind-202608100006` its slope ordering came out *
 (OfficeFloor > Spring). It stays reported for SlopCodeBench comparability, but read it
 as leaf-algorithm-dominated, not as a thesis test; use `erosion_handler` and the impact
 metrics for the concentration signal.
+
+### The structural-impact metric (`impact_stats` in `metrics.py`)
+
+The impact score answers "how much did implementing this rule *disturb existing
+structure*, weighted by how complex that structure was" — the thing erosion can't
+measure because erosion is location-blind. It is computed **per checkpoint** from the
+single `prev→cur` agent diff (so identity questions like renames are local to one
+commit, never a cross-checkpoint tracking problem), over **production Java only**.
+
+**Per-function term.** Every function the diff touches contributes
+
+```
+cost(f) = max(WMC_other(f), 1) · CC(f) · max(1, Δlines(f))
+```
+
+- `WMC_other(f)` = Σ CC of the *other* methods in f's class (from the prev blob) — the
+  surrounding complexity you must hold in your head to change f safely. This is the
+  context weight: mutating a method inside a heavy god-class costs far more than the
+  same edit to a lean class. For a mutation it is `WMC_prev_file − CC_prev(f)`; for a
+  new method added to an existing class it is the class's whole `WMC_prev_file`.
+- The **floor of 1** on `WMC_other` means a brand-new class (WMC_other = 0) still costs
+  `1 · CC · nloc`, so scattering a rule into many cohesionless new classes is *not free*
+  — it closes the fragmentation loophole that a pure `WMC_other` weight would leave open.
+- `CC(f)` is f's cyclomatic complexity; `Δlines(f)` is its changed-line count (a new
+  function's whole body), floored at 1.
+
+**Commit-level spread penalty.** The per-function sum is multiplied by `files_changed`
+(distinct production-Java files the commit touches). Concentrated edits (few files) are
+cheaper than the same work smeared across many — a second, weaker guard against
+fragmentation. NB this term *anti-correlates* with the context weight across the arms
+(Spring concentrates → few files/high WMC_other; OfficeFloor distributes → more
+files/low WMC_other), so it trades a little arm-separation for Goodhart-robustness; it
+was a deliberate choice, not free.
+
+**Reported fields.** `impact_mutation` (sum over modified/renamed existing functions),
+`impact_godclass` (sum over new functions — new files + methods fed into existing
+classes), `impact_composite = impact_mutation + impact_godclass`, all already ×
+`files_changed`; plus the raw counts `impact_files_changed`, `impact_new_files`,
+`impact_new_fns`, `impact_mut_fns`, `impact_renames`.
+
+**Rename discipline.** A within-commit **rename** — a "new" function name whose body
+matches a disappeared prev function (line-set Jaccard ≥ `IMPACT_RENAME_JACCARD` = 0.6) —
+is scored as a *mutation*, not a free new addition, so edits can't hide behind renames.
+
+**Three slices reported.** Each sub-score is emitted in three views — all checkpoints
+(the base field), additive-only (`_add`), and mutative-only (`_mut`) — synthesised in
+`analyze` as blank-on-the-other-type view columns off the raw fields (so no recompute).
+Additive-only is the purest placement signal (`impact_mutation_add` ≈ 28× on
+blind-202608100006); mutative-only is where the absolute cost concentrates (both arms
+spike, Spring still ~4× OfficeFloor); all-checkpoints is the blend. All 18 arm×slice
+slopes separate with disjoint CIs.
+
+**All checkpoints count (no additive-only discount).** Unlike the correctness metrics
+(which split intended vs true regressions), impact is computed over EVERY checkpoint.
+The context weight means a mutative checkpoint is not spurious re-touch but genuine
+signal: a mandated rule revision forces both arms to change the same concern, and the
+arm that isolated it pays less (Spring ~36k per mutative checkpoint vs OfficeFloor
+~4.8k). Discounting them (as the old count-based blast metric did) would drop the most
+on-point evidence — mutative steps directly test "cost of change when requirements
+evolve" — and would make impact the only structural metric not computed over all
+checkpoints. Including them compresses the additive-only ratio (17× → ~10× composite)
+because mutative is a harder test where OfficeFloor must also mutate; that is honest
+signal. New isolated units in new files cost their small floored amount; the
+discrimination comes from the context-weighted mutation of existing code. On
+`blind-202608100006` (all checkpoints): `impact_composite` slope Spring ≫ OfficeFloor
+with disjoint CIs, and `impact_mutation` is the cleanest single discriminator.
 
 ## Module map (`harness/`)
 
