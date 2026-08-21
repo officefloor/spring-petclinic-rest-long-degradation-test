@@ -31,10 +31,31 @@ YAML-composed functions), then measure how each codebase degrades as ~60
 accumulating change "checkpoints" land on the **one** endpoint `POST /api/owners`.
 Thesis: Spring's single handler erodes (complexity concentrates into a
 god-method; comprehension cost climbs) while OfficeFloor stays flat (each rule is
-a new small wired function). **Erosion slope and blast-radius are the decisive
-statistics.** Methods borrow from SlopCodeBench (arXiv:2603.24755) for Erosion,
-Verbosity, degradation slope and prompt arms, and SWE-CI (arXiv:2603.03823) for
-Normalized Change, EvoScore and Zero-Regression Rate.
+a new small wired function). Methods borrow from SlopCodeBench (arXiv:2603.24755)
+for Erosion, Verbosity, degradation slope and prompt arms, and SWE-CI
+(arXiv:2603.03823) for Normalized Change, EvoScore and Zero-Regression Rate.
+
+**Decisive statistics (updated after run `blind-202608100006`).** The hypothesis
+is about *where* complexity lands (concentration vs. distribution), so the decisive
+statistics are the ones that measure placement and blast radius:
+
+- **Blast radius** — `existing_fns_modified`, zero-blast checkpoints, `files_created`.
+- **Concentration** — `entry_cc` and `wmc_max` (god-method / god-class), corroborated
+  by `erosion_handler` (erosion scoped to the entry handler's own class).
+- **Structural impact** — `impact_composite` / `impact_godclass` / `impact_mutation`:
+  per-checkpoint blast on *existing* code weighted by the complexity disturbed
+  (`CC·Δlines` of mutated functions + `max(0, WMC_other−floor)·CC` of new methods fed
+  into existing classes; new files/isolated units cost 0). Additive-only (mutative
+  checkpoints discounted, like intended-vs-true regressions). In `blind-202608100006`
+  the Spring−OfficeFloor slope CIs are fully disjoint for `impact_composite`/`godclass`.
+
+**Whole-app `erosion` is demoted from decisive.** It is location-blind (it can't tell
+a CC-19 god-method from a CC-19 isolated single-responsibility algorithm) and is
+dominated by architecture-neutral leaf algorithms (soundex, phone/E.164, dedup) that
+both arms implement — so on `blind-202608100006` its slope ordering came out *backwards*
+(OfficeFloor > Spring). It stays reported for SlopCodeBench comparability, but read it
+as leaf-algorithm-dominated, not as a thesis test; use `erosion_handler` and the impact
+metrics for the concentration signal.
 
 ## Module map (`harness/`)
 
@@ -43,7 +64,7 @@ Normalized Change, EvoScore and Zero-Regression Rate.
 | `run_experiment.py` | the driver. `run_chain` walks checkpoints; two commits per checkpoint; the agent-view / measurement-suite / gate / capture flow. Entry point `main`. |
 | `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation). `probe()` is the read-only cold-reader. |
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
-| `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion, hotspot, WMC, blast-radius, change-spread, re-edit coupling; jscpd + ast-grep for verbosity. |
+| `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. |
 | `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
 | `__init__.py` | shared helpers: `git_out` (graceful, for derive/analyze), `expand_path`. |
