@@ -393,6 +393,20 @@ structural metrics, and lists them under **Invalid gates** in `summary.md` so th
 exclusion is never silent. Old captures are recognised by signature, so re-analysis
 repairs runs recorded before the fix.
 
+### Rare-event guard (`analyze.MIN_EVENTS`)
+
+A validation statistic resting on one or two checkpoints is not a result, and a
+bootstrap CI does not know that. In `full-202608102319` the `true_regressions`
+correlation ran on a series that was zero at 598 of 599 scored checkpoints and
+still returned ρ = +0.052 with a CI excluding zero, because every resample carried
+the same lone event. `spearman_ci` now also returns `k` (`_informative`: values
+differing from the series' modal value) and refuses to report below
+`MIN_EVENTS`; the same floor gates the `impact_composite`-vs-true-regression
+medians. Suppressed rows are printed as **not tested** with their `k`, never
+dropped — an absent row is indistinguishable from one nobody computed. Continuous
+outcomes (cost, tokens, time) are untied so `k ≈ n` and they are unaffected;
+`blind-202608100006` keeps its published ρ values (k = 11 per arm).
+
 ## Running it
 
 `--test-mode {blind,full}` is REQUIRED on every run (no default); see the blind-agent

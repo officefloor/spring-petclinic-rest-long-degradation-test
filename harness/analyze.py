@@ -20,7 +20,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 import yaml
@@ -56,6 +56,12 @@ def _b(x):
 # ---------------------------------------------------------------------------
 
 _BRANCH_RE = re.compile(r"^evolve/([^/]+)/([^/]+)/([^/]+)/chain(\d+)$")
+
+# Fewest distinct events a validation statistic may rest on before it is reported
+# as a number. Below this the correlation/median is one or two checkpoints wearing
+# a confidence interval — the summary says so explicitly instead of printing it or
+# silently dropping the row. Bites the rare-event outcomes (true_regressions) only.
+MIN_EVENTS = 5
 
 
 def _evolve_branches(cfg: dict, run_id: str | None = None):
@@ -459,12 +465,29 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
+def _informative(vals: list[float]) -> int:
+    """Observations that differ from the series' most common value.
+
+    A near-constant series (e.g. `true_regressions`, zero at all but one of 599
+    checkpoints once the crashed gates are excluded) can still yield a ρ with a
+    bootstrap CI that excludes zero, because every resample carries the same lone
+    event. The number reads as a construct-validity result and is an artefact of
+    one point. Continuous outcomes (cost, tokens, time) are untied, so this counts
+    ~n for them and only bites the degenerate case."""
+    if not vals:
+        return 0
+    counts = Counter(vals)
+    return len(vals) - counts.most_common(1)[0][1]
+
+
 def spearman_ci(rows: list[dict], xf: str, yf: str,
-                n_boot: int = 1000, seed: int = 0) -> tuple[float, float, float, int]:
+                n_boot: int = 1000, seed: int = 0) -> tuple[float, float, float, int, int]:
     """Spearman ρ(xf, yf) over checkpoints with a chain-cluster bootstrap CI.
 
     Chains are the resampling unit (checkpoints within a chain are not independent).
-    Returns (rho, ci_lo, ci_hi, n)."""
+    Returns (rho, ci_lo, ci_hi, n, k) where k is `_informative` on the y series —
+    the caller must refuse to report a ρ built on too few distinct events rather
+    than dropping the row silently."""
     by_chain: dict[int, list[tuple[float, float]]] = defaultdict(list)
     for r in rows:
         xv, yv = _f(r.get(xf, "")), _f(r.get(yf, ""))
@@ -473,8 +496,9 @@ def spearman_ci(rows: list[dict], xf: str, yf: str,
     chains = [c for c in by_chain if by_chain[c]]
     pts = [p for c in chains for p in by_chain[c]]
     n = len(pts)
-    if n < 5:
-        return (math.nan, math.nan, math.nan, n)
+    k = _informative([p[1] for p in pts])
+    if n < 5 or k < MIN_EVENTS:
+        return (math.nan, math.nan, math.nan, n, k)
     rho = _spearman(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]))
     rng = np.random.default_rng(seed)
     boots = []
@@ -486,9 +510,9 @@ def spearman_ci(rows: list[dict], xf: str, yf: str,
             if not math.isnan(b):
                 boots.append(b)
     if not boots:
-        return (rho, math.nan, math.nan, n)
+        return (rho, math.nan, math.nan, n, k)
     lo, hi = np.percentile(boots, [2.5, 97.5])
-    return (rho, float(lo), float(hi), n)
+    return (rho, float(lo), float(hi), n, k)
 
 
 def phase_means(rows: list[dict], field: str):
@@ -736,6 +760,9 @@ def main() -> int:
                  "actually cost more and break more?\n")
     lines.append("| arm/strategy | outcome | Spearman ρ | CI low | CI high | n |")
     lines.append("|---|---|---:|---:|---:|---:|")
+    # Outcomes that come from the GATE: computed only over checkpoints that
+    # returned a verdict (an aborted gate has no breakage count to correlate).
+    CORRECTNESS_OUTCOMES = {"true_regressions"}
     OUTCOMES = [("cost_usd", "agent $ (independent)"),
                 ("cache_read_tokens", "comprehension (independent)"),
                 ("duration_api_ms", "model time (independent)"),
@@ -743,8 +770,13 @@ def main() -> int:
                 ("reedit_rate", "temporal coupling (git-derived)")]
     for gk, grp in sorted(groups.items()):
         for field, note in OUTCOMES:
-            rho, lo, hi, n = spearman_ci(grp, "impact_composite", field)
+            rho, lo, hi, n, k = spearman_ci(scored(grp) if field in CORRECTNESS_OUTCOMES else grp,
+                                            "impact_composite", field)
             if math.isnan(rho):
+                # Reported, not dropped: "we could not test this" is itself a result,
+                # and a silently missing row looks the same as a row nobody ran.
+                lines.append(f"| {gk[0]}/{gk[1]} | {note} | not tested | | | "
+                             f"{k} event(s) < {MIN_EVENTS} of {n} |")
                 continue
             lines.append(f"| {gk[0]}/{gk[1]} | {note} | {rho:+.3f} | {lo:+.3f} | {hi:+.3f} | {n} |")
     lines.append("")
@@ -756,8 +788,14 @@ def main() -> int:
                if (_f(r.get("true_regressions", "")) or 0) > 0 and not math.isnan(_f(r.get("impact_composite", "")))]
         ntr = [_f(r.get("impact_composite", "")) for r in scored(grp)
                if (_f(r.get("true_regressions", "")) or 0) == 0 and not math.isnan(_f(r.get("impact_composite", "")))]
-        if wtr and ntr:
-            lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {np.median(ntr):.0f} | {len(wtr)} |")
+        base = f"{np.median(ntr):.0f}" if ntr else ""
+        if len(wtr) >= MIN_EVENTS and ntr:
+            lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {base} | {len(wtr)} |")
+        else:
+            # A median of one or two checkpoints is not a median. Say so rather than
+            # printing it, and rather than omitting the arm without explanation.
+            lines.append(f"| {gk[0]}/{gk[1]} | not reported (< {MIN_EVENTS} true regressions) | "
+                         f"{base} | {len(wtr)} |")
     lines.append("")
 
     # Phase means
