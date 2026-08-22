@@ -589,6 +589,7 @@ METRICS_TO_PLOT = [
     ("existing_fns_modified", "Blast radius — pre-existing functions modified per rule"),
     ("files_created", "New production files created per rule"),
     ("wmc_max", "God-class — max Weighted Methods per Class (WMC)"),
+    ("wmc_handler", "God-class, handler class only — WMC of the same ROLE in both arms"),
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
@@ -716,7 +717,7 @@ def main() -> int:
     slope_fields = ["erosion", "erosion_scoped", "erosion_handler", "verbosity", "cost_usd",
                     "cache_read_tokens", "duration_api_ms", "hotspot_cc",
                     "existing_fns_modified", "files_created",
-                    "wmc_max", "entry_cc", "packages_touched", "reedit_rate",
+                    "wmc_max", "wmc_handler", "entry_cc", "packages_touched", "reedit_rate",
                     "impact_mutation", "impact_godclass", "impact_composite"]
     # each impact sub-score also sliced additive-only (_add) and mutative-only (_mut)
     slope_fields += [f + s for f in IMPACT_BASE_FIELDS for s in ("_add", "_mut")]
@@ -920,10 +921,18 @@ def main() -> int:
         return float(np.mean(vals)) if vals else math.nan
 
     lines.append("## God-class, entry-handler, spread, temporal coupling\n")
-    lines.append("| arm/strategy | final WMC_max | final entry CC | mean pkgs/rule | mean re-edit rate |")
-    lines.append("|---|---:|---:|---:|---:|")
+    lines.append("`WMC_max` is the heaviest class whatever its role, so the arms can answer with "
+                 "different KINDS of class (an entity of accessors vs a controller of decisions). "
+                 "`WMC_handler` pins the measurement to the class the endpoint routes through in "
+                 "both arms, and is the like-for-like god-class number.\n")
+    lines.append("| arm/strategy | final WMC_max | final WMC_handler | handler class | final entry CC | mean pkgs/rule | mean re-edit rate |")
+    lines.append("|---|---:|---:|---|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         wmc_f = _final_mean(grp, "wmc_max")
+        wmch_f = _final_mean(grp, "wmc_handler")
+        hcls = Counter(str(r.get("wmc_handler_class") or "") for r in grp
+                       if str(r.get("wmc_handler_class") or "").strip())
+        hcls_s = hcls.most_common(1)[0][0] if hcls else ""
         ecc_f = _final_mean(grp, "entry_cc")
         pk = [_f(r.get("packages_touched")) for r in grp]
         pk = [v for v in pk if not math.isnan(v)]
@@ -932,7 +941,8 @@ def main() -> int:
         cell = lambda v: "" if math.isnan(v) else f"{v:.3g}"
         pk_m = f"{np.mean(pk):.2f}" if pk else ""
         rr_m = f"{np.mean(rr):.3f}" if rr else ""
-        lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(ecc_f)} | {pk_m} | {rr_m} |")
+        lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(wmch_f)} | {hcls_s} | "
+                     f"{cell(ecc_f)} | {pk_m} | {rr_m} |")
     lines.append("")
 
     # Plots

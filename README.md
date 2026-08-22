@@ -428,7 +428,7 @@ gitignored** output to `results/<run_id>/analysis/`.
 It reports the degradation slope `m` with a 95% bootstrap CI over chains, per
 arm/strategy, for the three erosion scopes, `verbosity`, `cost_usd`,
 `cache_read_tokens`, `duration_api_ms`, `hotspot_cc`, `fn_nloc_max`,
-`existing_fns_modified`, `files_created`, `wmc_max`, `entry_cc`,
+`existing_fns_modified`, `files_created`, `wmc_max`, `wmc_handler`, `entry_cc`,
 `packages_touched`, `reedit_rate`, and the impact family (`impact_mutation` /
 `impact_godclass` / `impact_composite`, each in all / additive-only / mutative-only
 slices); phase-binned means; EvoScore (γ ∈ {1, 1.5, 2}); Zero-Regression Rate (over
@@ -440,7 +440,7 @@ the commits; correctness/agent columns come from `capture/`. Add it to
 `metrics.compute_all` and re-run `analyze`; no agent re-invocation.
 
 **Confirms the thesis** if the *concentration* slopes climb for Spring and stay
-flat for OfficeFloor with disjoint CIs — `entry_cc`, `wmc_max`, handler-scoped
+flat for OfficeFloor with disjoint CIs — `entry_cc`, `wmc_handler`, handler-scoped
 erosion, and above all the **structural-impact** score (`impact_composite` /
 `impact_mutation`) — while blast radius (`existing_fns_modified`) and coupling
 (`reedit_rate`) stay lower for OfficeFloor, and OfficeFloor shows higher EvoScore at
@@ -517,7 +517,8 @@ package distribution (healthy growth = count rises while avg/max stay flat).
 
 | field | definition |
 |---|---|
-| `wmc_max` (+ `_class`, `_methods`, `_nloc`) | god-**class** indicator: highest Weighted-Methods-per-Class (Σ method CC) in the touched subsystem |
+| `wmc_max` (+ `_class`, `_methods`, `_nloc`) | god-**class** indicator: highest Weighted-Methods-per-Class (Σ method CC) in the touched subsystem. Role-blind: the arms can answer with different kinds of class (an entity of accessors vs a controller of decisions), so prefer `wmc_handler` for between-arm claims |
+| `wmc_handler` (+ `_class`, `_methods`, `_nloc`) | the same WMC pinned to the class the create endpoint routes through, in **both** arms (same class scoping as `erosion_handler`). The like-for-like god-class number; blank until that class exists |
 | `entry_cc` (+ `_nloc`, `_fn`) | cyclomatic complexity of the **one** function the create endpoint routes through (`addOwner` / `BuildOwner::service`) — does the front door bloat |
 | `packages_touched` | distinct packages the rule's production-Java diff reaches (change spread) |
 | `reedit_rate` (+ `reedit_body_lines`, `reedit_prior_lines`) | temporal coupling: of the lines in functions this checkpoint edited, the share authored by **earlier** checkpoints |

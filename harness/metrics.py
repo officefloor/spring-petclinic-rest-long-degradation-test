@@ -408,6 +408,57 @@ def entry_handler_stats(fns: list[dict], pattern: Optional[str]) -> dict:
     }
 
 
+def _handler_files(fns: list[dict], pattern: Optional[str]) -> set[str]:
+    """File(s) holding the entry handler's own class, for the class-scoped handler
+    metrics. The entry_handler convention is 'Class::method', and the CLASS is what
+    is wanted: every method that accreted onto the handler's class, not just the one
+    entry method. Matching the file is also robust to lizard's checkpoint-to-
+    checkpoint variation in whether it names a function 'Class::method' or bare
+    'method', which would otherwise blank the metric exactly on the checkpoints
+    where the handler bloats most. Empty if the pattern is absent or unmatched (e.g.
+    before the class exists)."""
+    if not pattern:
+        return set()
+    m = re.match(r"([A-Za-z_]\w*)::", pattern)
+    if m:
+        stem = m.group(1) + ".java"
+        files = {f["file"] for f in fns if f["file"].split("/")[-1] == stem}
+        if files:
+            return files
+    rx = re.compile(pattern)   # pattern not in Class::method form, or class absent
+    return {f["file"] for f in fns if rx.search(f"{f['file']}::{f['name']}")}
+
+
+def handler_wmc_stats(fns: list[dict], pattern: Optional[str]) -> dict:
+    """WMC of the entry handler's OWN class: the role-comparable god-class number.
+
+    `wmc_max` reports the heaviest class *whatever it is*, and the two arms answer
+    with different kinds of class. On full-202608102319 OfficeFloor's heaviest is
+    the Owner ENTITY (roughly 60 accessors at CC 1, WMC ~67) while Spring's is
+    usually the CONTROLLER (~32 methods averaging CC 3+, WMC ~142). Same metric,
+    different meaning: one is data, the other is decisions. Comparing them across
+    arms compares roles, not architectures.
+
+    This pins the measurement to the same ROLE in both arms -- the class the create
+    endpoint routes through -- so the god-class claim can be made on a like-for-like
+    number, exactly as `erosion_handler` does for erosion. Blank when the pattern is
+    null or the class is not present yet."""
+    blank = {"wmc_handler": None, "wmc_handler_class": None,
+             "wmc_handler_methods": None, "wmc_handler_nloc": None}
+    files = _handler_files(fns, pattern)
+    if not files:
+        return dict(blank)
+    grp = [f for f in fns if f["file"] in files]
+    if not grp:
+        return dict(blank)
+    return {
+        "wmc_handler": sum(g["cc"] for g in grp),
+        "wmc_handler_class": ", ".join(sorted(p.split("/")[-1] for p in files)),
+        "wmc_handler_methods": len(grp),
+        "wmc_handler_nloc": sum(g["nloc"] for g in grp),
+    }
+
+
 def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
                            cc_threshold: int = CC_THRESHOLD) -> dict:
     """Erosion (Eq.3) restricted to the entry handler's OWN class file(s).
@@ -426,22 +477,7 @@ def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
     blank = {"erosion_handler": None, "erosion_handler_high_mass": None,
              "erosion_handler_total_mass": None, "erosion_handler_hot_fns": None,
              "erosion_handler_class": None, "erosion_handler_nfns": None}
-    if not pattern:
-        return dict(blank)
-    # Scope by the handler's CLASS FILE. The entry_handler convention is
-    # 'Class::method', and the class is what we want — every method that accreted
-    # onto the handler's class, not just the one entry method. Matching the file is
-    # also robust to lizard's checkpoint-to-checkpoint variation in whether it names
-    # a function 'Class::method' or bare 'method'; matching the method name blanks
-    # the metric exactly on the checkpoints where the handler bloats most.
-    m = re.match(r"([A-Za-z_]\w*)::", pattern)
-    files: set[str] = set()
-    if m:
-        stem = m.group(1) + ".java"
-        files = {f["file"] for f in fns if f["file"].split("/")[-1] == stem}
-    if not files:  # pattern not in Class::method form, or the class isn't present yet
-        rx = re.compile(pattern)
-        files = {f["file"] for f in fns if rx.search(f"{f['file']}::{f['name']}")}
+    files = _handler_files(fns, pattern)   # identical class scoping to handler_wmc_stats
     if not files:
         return dict(blank)
     ed = erosion_detail([f for f in fns if f["file"] in files], cc_threshold)
@@ -665,6 +701,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     wmc = wmc_stats(touched_fns)                             # god-class over the subsystem
     eh = entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: found even if unchanged
     ehe = handler_scoped_erosion(fns, arm_cfg.get("entry_handler"))  # erosion of the handler's own class
+    hw = handler_wmc_stats(fns, arm_cfg.get("entry_handler"))    # god-class, pinned to the SAME role in both arms
     spread = change_spread(worktree, prev_ref, cur_ref)
     reedit = reedit_stats(worktree, base_commit, prev_ref, cur_ref)  # temporal coupling vs base
     imp = impact_stats(worktree, prev_ref, cur_ref)  # blast weighted by complexity disturbed
@@ -692,6 +729,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     row.update(wmc)
     row.update(eh)
     row.update(ehe)
+    row.update(hw)
     row.update(spread)
     row.update(reedit)
     row.update(imp)
@@ -707,6 +745,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "blast_radius": br,
         "blast_radius_detail": brd,
         "wmc": wmc,
+        "wmc_handler": hw,
         "entry_handler": eh,
         "erosion_handler": ehe,
         "change_spread": spread,

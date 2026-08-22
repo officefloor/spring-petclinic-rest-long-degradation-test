@@ -40,8 +40,16 @@ is about *where* complexity lands (concentration vs. distribution), so the decis
 statistics are the ones that measure placement and blast radius:
 
 - **Blast radius** — `existing_fns_modified`, zero-blast checkpoints, `files_created`.
-- **Concentration** — `entry_cc` and `wmc_max` (god-method / god-class), corroborated
+- **Concentration** — `entry_cc` and `wmc_handler` (god-method / god-class), corroborated
   by `erosion_handler` (erosion scoped to the entry handler's own class).
+  **Prefer `wmc_handler` over `wmc_max` for the between-arm claim.** `wmc_max` reports
+  the heaviest class *whatever its role*, and the arms answer with different kinds of
+  class: on `full-202608102319` OfficeFloor's heaviest is the Owner ENTITY in 9 of 10
+  chains (≈60 accessors at CC 1, WMC ≈67) while Spring's is usually the CONTROLLER
+  (≈32 methods averaging CC 3+, WMC ≈142) — and the entity in 4 of 10 chains, so the
+  metric partly tracks entity growth in both arms. `wmc_handler` pins the measurement
+  to the class the endpoint routes through in both arms (same `_handler_files` scoping
+  as `erosion_handler`), which is the like-for-like number. `wmc_max` stays reported.
 - **Structural impact** — `impact_composite` / `impact_mutation` / `impact_godclass`:
   per-checkpoint blast on existing code *weighted by the complexity of the context it
   touches* (`max(WMC_other,1)·CC·max(1,Δlines)·files_changed`; fields and formula defined

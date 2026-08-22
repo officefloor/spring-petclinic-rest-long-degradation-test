@@ -91,6 +91,9 @@ CSV_FIELDS = [
     "existing_fns_modified", "files_modified", "files_created", "churn_added", "churn_removed",
     # god-class (WMC), entry-handler bloat, package reach, temporal coupling
     "wmc_max", "wmc_max_class", "wmc_max_methods", "wmc_max_nloc",
+    # WMC pinned to the entry handler's own class: role-comparable across arms,
+    # where wmc_max answers with whatever class is heaviest (entity vs controller).
+    "wmc_handler", "wmc_handler_class", "wmc_handler_methods", "wmc_handler_nloc",
     "entry_cc", "entry_nloc", "entry_fn", "packages_touched",
     "reedit_body_lines", "reedit_prior_lines", "reedit_rate",
     # structural-impact score: context-weighted blast (max(WMC_other,1)·CC·max(1,Δlines)·files)
