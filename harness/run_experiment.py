@@ -886,6 +886,10 @@ def main() -> int:
                          "(prior tests hidden). 'full' = the full cp01..cpK regression suite "
                          "(real CpNN names). The post-agent gate runs the full suite either way.")
     ap.add_argument("--arm", action="append", help="restrict to arm(s); default all")
+    ap.add_argument("--model", help="override config's model id (e.g. claude-opus-5). "
+                    "The chosen model is recorded in provenance.json, so a run is "
+                    "self-describing; use a descriptive --run-id to keep branches "
+                    "from different models apart. See docs/RUN_WITH_A_DIFFERENT_MODEL.md.")
     ap.add_argument("--strategy", help="override active prompt strategy")
     ap.add_argument("--chain", type=int, help="run a single chain index")
     ap.add_argument("--max-checkpoints", type=int)
@@ -907,6 +911,14 @@ def main() -> int:
     # Test mode is a per-run choice, not a config default: it MUST be selected on the CLI
     # (argparse enforces required). Stored on cfg so the sandbox/tamper/provenance paths see it.
     cfg["test_mode"] = args.test_mode
+
+    # Model is a config default (config.yaml: model:) but overridable per run on the
+    # CLI, so anyone can re-run the experiment against a different AI without editing
+    # config. The value flows through cfg["model"] to every agent turn, the probe, and
+    # provenance.json, so a run stays self-describing regardless of where the id came
+    # from. See docs/RUN_WITH_A_DIFFERENT_MODEL.md.
+    if args.model:
+        cfg["model"] = args.model
 
     # Resolve the harness's own relative paths against the config file's
     # directory, so the whole tree can be moved without editing paths.
@@ -948,6 +960,7 @@ def main() -> int:
     strategy = args.strategy or cfg["active_strategy"]
     chains = [args.chain] if args.chain is not None else range(cfg["chains"])
     print(f"run_id = {run_id}")
+    print(f"model = {cfg['model']}")
     print(f"test mode = {args.test_mode}: {TEST_MODES[args.test_mode]}")
 
     # The run persists NO derived CSV — only raw capture onto the evolve branches.

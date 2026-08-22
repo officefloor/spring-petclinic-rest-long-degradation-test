@@ -368,7 +368,10 @@ false-match:
 ## Running it
 
 `--test-mode {blind,full}` is REQUIRED on every run (no default); see the blind-agent
-pillar above for what each mode shows the agent.
+pillar above for what each mode shows the agent. `--model <id>` overrides `config.yaml`'s
+`model:` for one run (passed straight to `claude --model`, recorded in `provenance.json`);
+it exists so third parties can reproduce the experiment against a different AI without
+editing config — see [`docs/RUN_WITH_A_DIFFERENT_MODEL.md`](docs/RUN_WITH_A_DIFFERENT_MODEL.md).
 
 ```bash
 python -m harness.run_experiment --config config.yaml --test-mode blind --dry-run          # wiring check
@@ -394,6 +397,12 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
 
 ## Config knobs (`config.yaml`)
 
+- `model`: the fixed coding agent (default `claude-opus-4-8`). Overridable per run
+  with `--model` (no config edit needed); the value flows through `cfg["model"]` to
+  every agent turn, the probe, and `provenance.json`, so a run is self-describing
+  about which AI produced it. This is the seam third parties use to reproduce the
+  experiment against a different model — see
+  [`docs/RUN_WITH_A_DIFFERENT_MODEL.md`](docs/RUN_WITH_A_DIFFERENT_MODEL.md).
 - `chains`: independent runs **per (arm, strategy)**; total = chains × arms. `10`
   for tight CIs, `1` for validation.
 - `arms.<arm>.entry_handler`: the ONE create function whose CC trajectory is

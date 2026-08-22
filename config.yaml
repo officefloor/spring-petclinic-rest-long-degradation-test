@@ -2,7 +2,10 @@
 # Fill in the two branch base refs and the hotspot method names, then smoke-test
 # with --dry-run and --max-checkpoints 1.
 
-model: claude-opus-4-8
+model: claude-opus-4-8         # the fixed coding agent. Override per run with --model
+                              # (e.g. --model claude-opus-5) to reproduce with a different
+                              # AI; see docs/RUN_WITH_A_DIFFERENT_MODEL.md. Recorded in
+                              # provenance.json either way, so a run is self-describing.
 chains: 10                    # independent runs per (arm, strategy). 10 = target for tight CIs.
 active_strategy: just-solve   # which prompt strategy to run by default
 agent_timeout: 3600

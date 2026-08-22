@@ -16,6 +16,12 @@ makes **architecture** the independent variable: Spring `@RestController`
 methods vs OfficeFloor YAML-composed functions. It borrows its measurement
 methods from two benchmarks:
 
+> **Think a better AI would change the result?** The agent is fixed here on
+> purpose, but the model is a one-flag override — re-run the whole experiment
+> against any model and see whether the architecture signal holds. See
+> **[docs/RUN_WITH_A_DIFFERENT_MODEL.md](docs/RUN_WITH_A_DIFFERENT_MODEL.md)**,
+> and please share your branches back for independent replication.
+
 - **SlopCodeBench** (arXiv:2603.24755): no-context iterative extension;
   the **Erosion** and **Verbosity** metrics; degradation **slope**; the
   prompt-intervention arms (`just-solve` / `anti_slop` / `plan_first`).
@@ -359,10 +365,17 @@ python -m harness.run_experiment --config config.yaml --test-mode blind --run-id
 python -m harness.run_experiment --config config.yaml --test-mode blind --strategy anti_slop
 python -m harness.run_experiment --config config.yaml --test-mode blind --strategy plan_first
 
+# reproduce with a DIFFERENT AI model (the model is the only variable that changes):
+python -m harness.run_experiment --config config.yaml --test-mode blind --model claude-opus-5 --run-id opus5
+
 # analysis (recomputes from the branches' commits + capture; defaults to latest run_id):
 python -m harness.analyze --config config.yaml
 python -m harness.analyze --config config.yaml --run-id sprint7-baseline
 ```
+
+**Want to try a different AI model?** The full walkthrough — cost/time budgeting,
+what to compare, and how to share your run back for independent replication — is
+in **[docs/RUN_WITH_A_DIFFERENT_MODEL.md](docs/RUN_WITH_A_DIFFERENT_MODEL.md)**.
 
 ## Where results live
 
