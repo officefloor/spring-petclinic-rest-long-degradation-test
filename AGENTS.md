@@ -123,7 +123,11 @@ a multi-hour chain. Then for each checkpoint k, **two commits**:
    (the priors the agent never saw), overwriting any agent test-tamper, so a
    weakened visible test can't buy a false pass.
 5. **Gate** (`correctness.run_tests`) against that full suite → regressions become
-   REAL: a failure on a prior rule the agent couldn't see is the signal.
+   REAL: a failure on a prior rule the agent couldn't see is the signal. A gate that
+   **aborts** (Surefire fork crash) is retried up to `build.test_attempts`; if every
+   try aborts the checkpoint is flagged `gate_invalid` and its correctness fields are
+   left BLANK (missing data, never a score). A gate whose tests merely **fail** is
+   never retried — that is the measurement. See *Invalid gates* below.
 6. **Structural metrics** over the agent commit (log-only; analyze recomputes).
 7. **Cold-reader probe** at `probe.at_checkpoints`.
 8. **Raw capture** (`cpNN.json`, `.agent.jsonl`, `.agent.diff`, `.build.log`, `.probe.jsonl`)
@@ -365,6 +369,30 @@ false-match:
   auth classification matters: **before the 2026-08 fix, an OAuth expiry was an
   unclassified no-op that silently committed empty deltas and burned whole chains.**
 
+### Invalid gates (`correctness._gate_invalid`) — the same lesson, applied to the gate
+
+An **aborted** gate is not a failed gate. `count_regressions` is
+`prior_passing - now_passing`, so a run that produced NO results scores as a
+regression on **every prior rule** — the more checkpoints a chain has survived, the
+more catastrophic the phantom looks. Two detectors, both narrow:
+- **no results while the build compiled.** At checkpoint K the authored suite always
+  holds ≥ cp01's test, so an empty map cannot be legitimate. A *failed build* exits
+  earlier with `build_ok=False` and stays scored — the agent breaking compilation is
+  a real verdict.
+- **a Surefire fork-death marker** (`_CRASH_MARKERS`) in the test console, which is
+  how a *partial* run announces that the rest of the suite never got a verdict.
+
+Retry is deliberately asymmetric: an abort is retried (`build.test_attempts`,
+default 3, `test_retry_seconds` apart), a test **failure never is** — retrying
+failures would launder exactly the regressions this experiment exists to measure.
+After the last failed try the checkpoint is `gate_invalid`: correctness fields blank,
+`prior_passing` **carried forward unchanged** (adopting the empty set would corrupt
+the next checkpoint too, then fake a recovery on the one after), chain continues.
+`analyze` drops these rows from every correctness aggregate (`scored()`), keeps their
+structural metrics, and lists them under **Invalid gates** in `summary.md` so the
+exclusion is never silent. Old captures are recognised by signature, so re-analysis
+repairs runs recorded before the fix.
+
 ## Running it
 
 `--test-mode {blind,full}` is REQUIRED on every run (no default); see the blind-agent
@@ -416,6 +444,16 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
 
 ## Gotchas / lessons (2026-08)
 
+- **A crashed gate used to read as a mass regression.** On `full-202608102319` a
+  Surefire fork died (exit 134, `The forked VM terminated without properly saying
+  goodbye`) at 3 OfficeFloor checkpoints and 1 Spring one. Each recorded
+  `build_ok=True, total_selected=0, results={}`, which scored as the whole prior
+  suite regressing: OfficeFloor's true-regression count read **143** when the real
+  figure was **0** (Spring: 34 → 4). The tell is `total_selected=0` on a checkpoint
+  whose neighbours pass 60+ tests, plus the agent's own turn reporting a green suite.
+  Fixed by `_gate_invalid` + retry (above); `analyze` now repairs old captures by
+  signature, so re-run it rather than trusting any correctness number produced
+  before 2026-08-22.
 - **"60 checkpoints captured" ≠ valid.** An auth-dead turn still writes a capture
   record. The dead signature is `agent.ok=False, cost_usd=0, output_tokens=0,
   num_turns=1` and an empty agent commit. Always scan for it before trusting a

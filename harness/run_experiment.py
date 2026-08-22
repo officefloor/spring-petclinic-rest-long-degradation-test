@@ -75,7 +75,7 @@ CSV_FIELDS = [
     "agent_ok", "cost_usd", "input_tokens", "cache_read_tokens", "output_tokens",
     "num_turns", "duration_ms", "duration_api_ms",
     # correctness
-    "build_ok", "total_selected", "strict_pass", "iso_pass", "core_pass",
+    "build_ok", "gate_invalid", "total_selected", "strict_pass", "iso_pass", "core_pass",
     "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
     "regr_p", "regr_t", "regressions", "true_regressions", "checkpoint_type", "normalized_change",
     # structure (final numbers + the intermediates they are computed from)
@@ -572,9 +572,13 @@ def _log_checkpoint(row: dict, where: str, wt: str, base_for_cp: str,
     api_s = round((row.get("duration_api_ms") or 0) / 1000)
     cache_k = (row.get("cache_read_tokens") or 0) // 1000
     print(f"  == {where} | cp{k:02d} [{phase}] {cid} ==")
-    print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
-          f"regressions={row['regressions']} norm_change={row['normalized_change']} "
-          f"build_ok={row['build_ok']} selected={row['total_selected']}")
+    if row.get("gate_invalid") is True:
+        print(f"    tests  : GATE INVALID (aborted run, no verdict) — correctness is "
+              f"missing data for this checkpoint, not a failure")
+    else:
+        print(f"    tests  : strict={row['strict_pass']} iso={row['iso_pass']} core={row['core_pass']} "
+              f"regressions={row['regressions']} norm_change={row['normalized_change']} "
+              f"build_ok={row['build_ok']} selected={row['total_selected']}")
     # Which acceptance tests failed, so a red checkpoint is legible at a glance. A
     # failure in this checkpoint's own CpNN class means the agent didn't fully solve
     # it; a failure in a PRIOR CpMM class is a regression (intended only if this is a
@@ -678,8 +682,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # Derived numbers below are computed ONLY to narrate progress in the log — they
     # are never persisted. The branch stores raw capture; analyze recomputes.
     prior_passing: set[str] = set()
+    pending_mutated: list[int] = []   # `mutates` of aborted checkpoints, owed to the next scored gate
     captures: list[dict] = []
-    strict_count = regr_count = 0  # running tallies for the results commit headline
+    strict_count = regr_count = invalid_count = 0  # running tallies for the results commit headline
 
     limit = max_cp or n
     for cp in checkpoints[:limit]:
@@ -780,10 +785,24 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # A mutative checkpoint's `mutates` lists the prior rules it deliberately
         # changes; their tests are expected to change, so regressions there are
         # intended. true_regressions counts only breakage on the un-mutated surface.
-        mutated = [int(m) for m in (cp.get("mutates") or [])]
+        # `pending_mutated` carries the `mutates` of any checkpoint whose gate aborted:
+        # prior_passing then predates it, so the next scored diff spans it and must
+        # inherit its intended-mutation exemption — otherwise a crashed MUTATIVE
+        # checkpoint's mandated rule changes surface as true regressions on the next one.
+        mutated = [int(m) for m in (cp.get("mutates") or [])] + pending_mutated
         row["checkpoint_type"] = cp.get("type", "additive")
         row.update(correctness.outcome_row(outcome, prior_passing, mutated))
-        prior_passing = outcome.passing
+        if outcome.gate_invalid:
+            # The gate aborted every attempt, so this checkpoint has no verdict.
+            # prior_passing is carried forward UNCHANGED: adopting the empty result
+            # set would make the next checkpoint's regression count meaningless too
+            # (nothing "prior" left to break, then a phantom recovery on the one after).
+            print(f"    !! cp{k:02d} GATE INVALID after {outcome.gate_attempts} attempt(s): "
+                  f"{outcome.error[:160]} — recorded as missing data, chain continues")
+            pending_mutated = mutated
+        else:
+            prior_passing = outcome.passing
+            pending_mutated = []
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
 
@@ -851,6 +870,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         captures.append(rec)
         strict_count += 1 if row["strict_pass"] is True else 0
         regr_count += int(row["regressions"] or 0)
+        invalid_count += 1 if row.get("gate_invalid") is True else 0
 
         # COMMIT 2 — the RESET commit: worktree normalisation + this checkpoint's capture.
         # Kept even if empty, so every checkpoint is a clean two-commit boundary.
@@ -872,7 +892,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # carries a derived one-liner for at-a-glance history (text only, not data).
     n_done = len(captures)
     headline = (f"checkpoints={n_done} strict_pass={strict_count}/{n_done} "
-                f"regressions={regr_count} (derived numbers recomputed by analyze)")
+                f"regressions={regr_count}"
+                + (f" invalid_gates={invalid_count}" if invalid_count else "")
+                + " (derived numbers recomputed by analyze)")
     commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, headline)
     shutil.rmtree(sandbox, ignore_errors=True)  # the agent's history-less working copy
 

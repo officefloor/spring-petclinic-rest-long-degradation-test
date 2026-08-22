@@ -99,6 +99,11 @@ build:
   surefire_dir: "target/surefire-reports"
   timeout: 1800
   test_timeout: 3600
+  # Gate retries. ONLY an ABORTED run is retried (Surefire fork crash / JVM SIGABRT,
+  # which yields no verdict and would otherwise be scored as "every prior rule broke").
+  # A run whose tests merely FAIL is never retried -- that is the signal being measured.
+  test_attempts: 3          # tries per gate before the checkpoint is marked gate_invalid
+  test_retry_seconds: 30    # pause between those tries
 
 tools:
   jscpd: "jscpd"     # npm i -g jscpd  (clone detection for Verbosity)

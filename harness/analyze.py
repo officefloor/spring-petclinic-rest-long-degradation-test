@@ -220,6 +220,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         prior_passing: set[str] = set()
         prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
         n_noop = 0
+        n_invalid = 0             # gates that aborted -> correctness is missing, not failed
+        pending_mutated: list[int] = []   # `mutates` of skipped checkpoints, owed to the next scored one
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
         for k in ks:
             real = shas.get(k) or ""     # AGENT commit sha; "" => no-op checkpoint
@@ -270,9 +272,34 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             if results is not None:
                 outcome = correctness.score_results(results, k)
                 outcome.build_ok = tests.get("build_ok", True)
+                # An ABORTED gate carries no verdict. Runs recorded after the 2026-08
+                # fix say so outright; older captures are recognised by the signature
+                # the crash leaves behind — the build compiled, yet not one test
+                # reported. Scoring that would read the missing results as "every
+                # prior rule broke" (this is exactly how a Surefire fork crash once
+                # showed up as 143 regressions on full-202608102319). A build FAILURE
+                # is not this case: it leaves build_ok False and stays scored, because
+                # the agent breaking compilation is a real verdict.
+                outcome.gate_invalid = bool(tests.get("gate_invalid")) or (
+                    outcome.build_ok and not results)
+                outcome.gate_attempts = tests.get("gate_attempts") or 0
                 row["checkpoint_type"] = cap.get("type", "additive")
-                row.update(correctness.outcome_row(outcome, prior_passing, cap.get("mutates") or []))
-                prior_passing = outcome.passing
+                # Across a hole, `prior_passing` is the set measured BEFORE the invalid
+                # checkpoint(s), so the next scored diff spans them — and it must inherit
+                # their `mutates` exemptions too. Without this a MUTATIVE checkpoint whose
+                # gate crashed launders its intended rule changes into the next
+                # checkpoint's true-regression count (officefloor chain4 cp52 crashed →
+                # cp53 read 7 phantom "true" regressions that were cp52's mandated
+                # mutation). Empty in the normal case, so scoring is unchanged.
+                mutated = [int(m) for m in (cap.get("mutates") or [])] + pending_mutated
+                row.update(correctness.outcome_row(outcome, prior_passing, mutated))
+                if outcome.gate_invalid:
+                    n_invalid += 1
+                    row["notes"] = (tests.get("error") or "gate produced no results")[:200]
+                    pending_mutated = mutated          # carried with prior_passing
+                else:
+                    prior_passing = outcome.passing    # carried forward across a hole
+                    pending_mutated = []
 
             # Ephemera straight from capture (irreproducible; never recomputed).
             ag = cap.get("agent") or {}
@@ -300,6 +327,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
               + (f" ({n_noop} no-op)" if n_noop else "")
+              + (f"  ! {n_invalid} INVALID GATE(S) — correctness excluded" if n_invalid else "")
               + ("" if caps else "  (no capture — structural metrics only)"))
     return rows
 
@@ -477,7 +505,7 @@ def evoscore(rows: list[dict], gamma: float) -> float:
     """gamma-weighted mean of the 0/1 strict-pass signal over a chain, averaged
     across chains (later checkpoints discounted by gamma**i)."""
     per_chain = defaultdict(list)
-    for r in rows:
+    for r in scored(rows):
         val = 1.0 if _b(r["strict_pass"]) else 0.0
         per_chain[int(r["chain"])].append((int(r["checkpoint"]), val))
     scores = []
@@ -490,10 +518,20 @@ def evoscore(rows: list[dict], gamma: float) -> float:
     return float(np.mean(scores)) if scores else math.nan
 
 
+def scored(rows: list[dict]) -> list[dict]:
+    """Rows whose gate returned an actual verdict. A checkpoint whose gate ABORTED
+    (`gate_invalid`, e.g. a Surefire fork crash) has blank correctness fields, and a
+    blank read as a number is 0 and as a boolean is False — i.e. silently a perfect
+    score on regressions and a failure on strict_pass. Every correctness aggregate
+    therefore drops these rows outright; their STRUCTURAL metrics are untouched by
+    the crash and stay in the slope/plot machinery."""
+    return [r for r in rows if not _b(r.get("gate_invalid"))]
+
+
 def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
     per_chain = defaultdict(int)
     seen = set()
-    for r in rows:
+    for r in scored(rows):
         c = int(r["chain"])
         seen.add(c)
         per_chain[c] += int(_f(r.get(field)) or 0)
@@ -506,10 +544,12 @@ def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
 def regression_summary(rows: list[dict]) -> dict:
     """Totals for the intended-vs-true regression split, plus the count of mutative
     checkpoints (so a reader can see how much cross-cutting pressure the run had)."""
-    total = sum(int(_f(r.get("regressions")) or 0) for r in rows)
-    true = sum(int(_f(r.get("true_regressions")) or 0) for r in rows)
-    n_mut = sum(1 for r in rows if str(r.get("checkpoint_type", "")).strip() == "mutative")
-    return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut}
+    graded = scored(rows)
+    total = sum(int(_f(r.get("regressions")) or 0) for r in graded)
+    true = sum(int(_f(r.get("true_regressions")) or 0) for r in graded)
+    n_mut = sum(1 for r in graded if str(r.get("checkpoint_type", "")).strip() == "mutative")
+    return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut,
+            "invalid_gates": len(rows) - len(graded)}
 
 
 METRICS_TO_PLOT = [
@@ -712,9 +752,9 @@ def main() -> int:
     lines.append("| arm/strategy | median (true regression) | median (none) | n true-regr |")
     lines.append("|---|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
-        wtr = [_f(r.get("impact_composite", "")) for r in grp
+        wtr = [_f(r.get("impact_composite", "")) for r in scored(grp)
                if (_f(r.get("true_regressions", "")) or 0) > 0 and not math.isnan(_f(r.get("impact_composite", "")))]
-        ntr = [_f(r.get("impact_composite", "")) for r in grp
+        ntr = [_f(r.get("impact_composite", "")) for r in scored(grp)
                if (_f(r.get("true_regressions", "")) or 0) == 0 and not math.isnan(_f(r.get("impact_composite", "")))]
         if wtr and ntr:
             lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {np.median(ntr):.0f} | {len(wtr)} |")
@@ -731,7 +771,7 @@ def main() -> int:
             if field == "strict_pass":
                 order = ["Start", "Early", "Mid", "Late", "Final"]
                 acc = defaultdict(list)
-                for r in grp:
+                for r in scored(grp):
                     acc[r["phase"]].append(1.0 if _b(r["strict_pass"]) else 0.0)
                 vals = [np.mean(acc[p]) if acc[p] else math.nan for p in order]
             else:
@@ -756,14 +796,31 @@ def main() -> int:
     # breakage on the surface the checkpoint was not asked to touch. The true
     # Zero-Regression Rate is the safety signal a purely additive run cannot give.
     lines.append("## Regressions: intended vs. true (un-mutated surface)\n")
-    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | invalid gates |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         rs = regression_summary(grp)
         tzrr = zero_regression_rate(grp, "true_regressions")
         lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
-                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} |")
+                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | {rs['invalid_gates']} |")
     lines.append("")
+    # Invalid gates are MISSING correctness, not failed correctness (a Surefire fork
+    # crash, not the agent's code). They are excluded from every correctness aggregate
+    # above and listed here so the exclusion is never silent — a run with many of them
+    # is a run whose safety numbers rest on fewer checkpoints than it appears to.
+    invalid = [r for r in rows if _b(r.get("gate_invalid"))]
+    if invalid:
+        lines.append("## Invalid gates (aborted test runs — excluded from correctness)\n")
+        lines.append("The gate produced no usable verdict at these checkpoints (e.g. the Surefire "
+                     "fork crashed). Their structural metrics are unaffected and still counted; "
+                     "their correctness fields are blank rather than scored, because an empty "
+                     "result set would otherwise read as a regression on every prior rule.\n")
+        lines.append("| arm/strategy | chain | checkpoint | id | note |")
+        lines.append("|---|---:|---:|---|---|")
+        for r in sorted(invalid, key=lambda r: (r["arm"], int(r["chain"]), int(r["checkpoint"]))):
+            lines.append(f"| {r['arm']}/{r['strategy']} | {r['chain']} | {r['checkpoint']} | "
+                         f"{r.get('checkpoint_id', '')} | {str(r.get('notes', ''))[:80]} |")
+        lines.append("")
 
     # Pinned-doc (CLAUDE.md) touch rate: fraction of checkpoints where the agent
     # tried to edit a pinned leveling doc (its edit was reverted). A behavioural
