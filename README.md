@@ -31,12 +31,20 @@ methods from two benchmarks:
 The thesis under test: as changes accumulate on one subsystem, the Spring
 hotspot method erodes (complexity concentrates, per-change comprehension cost
 climbs) while OfficeFloor stays flat (each change is a new small function, so
-existing units never grow). The **decisive statistics** are *blast radius* and
-*concentration* — does complexity pile into one method/class (`entry_cc`,
-`wmc_max`, handler-scoped erosion) — plus the **structural-impact score** (the
-context-weighted cost of each change). Whole-app **erosion** is reported for
-SlopCodeBench comparability but is **not** decisive here: it is location-blind and
-dominated by architecture-neutral leaf algorithms (see the metrics glossary below).
+existing units never grow). The **decisive statistics** are *blast radius*,
+*comprehension load* (`node_cc_median` — the complexity reachable from one handling
+node, i.e. what you must understand to change one rule) and the
+**structural-impact score** (the context-weighted cost of each change).
+
+Two measurement cautions, both learned the hard way and documented in the glossary.
+Whole-app **erosion** is location-blind and dominated by architecture-neutral leaf
+algorithms, so it is reported for SlopCodeBench comparability only. And the
+*entry-scoped* concentration metrics (`entry_cc`, `wmc_handler`, `erosion_handler`)
+flatter a pipeline architecture, which can push work to the next node: OfficeFloor's
+entry node is CC ~1.3 while its worst pipeline node reaches ~13, and its whole create
+path carries the **same** total complexity as Spring's controller. What actually
+differs is packaging — the same complexity in ~5x smaller units — which is what
+`node_cc_median` and `node_exclusive_share` measure and `entry_cc` does not.
 
 ## How a run executes (start to finish)
 
@@ -428,7 +436,8 @@ gitignored** output to `results/<run_id>/analysis/`.
 It reports the degradation slope `m` with a 95% bootstrap CI over chains, per
 arm/strategy, for the three erosion scopes, `verbosity`, `cost_usd`,
 `cache_read_tokens`, `duration_api_ms`, `hotspot_cc`, `fn_nloc_max`,
-`existing_fns_modified`, `files_created`, `wmc_max`, `wmc_handler`, `entry_cc`,
+`existing_fns_modified`, `files_created`, `wmc_max`, `wmc_handler`, `node_cc_median`,
+`node_cc_max`, `node_path_cc`, `entry_cc`,
 `packages_touched`, `reedit_rate`, and the impact family (`impact_mutation` /
 `impact_godclass` / `impact_composite`, each in all / additive-only / mutative-only
 slices); phase-binned means; EvoScore (γ ∈ {1, 1.5, 2}); Zero-Regression Rate (over
@@ -439,8 +448,18 @@ Every metric is defined in the **Metrics glossary** below.
 the commits; correctness/agent columns come from `capture/`. Add it to
 `metrics.compute_all` and re-run `analyze`; no agent re-invocation.
 
+If the metric needs **new config**, note how the two configs combine. `analyze`
+derives with the run's own committed snapshot (so metrics match how that run was
+configured), and a key the snapshot never had is filled from the live `config.yaml`
+and logged as `! arms.<arm>.<key> absent from the run's config snapshot`. Without
+that fill a new metric degrades silently to its fallback: `node_roots` was added
+after both published runs, and on the first backfill OfficeFloor's node closure
+collapsed to its single entry node — CC 8 rather than a 19-node pipeline, a number
+with nothing obviously wrong with it. Recorded snapshot values always win; only
+absent keys are filled.
+
 **Confirms the thesis** if the *concentration* slopes climb for Spring and stay
-flat for OfficeFloor with disjoint CIs — `entry_cc`, `wmc_handler`, handler-scoped
+flat for OfficeFloor with disjoint CIs — `node_cc_median`, `entry_cc`, `wmc_handler`, handler-scoped
 erosion, and above all the **structural-impact** score (`impact_composite` /
 `impact_mutation`) — while blast radius (`existing_fns_modified`) and coupling
 (`reedit_rate`) stay lower for OfficeFloor, and OfficeFloor shows higher EvoScore at
@@ -518,7 +537,10 @@ package distribution (healthy growth = count rises while avg/max stay flat).
 | field | definition |
 |---|---|
 | `wmc_max` (+ `_class`, `_methods`, `_nloc`) | god-**class** indicator: highest Weighted-Methods-per-Class (Σ method CC) in the touched subsystem. Role-blind: the arms can answer with different kinds of class (an entity of accessors vs a controller of decisions), so prefer `wmc_handler` for between-arm claims |
-| `wmc_handler` (+ `_class`, `_methods`, `_nloc`) | the same WMC pinned to the class the create endpoint routes through, in **both** arms (same class scoping as `erosion_handler`). The like-for-like god-class number; blank until that class exists |
+| `wmc_handler` (+ `_class`, `_methods`, `_nloc`) | the same WMC pinned to the class the create endpoint routes through, in **both** arms (same class scoping as `erosion_handler`). The like-for-like god-class number; blank until that class exists. Entry-scoped, so read it with `node_path_cc` |
+| `node_count`, `node_cc_median` / `_mean` / `_p90` / `_max`, `node_methods_median` | per-node comprehension load: CC transitively reachable from ONE handling node — what you must understand to change one rule. Nodes come from the arm's declared wiring (`node_roots.wiring_file`), or the single `entry_handler` when an arm declares none. Relocation-proof: work pushed to a later node lands in that node's closure |
+| `node_exclusive_share` | cohesion: fraction of node-reachable CC reachable from exactly ONE node. Low = thin wrappers over a shared blob. Blank when an arm has a single node (trivially 1.0) |
+| `node_path_cc`, `node_path_methods` | the union across nodes: the whole handling path, transitively. The honest total that answers "you just moved it downstream" |
 | `entry_cc` (+ `_nloc`, `_fn`) | cyclomatic complexity of the **one** function the create endpoint routes through (`addOwner` / `BuildOwner::service`) — does the front door bloat |
 | `packages_touched` | distinct packages the rule's production-Java diff reaches (change spread) |
 | `reedit_rate` (+ `reedit_body_lines`, `reedit_prior_lines`) | temporal coupling: of the lines in functions this checkpoint edited, the share authored by **earlier** checkpoints |

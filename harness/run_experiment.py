@@ -94,6 +94,10 @@ CSV_FIELDS = [
     # WMC pinned to the entry handler's own class: role-comparable across arms,
     # where wmc_max answers with whatever class is heaviest (entity vs controller).
     "wmc_handler", "wmc_handler_class", "wmc_handler_methods", "wmc_handler_nloc",
+    # per-node comprehension load: complexity reachable from ONE handling node, so
+    # pushing work to the next node relocates the number instead of hiding it
+    "node_count", "node_cc_median", "node_cc_mean", "node_cc_p90", "node_cc_max",
+    "node_methods_median", "node_exclusive_share", "node_path_cc", "node_path_methods",
     "entry_cc", "entry_nloc", "entry_fn", "packages_touched",
     "reedit_body_lines", "reedit_prior_lines", "reedit_rate",
     # structural-impact score: context-weighted blast (max(WMC_other,1)·CC·max(1,Δlines)·files)

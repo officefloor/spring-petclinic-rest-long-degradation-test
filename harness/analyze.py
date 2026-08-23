@@ -165,6 +165,18 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     for name, arm in run_cfg.get("arms", {}).items():
         live_arm = live_cfg.get("arms", {}).get(name)
         arm["repo"] = live_arm["repo"] if live_arm else expand_path(arm.get("repo"), f"arms.{name}.repo")
+        # A metric added AFTER a run needs config that run never recorded. Snapshot
+        # values always win, but keys ABSENT from the snapshot are filled from the live
+        # config so a new metric can still backfill — the harness's "adding a metric
+        # applies it to every past run" promise. Each fill is logged, because the
+        # failure mode is silent: `node_roots` was added 2026-08-23 and without this
+        # OfficeFloor's node closure collapsed to its single entry node, reporting CC 8
+        # instead of a 19-node pipeline — a number that looks perfectly valid.
+        for key, value in (live_arm or {}).items():
+            if key not in arm:
+                arm[key] = value
+                print(f"  ! arms.{name}.{key} absent from the run's config snapshot "
+                      f"(metric added after the run); using the live value")
     # Extract the snapshotted ast-grep rules so Verbosity's pattern component
     # matches the run; if none were snapshotted, fall back to the live rules path.
     rel = "evolve-results/config/astgrep-rules"
@@ -590,6 +602,9 @@ METRICS_TO_PLOT = [
     ("files_created", "New production files created per rule"),
     ("wmc_max", "God-class — max Weighted Methods per Class (WMC)"),
     ("wmc_handler", "God-class, handler class only — WMC of the same ROLE in both arms"),
+    ("node_cc_median", "Per-node comprehension load — CC reachable from a typical handling node"),
+    ("node_cc_max", "Per-node comprehension load — worst node"),
+    ("node_path_cc", "Whole handling path — CC reachable from ALL nodes (relocation-proof total)"),
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
@@ -717,7 +732,8 @@ def main() -> int:
     slope_fields = ["erosion", "erosion_scoped", "erosion_handler", "verbosity", "cost_usd",
                     "cache_read_tokens", "duration_api_ms", "hotspot_cc",
                     "existing_fns_modified", "files_created",
-                    "wmc_max", "wmc_handler", "entry_cc", "packages_touched", "reedit_rate",
+                    "wmc_max", "wmc_handler", "node_cc_median", "node_cc_max", "node_path_cc",
+                    "entry_cc", "packages_touched", "reedit_rate",
                     "impact_mutation", "impact_godclass", "impact_composite"]
     # each impact sub-score also sliced additive-only (_add) and mutative-only (_mut)
     slope_fields += [f + s for f in IMPACT_BASE_FIELDS for s in ("_add", "_mut")]

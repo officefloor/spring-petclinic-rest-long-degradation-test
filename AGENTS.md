@@ -40,8 +40,19 @@ is about *where* complexity lands (concentration vs. distribution), so the decis
 statistics are the ones that measure placement and blast radius:
 
 - **Blast radius** — `existing_fns_modified`, zero-blast checkpoints, `files_created`.
+- **Comprehension load** — `node_cc_median` / `node_cc_max` / `node_exclusive_share`:
+  complexity transitively reachable from ONE handling node, i.e. what must be understood
+  to change one rule. **This is the concentration statistic to lead with**, because it is
+  the only one immune to relocation (below).
 - **Concentration** — `entry_cc` and `wmc_handler` (god-method / god-class), corroborated
-  by `erosion_handler` (erosion scoped to the entry handler's own class).
+  by `erosion_handler` (erosion scoped to the entry handler's own class). **All three are
+  scoped to the ENTRY node and therefore understate a pipeline arm.** OfficeFloor's entry
+  node is CC ~1.3 while its worst pipeline node reaches CC ~13, and once helper calls are
+  followed its whole create path carries the *same* total complexity as Spring's
+  controller (`node_path_cc` 229 vs 202 on a blind chain0) with a worst single method as
+  bad or worse (17.6 vs 16.6). Never publish `entry_cc`/`wmc_handler` without
+  `node_path_cc` beside them; a reader who opens `owners.POST.yml` will otherwise make
+  the objection for you.
   **Prefer `wmc_handler` over `wmc_max` for the between-arm claim.** `wmc_max` reports
   the heaviest class *whatever its role*, and the arms answer with different kinds of
   class: on `full-202608102319` OfficeFloor's heaviest is the Owner ENTITY in 9 of 10
@@ -400,6 +411,21 @@ the next checkpoint too, then fake a recovery on the one after), chain continues
 structural metrics, and lists them under **Invalid gates** in `summary.md` so the
 exclusion is never silent. Old captures are recognised by signature, so re-analysis
 repairs runs recorded before the fix.
+
+### Backfilling a metric that needs new config (`analyze._resolve_run_config`)
+
+`analyze` derives with the run's **committed config snapshot**, so metrics match how
+that run was configured. A metric added later needs config the snapshot cannot have,
+so keys **absent** from the snapshot are filled from the live `config.yaml` and each
+fill is logged (`! arms.<arm>.<key> absent from the run's config snapshot`). Recorded
+values always win; only gaps are filled. This exists because the failure mode is
+silent, not loud: `node_roots` was added 2026-08-23, and the first backfill of
+`node_closure_stats` fell through to the single-`entry_handler` fallback, reporting
+OfficeFloor as a 1-node arm at CC 8 instead of a 19-node pipeline. The tell was that
+`node_cc_median`, `node_cc_max` and `node_path_cc` were byte-identical — three
+statistics that can only coincide when there is exactly one node. **When adding a
+metric with new config, check the backfill log for the fill lines and sanity-check one
+checkpoint by hand before trusting the trajectory.**
 
 ### Rare-event guard (`analyze.MIN_EVENTS`)
 
