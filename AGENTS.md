@@ -220,7 +220,12 @@ pre_checkpoint_sha, attempts:[...]}`. Each attempt is `{kind: implement|refactor
 impact, blocked, files, drivers, sha}`; a refactor attempt also carries its `agent` envelope
 (irreproducible cost/tokens — MUST be captured) and, if enabled, `tests` (record-only). The
 refactor event streams land as `cpNN.refactorM.jsonl` (staged by the existing
-`startswith("cpNN.")` copy into `evolve-results/capture/`).
+`startswith("cpNN.")` copy into `evolve-results/capture/`). The **manifest** commit's
+`provenance.json` additionally carries an `impact_gate` control block
+(`capture.impact_gate_provenance`): the impact-gate version + git SHA (resolved from the cmd
+path), the effective policy, and the reference baseline's `sha256` + `n` — so every gated run
+is reproducible and each verdict is traceable to a tool version and a distribution. Only
+present for the gated strategy.
 
 **analyze columns.** `recompute_rows` reads the block into `ig_refactors`, `ig_passed`,
 `ig_stopped`, `ig_grade` (last implement attempt), `ig_refactor_cost_usd`, `ig_refactor_tokens`

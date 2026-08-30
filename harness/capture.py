@@ -124,6 +124,58 @@ def agent_env(cfg: dict) -> dict:
     }
 
 
+def _is_sha(s: str) -> bool:
+    s = (s or "").split()[0] if s else ""
+    return len(s) == 40 and all(c in "0123456789abcdef" for c in s.lower())
+
+
+def impact_gate_provenance(cfg: dict) -> dict | None:
+    """The control for the impact_gated strategy: exactly which gate decided each refactor.
+    Records the impact-gate version + its git SHA (resolved from the configured cmd path),
+    the effective gate policy, and the reference baseline's HASH + n — so a gated run is
+    reproducible and every verdict is traceable to a tool version and a distribution. None
+    when no `impact_gate` config is present (ungated runs are unaffected)."""
+    igc = cfg.get("impact_gate") or {}
+    cmd = igc.get("cmd")
+    if not cmd:
+        return None
+    git_sha = ""
+    exe = cmd[0]
+    if os.sep in exe:                       # a path (not a bare PATH name) -> try its repo
+        d = os.path.dirname(os.path.abspath(exe))
+        for _ in range(5):
+            sha = _cmd(["git", "-C", d, "rev-parse", "HEAD"])
+            if _is_sha(sha):
+                git_sha = sha.split()[0]
+                break
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    baseline = {}
+    bf = igc.get("baseline_file")
+    if bf and os.path.isfile(bf):
+        baseline = {"path": os.path.basename(bf), "sha256": _sha256(bf)}
+        try:
+            with open(bf) as fh:
+                baseline["n"] = json.load(fh).get("_meta", {}).get("n")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {
+        "cmd": cmd,
+        "version": _cmd([*cmd, "--version"]),
+        "git_sha": git_sha,
+        "strategy": igc.get("strategy"),
+        "block_percentile": igc.get("block_percentile"),
+        "warn_percentile": igc.get("warn_percentile"),
+        "curve_prior_weight": igc.get("curve_prior_weight"),
+        "max_refactors": igc.get("max_refactors"),
+        "stop_scope": igc.get("stop_scope"),
+        "record_refactor_correctness": igc.get("record_refactor_correctness"),
+        "baseline": baseline,     # basename + sha256 + n (never the distribution itself)
+    }
+
+
 def provenance(cfg: dict, run_id: str, model: str, harness_dir: str,
                extra: dict | None = None) -> dict:
     """Per-chain manifest: enough to know exactly what produced these commits and

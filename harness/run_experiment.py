@@ -801,11 +801,14 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # snapshot), written before any checkpoint so a partial run is self-describing and
     # the control is captured before it can drift. The checkpoint->sha map is NOT here;
     # analyze derives it from the per-checkpoint capture records. Static provenance only.
-    prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra={
+    prov_extra = {
         "arm": arm, "strategy": strategy, "chain": chain, "branch": branch,
         "base_ref": arm_cfg["base_ref"], "base_commit": base_commit,
         "test_mode": cfg["test_mode"],   # which acceptance-view the agent worked under
-    })
+    }
+    if _gate_active(cfg, strategy):      # the gate is part of THIS run's control -> record it
+        prov_extra["impact_gate"] = capture.impact_gate_provenance(cfg)
+    prov = capture.provenance(cfg, run_id, model, HARNESS_DIR, extra=prov_extra)
     commit_run_manifest(wt, branch, run_id, arm, strategy, chain, prov, cfg.get("_snapshot"))
 
     # Capture artifacts are staged HERE (a sibling of the worktree) during the
