@@ -20,7 +20,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 import yaml
@@ -56,6 +56,12 @@ def _b(x):
 # ---------------------------------------------------------------------------
 
 _BRANCH_RE = re.compile(r"^evolve/([^/]+)/([^/]+)/([^/]+)/chain(\d+)$")
+
+# Fewest distinct events a validation statistic may rest on before it is reported
+# as a number. Below this the correlation/median is one or two checkpoints wearing
+# a confidence interval — the summary says so explicitly instead of printing it or
+# silently dropping the row. Bites the rare-event outcomes (true_regressions) only.
+MIN_EVENTS = 5
 
 
 def _evolve_branches(cfg: dict, run_id: str | None = None):
@@ -159,6 +165,18 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     for name, arm in run_cfg.get("arms", {}).items():
         live_arm = live_cfg.get("arms", {}).get(name)
         arm["repo"] = live_arm["repo"] if live_arm else expand_path(arm.get("repo"), f"arms.{name}.repo")
+        # A metric added AFTER a run needs config that run never recorded. Snapshot
+        # values always win, but keys ABSENT from the snapshot are filled from the live
+        # config so a new metric can still backfill — the harness's "adding a metric
+        # applies it to every past run" promise. Each fill is logged, because the
+        # failure mode is silent: `node_roots` was added 2026-08-23 and without this
+        # OfficeFloor's node closure collapsed to its single entry node, reporting CC 8
+        # instead of a 19-node pipeline — a number that looks perfectly valid.
+        for key, value in (live_arm or {}).items():
+            if key not in arm:
+                arm[key] = value
+                print(f"  ! arms.{name}.{key} absent from the run's config snapshot "
+                      f"(metric added after the run); using the live value")
     # Extract the snapshotted ast-grep rules so Verbosity's pattern component
     # matches the run; if none were snapshotted, fall back to the live rules path.
     rel = "evolve-results/config/astgrep-rules"
@@ -220,6 +238,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         prior_passing: set[str] = set()
         prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
         n_noop = 0
+        n_invalid = 0             # gates that aborted -> correctness is missing, not failed
+        pending_mutated: list[int] = []   # `mutates` of skipped checkpoints, owed to the next scored one
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
         for k in ks:
             real = shas.get(k) or ""     # AGENT commit sha; "" => no-op checkpoint
@@ -270,9 +290,34 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             if results is not None:
                 outcome = correctness.score_results(results, k)
                 outcome.build_ok = tests.get("build_ok", True)
+                # An ABORTED gate carries no verdict. Runs recorded after the 2026-08
+                # fix say so outright; older captures are recognised by the signature
+                # the crash leaves behind — the build compiled, yet not one test
+                # reported. Scoring that would read the missing results as "every
+                # prior rule broke" (this is exactly how a Surefire fork crash once
+                # showed up as 143 regressions on full-202608102319). A build FAILURE
+                # is not this case: it leaves build_ok False and stays scored, because
+                # the agent breaking compilation is a real verdict.
+                outcome.gate_invalid = bool(tests.get("gate_invalid")) or (
+                    outcome.build_ok and not results)
+                outcome.gate_attempts = tests.get("gate_attempts") or 0
                 row["checkpoint_type"] = cap.get("type", "additive")
-                row.update(correctness.outcome_row(outcome, prior_passing, cap.get("mutates") or []))
-                prior_passing = outcome.passing
+                # Across a hole, `prior_passing` is the set measured BEFORE the invalid
+                # checkpoint(s), so the next scored diff spans them — and it must inherit
+                # their `mutates` exemptions too. Without this a MUTATIVE checkpoint whose
+                # gate crashed launders its intended rule changes into the next
+                # checkpoint's true-regression count (officefloor chain4 cp52 crashed →
+                # cp53 read 7 phantom "true" regressions that were cp52's mandated
+                # mutation). Empty in the normal case, so scoring is unchanged.
+                mutated = [int(m) for m in (cap.get("mutates") or [])] + pending_mutated
+                row.update(correctness.outcome_row(outcome, prior_passing, mutated))
+                if outcome.gate_invalid:
+                    n_invalid += 1
+                    row["notes"] = (tests.get("error") or "gate produced no results")[:200]
+                    pending_mutated = mutated          # carried with prior_passing
+                else:
+                    prior_passing = outcome.passing    # carried forward across a hole
+                    pending_mutated = []
 
             # Ephemera straight from capture (irreproducible; never recomputed).
             ag = cap.get("agent") or {}
@@ -319,6 +364,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
               + (f" ({n_noop} no-op)" if n_noop else "")
+              + (f"  ! {n_invalid} INVALID GATE(S) — correctness excluded" if n_invalid else "")
               + ("" if caps else "  (no capture — structural metrics only)"))
     return rows
 
@@ -450,12 +496,29 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
+def _informative(vals: list[float]) -> int:
+    """Observations that differ from the series' most common value.
+
+    A near-constant series (e.g. `true_regressions`, zero at all but one of 599
+    checkpoints once the crashed gates are excluded) can still yield a ρ with a
+    bootstrap CI that excludes zero, because every resample carries the same lone
+    event. The number reads as a construct-validity result and is an artefact of
+    one point. Continuous outcomes (cost, tokens, time) are untied, so this counts
+    ~n for them and only bites the degenerate case."""
+    if not vals:
+        return 0
+    counts = Counter(vals)
+    return len(vals) - counts.most_common(1)[0][1]
+
+
 def spearman_ci(rows: list[dict], xf: str, yf: str,
-                n_boot: int = 1000, seed: int = 0) -> tuple[float, float, float, int]:
+                n_boot: int = 1000, seed: int = 0) -> tuple[float, float, float, int, int]:
     """Spearman ρ(xf, yf) over checkpoints with a chain-cluster bootstrap CI.
 
     Chains are the resampling unit (checkpoints within a chain are not independent).
-    Returns (rho, ci_lo, ci_hi, n)."""
+    Returns (rho, ci_lo, ci_hi, n, k) where k is `_informative` on the y series —
+    the caller must refuse to report a ρ built on too few distinct events rather
+    than dropping the row silently."""
     by_chain: dict[int, list[tuple[float, float]]] = defaultdict(list)
     for r in rows:
         xv, yv = _f(r.get(xf, "")), _f(r.get(yf, ""))
@@ -464,8 +527,9 @@ def spearman_ci(rows: list[dict], xf: str, yf: str,
     chains = [c for c in by_chain if by_chain[c]]
     pts = [p for c in chains for p in by_chain[c]]
     n = len(pts)
-    if n < 5:
-        return (math.nan, math.nan, math.nan, n)
+    k = _informative([p[1] for p in pts])
+    if n < 5 or k < MIN_EVENTS:
+        return (math.nan, math.nan, math.nan, n, k)
     rho = _spearman(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]))
     rng = np.random.default_rng(seed)
     boots = []
@@ -477,9 +541,9 @@ def spearman_ci(rows: list[dict], xf: str, yf: str,
             if not math.isnan(b):
                 boots.append(b)
     if not boots:
-        return (rho, math.nan, math.nan, n)
+        return (rho, math.nan, math.nan, n, k)
     lo, hi = np.percentile(boots, [2.5, 97.5])
-    return (rho, float(lo), float(hi), n)
+    return (rho, float(lo), float(hi), n, k)
 
 
 def phase_means(rows: list[dict], field: str):
@@ -496,7 +560,7 @@ def evoscore(rows: list[dict], gamma: float) -> float:
     """gamma-weighted mean of the 0/1 strict-pass signal over a chain, averaged
     across chains (later checkpoints discounted by gamma**i)."""
     per_chain = defaultdict(list)
-    for r in rows:
+    for r in scored(rows):
         val = 1.0 if _b(r["strict_pass"]) else 0.0
         per_chain[int(r["chain"])].append((int(r["checkpoint"]), val))
     scores = []
@@ -509,10 +573,20 @@ def evoscore(rows: list[dict], gamma: float) -> float:
     return float(np.mean(scores)) if scores else math.nan
 
 
+def scored(rows: list[dict]) -> list[dict]:
+    """Rows whose gate returned an actual verdict. A checkpoint whose gate ABORTED
+    (`gate_invalid`, e.g. a Surefire fork crash) has blank correctness fields, and a
+    blank read as a number is 0 and as a boolean is False — i.e. silently a perfect
+    score on regressions and a failure on strict_pass. Every correctness aggregate
+    therefore drops these rows outright; their STRUCTURAL metrics are untouched by
+    the crash and stay in the slope/plot machinery."""
+    return [r for r in rows if not _b(r.get("gate_invalid"))]
+
+
 def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
     per_chain = defaultdict(int)
     seen = set()
-    for r in rows:
+    for r in scored(rows):
         c = int(r["chain"])
         seen.add(c)
         per_chain[c] += int(_f(r.get(field)) or 0)
@@ -525,10 +599,12 @@ def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
 def regression_summary(rows: list[dict]) -> dict:
     """Totals for the intended-vs-true regression split, plus the count of mutative
     checkpoints (so a reader can see how much cross-cutting pressure the run had)."""
-    total = sum(int(_f(r.get("regressions")) or 0) for r in rows)
-    true = sum(int(_f(r.get("true_regressions")) or 0) for r in rows)
-    n_mut = sum(1 for r in rows if str(r.get("checkpoint_type", "")).strip() == "mutative")
-    return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut}
+    graded = scored(rows)
+    total = sum(int(_f(r.get("regressions")) or 0) for r in graded)
+    true = sum(int(_f(r.get("true_regressions")) or 0) for r in graded)
+    n_mut = sum(1 for r in graded if str(r.get("checkpoint_type", "")).strip() == "mutative")
+    return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut,
+            "invalid_gates": len(rows) - len(graded)}
 
 
 METRICS_TO_PLOT = [
@@ -544,6 +620,10 @@ METRICS_TO_PLOT = [
     ("existing_fns_modified", "Blast radius — pre-existing functions modified per rule"),
     ("files_created", "New production files created per rule"),
     ("wmc_max", "God-class — max Weighted Methods per Class (WMC)"),
+    ("wmc_handler", "God-class, handler class only — WMC of the same ROLE in both arms"),
+    ("node_cc_median", "Per-node comprehension load — CC reachable from a typical handling node"),
+    ("node_cc_max", "Per-node comprehension load — worst node"),
+    ("node_path_cc", "Whole handling path — CC reachable from ALL nodes (relocation-proof total)"),
     ("entry_cc", "Entry-handler cyclomatic complexity (does the front door bloat)"),
     ("packages_touched", "Change spread — packages touched per rule"),
     ("reedit_rate", "Temporal coupling — share of rewritten lines from prior rules"),
@@ -671,7 +751,8 @@ def main() -> int:
     slope_fields = ["erosion", "erosion_scoped", "erosion_handler", "verbosity", "cost_usd",
                     "cache_read_tokens", "duration_api_ms", "hotspot_cc",
                     "existing_fns_modified", "files_created",
-                    "wmc_max", "entry_cc", "packages_touched", "reedit_rate",
+                    "wmc_max", "wmc_handler", "node_cc_median", "node_cc_max", "node_path_cc",
+                    "entry_cc", "packages_touched", "reedit_rate",
                     "impact_mutation", "impact_godclass", "impact_composite"]
     # each impact sub-score also sliced additive-only (_add) and mutative-only (_mut)
     slope_fields += [f + s for f in IMPACT_BASE_FIELDS for s in ("_add", "_mut")]
@@ -751,6 +832,9 @@ def main() -> int:
                  "actually cost more and break more?\n")
     lines.append("| arm/strategy | outcome | Spearman ρ | CI low | CI high | n |")
     lines.append("|---|---|---:|---:|---:|---:|")
+    # Outcomes that come from the GATE: computed only over checkpoints that
+    # returned a verdict (an aborted gate has no breakage count to correlate).
+    CORRECTNESS_OUTCOMES = {"true_regressions"}
     OUTCOMES = [("cost_usd", "agent $ (independent)"),
                 ("cache_read_tokens", "comprehension (independent)"),
                 ("duration_api_ms", "model time (independent)"),
@@ -758,8 +842,13 @@ def main() -> int:
                 ("reedit_rate", "temporal coupling (git-derived)")]
     for gk, grp in sorted(groups.items()):
         for field, note in OUTCOMES:
-            rho, lo, hi, n = spearman_ci(grp, "impact_composite", field)
+            rho, lo, hi, n, k = spearman_ci(scored(grp) if field in CORRECTNESS_OUTCOMES else grp,
+                                            "impact_composite", field)
             if math.isnan(rho):
+                # Reported, not dropped: "we could not test this" is itself a result,
+                # and a silently missing row looks the same as a row nobody ran.
+                lines.append(f"| {gk[0]}/{gk[1]} | {note} | not tested | | | "
+                             f"{k} event(s) < {MIN_EVENTS} of {n} |")
                 continue
             lines.append(f"| {gk[0]}/{gk[1]} | {note} | {rho:+.3f} | {lo:+.3f} | {hi:+.3f} | {n} |")
     lines.append("")
@@ -767,12 +856,18 @@ def main() -> int:
     lines.append("| arm/strategy | median (true regression) | median (none) | n true-regr |")
     lines.append("|---|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
-        wtr = [_f(r.get("impact_composite", "")) for r in grp
+        wtr = [_f(r.get("impact_composite", "")) for r in scored(grp)
                if (_f(r.get("true_regressions", "")) or 0) > 0 and not math.isnan(_f(r.get("impact_composite", "")))]
-        ntr = [_f(r.get("impact_composite", "")) for r in grp
+        ntr = [_f(r.get("impact_composite", "")) for r in scored(grp)
                if (_f(r.get("true_regressions", "")) or 0) == 0 and not math.isnan(_f(r.get("impact_composite", "")))]
-        if wtr and ntr:
-            lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {np.median(ntr):.0f} | {len(wtr)} |")
+        base = f"{np.median(ntr):.0f}" if ntr else ""
+        if len(wtr) >= MIN_EVENTS and ntr:
+            lines.append(f"| {gk[0]}/{gk[1]} | {np.median(wtr):.0f} | {base} | {len(wtr)} |")
+        else:
+            # A median of one or two checkpoints is not a median. Say so rather than
+            # printing it, and rather than omitting the arm without explanation.
+            lines.append(f"| {gk[0]}/{gk[1]} | not reported (< {MIN_EVENTS} true regressions) | "
+                         f"{base} | {len(wtr)} |")
     lines.append("")
 
     # Phase means
@@ -786,7 +881,7 @@ def main() -> int:
             if field == "strict_pass":
                 order = ["Start", "Early", "Mid", "Late", "Final"]
                 acc = defaultdict(list)
-                for r in grp:
+                for r in scored(grp):
                     acc[r["phase"]].append(1.0 if _b(r["strict_pass"]) else 0.0)
                 vals = [np.mean(acc[p]) if acc[p] else math.nan for p in order]
             else:
@@ -811,14 +906,31 @@ def main() -> int:
     # breakage on the surface the checkpoint was not asked to touch. The true
     # Zero-Regression Rate is the safety signal a purely additive run cannot give.
     lines.append("## Regressions: intended vs. true (un-mutated surface)\n")
-    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | invalid gates |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         rs = regression_summary(grp)
         tzrr = zero_regression_rate(grp, "true_regressions")
         lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
-                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} |")
+                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | {rs['invalid_gates']} |")
     lines.append("")
+    # Invalid gates are MISSING correctness, not failed correctness (a Surefire fork
+    # crash, not the agent's code). They are excluded from every correctness aggregate
+    # above and listed here so the exclusion is never silent — a run with many of them
+    # is a run whose safety numbers rest on fewer checkpoints than it appears to.
+    invalid = [r for r in rows if _b(r.get("gate_invalid"))]
+    if invalid:
+        lines.append("## Invalid gates (aborted test runs — excluded from correctness)\n")
+        lines.append("The gate produced no usable verdict at these checkpoints (e.g. the Surefire "
+                     "fork crashed). Their structural metrics are unaffected and still counted; "
+                     "their correctness fields are blank rather than scored, because an empty "
+                     "result set would otherwise read as a regression on every prior rule.\n")
+        lines.append("| arm/strategy | chain | checkpoint | id | note |")
+        lines.append("|---|---:|---:|---|---|")
+        for r in sorted(invalid, key=lambda r: (r["arm"], int(r["chain"]), int(r["checkpoint"]))):
+            lines.append(f"| {r['arm']}/{r['strategy']} | {r['chain']} | {r['checkpoint']} | "
+                         f"{r.get('checkpoint_id', '')} | {str(r.get('notes', ''))[:80]} |")
+        lines.append("")
 
     # Pinned-doc (CLAUDE.md) touch rate: fraction of checkpoints where the agent
     # tried to edit a pinned leveling doc (its edit was reverted). A behavioural
@@ -880,10 +992,18 @@ def main() -> int:
         return float(np.mean(vals)) if vals else math.nan
 
     lines.append("## God-class, entry-handler, spread, temporal coupling\n")
-    lines.append("| arm/strategy | final WMC_max | final entry CC | mean pkgs/rule | mean re-edit rate |")
-    lines.append("|---|---:|---:|---:|---:|")
+    lines.append("`WMC_max` is the heaviest class whatever its role, so the arms can answer with "
+                 "different KINDS of class (an entity of accessors vs a controller of decisions). "
+                 "`WMC_handler` pins the measurement to the class the endpoint routes through in "
+                 "both arms, and is the like-for-like god-class number.\n")
+    lines.append("| arm/strategy | final WMC_max | final WMC_handler | handler class | final entry CC | mean pkgs/rule | mean re-edit rate |")
+    lines.append("|---|---:|---:|---|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         wmc_f = _final_mean(grp, "wmc_max")
+        wmch_f = _final_mean(grp, "wmc_handler")
+        hcls = Counter(str(r.get("wmc_handler_class") or "") for r in grp
+                       if str(r.get("wmc_handler_class") or "").strip())
+        hcls_s = hcls.most_common(1)[0][0] if hcls else ""
         ecc_f = _final_mean(grp, "entry_cc")
         pk = [_f(r.get("packages_touched")) for r in grp]
         pk = [v for v in pk if not math.isnan(v)]
@@ -892,7 +1012,8 @@ def main() -> int:
         cell = lambda v: "" if math.isnan(v) else f"{v:.3g}"
         pk_m = f"{np.mean(pk):.2f}" if pk else ""
         rr_m = f"{np.mean(rr):.3f}" if rr else ""
-        lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(ecc_f)} | {pk_m} | {rr_m} |")
+        lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(wmch_f)} | {hcls_s} | "
+                     f"{cell(ecc_f)} | {pk_m} | {rr_m} |")
     lines.append("")
 
     # Plots

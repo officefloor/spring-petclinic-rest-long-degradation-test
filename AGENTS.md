@@ -40,8 +40,27 @@ is about *where* complexity lands (concentration vs. distribution), so the decis
 statistics are the ones that measure placement and blast radius:
 
 - **Blast radius** — `existing_fns_modified`, zero-blast checkpoints, `files_created`.
-- **Concentration** — `entry_cc` and `wmc_max` (god-method / god-class), corroborated
-  by `erosion_handler` (erosion scoped to the entry handler's own class).
+- **Comprehension load** — `node_cc_median` / `node_cc_max` / `node_exclusive_share`:
+  complexity transitively reachable from ONE handling node, i.e. what must be understood
+  to change one rule. **This is the concentration statistic to lead with**, because it is
+  the only one immune to relocation (below).
+- **Concentration** — `entry_cc` and `wmc_handler` (god-method / god-class), corroborated
+  by `erosion_handler` (erosion scoped to the entry handler's own class). **All three are
+  scoped to the ENTRY node and therefore understate a pipeline arm.** OfficeFloor's entry
+  node is CC ~1.3 while its worst pipeline node reaches CC ~13, and once helper calls are
+  followed its whole create path carries the *same* total complexity as Spring's
+  controller (`node_path_cc` 229 vs 202 on a blind chain0) with a worst single method as
+  bad or worse (17.6 vs 16.6). Never publish `entry_cc`/`wmc_handler` without
+  `node_path_cc` beside them; a reader who opens `owners.POST.yml` will otherwise make
+  the objection for you.
+  **Prefer `wmc_handler` over `wmc_max` for the between-arm claim.** `wmc_max` reports
+  the heaviest class *whatever its role*, and the arms answer with different kinds of
+  class: on `full-202608102319` OfficeFloor's heaviest is the Owner ENTITY in 9 of 10
+  chains (≈60 accessors at CC 1, WMC ≈67) while Spring's is usually the CONTROLLER
+  (≈32 methods averaging CC 3+, WMC ≈142) — and the entity in 4 of 10 chains, so the
+  metric partly tracks entity growth in both arms. `wmc_handler` pins the measurement
+  to the class the endpoint routes through in both arms (same `_handler_files` scoping
+  as `erosion_handler`), which is the like-for-like number. `wmc_max` stays reported.
 - **Structural impact** — `impact_composite` / `impact_mutation` / `impact_godclass`:
   per-checkpoint blast on existing code *weighted by the complexity of the context it
   touches* (`max(WMC_other,1)·CC·max(1,Δlines)·files_changed`; fields and formula defined
@@ -124,7 +143,11 @@ a multi-hour chain. Then for each checkpoint k, **two commits**:
    (the priors the agent never saw), overwriting any agent test-tamper, so a
    weakened visible test can't buy a false pass.
 5. **Gate** (`correctness.run_tests`) against that full suite → regressions become
-   REAL: a failure on a prior rule the agent couldn't see is the signal.
+   REAL: a failure on a prior rule the agent couldn't see is the signal. A gate that
+   **aborts** (Surefire fork crash) is retried up to `build.test_attempts`; if every
+   try aborts the checkpoint is flagged `gate_invalid` and its correctness fields are
+   left BLANK (missing data, never a score). A gate whose tests merely **fail** is
+   never retried — that is the measurement. See *Invalid gates* below.
 6. **Structural metrics** over the agent commit (log-only; analyze recomputes).
 7. **Cold-reader probe** at `probe.at_checkpoints`.
 8. **Raw capture** (`cpNN.json`, `.agent.jsonl`, `.agent.diff`, `.build.log`, `.probe.jsonl`)
@@ -433,6 +456,59 @@ false-match:
   auth classification matters: **before the 2026-08 fix, an OAuth expiry was an
   unclassified no-op that silently committed empty deltas and burned whole chains.**
 
+### Invalid gates (`correctness._gate_invalid`) — the same lesson, applied to the gate
+
+An **aborted** gate is not a failed gate. `count_regressions` is
+`prior_passing - now_passing`, so a run that produced NO results scores as a
+regression on **every prior rule** — the more checkpoints a chain has survived, the
+more catastrophic the phantom looks. Two detectors, both narrow:
+- **no results while the build compiled.** At checkpoint K the authored suite always
+  holds ≥ cp01's test, so an empty map cannot be legitimate. A *failed build* exits
+  earlier with `build_ok=False` and stays scored — the agent breaking compilation is
+  a real verdict.
+- **a Surefire fork-death marker** (`_CRASH_MARKERS`) in the test console, which is
+  how a *partial* run announces that the rest of the suite never got a verdict.
+
+Retry is deliberately asymmetric: an abort is retried (`build.test_attempts`,
+default 3, `test_retry_seconds` apart), a test **failure never is** — retrying
+failures would launder exactly the regressions this experiment exists to measure.
+After the last failed try the checkpoint is `gate_invalid`: correctness fields blank,
+`prior_passing` **carried forward unchanged** (adopting the empty set would corrupt
+the next checkpoint too, then fake a recovery on the one after), chain continues.
+`analyze` drops these rows from every correctness aggregate (`scored()`), keeps their
+structural metrics, and lists them under **Invalid gates** in `summary.md` so the
+exclusion is never silent. Old captures are recognised by signature, so re-analysis
+repairs runs recorded before the fix.
+
+### Backfilling a metric that needs new config (`analyze._resolve_run_config`)
+
+`analyze` derives with the run's **committed config snapshot**, so metrics match how
+that run was configured. A metric added later needs config the snapshot cannot have,
+so keys **absent** from the snapshot are filled from the live `config.yaml` and each
+fill is logged (`! arms.<arm>.<key> absent from the run's config snapshot`). Recorded
+values always win; only gaps are filled. This exists because the failure mode is
+silent, not loud: `node_roots` was added 2026-08-23, and the first backfill of
+`node_closure_stats` fell through to the single-`entry_handler` fallback, reporting
+OfficeFloor as a 1-node arm at CC 8 instead of a 19-node pipeline. The tell was that
+`node_cc_median`, `node_cc_max` and `node_path_cc` were byte-identical — three
+statistics that can only coincide when there is exactly one node. **When adding a
+metric with new config, check the backfill log for the fill lines and sanity-check one
+checkpoint by hand before trusting the trajectory.**
+
+### Rare-event guard (`analyze.MIN_EVENTS`)
+
+A validation statistic resting on one or two checkpoints is not a result, and a
+bootstrap CI does not know that. In `full-202608102319` the `true_regressions`
+correlation ran on a series that was zero at 598 of 599 scored checkpoints and
+still returned ρ = +0.052 with a CI excluding zero, because every resample carried
+the same lone event. `spearman_ci` now also returns `k` (`_informative`: values
+differing from the series' modal value) and refuses to report below
+`MIN_EVENTS`; the same floor gates the `impact_composite`-vs-true-regression
+medians. Suppressed rows are printed as **not tested** with their `k`, never
+dropped — an absent row is indistinguishable from one nobody computed. Continuous
+outcomes (cost, tokens, time) are untied so `k ≈ n` and they are unaffected;
+`blind-202608100006` keeps its published ρ values (k = 11 per arm).
+
 ## Running it
 
 `--test-mode {blind,full}` is REQUIRED on every run (no default); see the blind-agent
@@ -493,6 +569,16 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
 
 ## Gotchas / lessons (2026-08)
 
+- **A crashed gate used to read as a mass regression.** On `full-202608102319` a
+  Surefire fork died (exit 134, `The forked VM terminated without properly saying
+  goodbye`) at 3 OfficeFloor checkpoints and 1 Spring one. Each recorded
+  `build_ok=True, total_selected=0, results={}`, which scored as the whole prior
+  suite regressing: OfficeFloor's true-regression count read **143** when the real
+  figure was **0** (Spring: 34 → 4). The tell is `total_selected=0` on a checkpoint
+  whose neighbours pass 60+ tests, plus the agent's own turn reporting a green suite.
+  Fixed by `_gate_invalid` + retry (above); `analyze` now repairs old captures by
+  signature, so re-run it rather than trusting any correctness number produced
+  before 2026-08-22.
 - **"60 checkpoints captured" ≠ valid.** An auth-dead turn still writes a capture
   record. The dead signature is `agent.ok=False, cost_usd=0, output_tokens=0,
   num_turns=1` and an empty agent commit. Always scan for it before trusting a

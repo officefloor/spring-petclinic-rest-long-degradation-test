@@ -19,8 +19,9 @@ import json
 import math
 import os
 import re
+import statistics
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Optional
 
 import lizard
@@ -408,6 +409,208 @@ def entry_handler_stats(fns: list[dict], pattern: Optional[str]) -> dict:
     }
 
 
+def _handler_files(fns: list[dict], pattern: Optional[str]) -> set[str]:
+    """File(s) holding the entry handler's own class, for the class-scoped handler
+    metrics. The entry_handler convention is 'Class::method', and the CLASS is what
+    is wanted: every method that accreted onto the handler's class, not just the one
+    entry method. Matching the file is also robust to lizard's checkpoint-to-
+    checkpoint variation in whether it names a function 'Class::method' or bare
+    'method', which would otherwise blank the metric exactly on the checkpoints
+    where the handler bloats most. Empty if the pattern is absent or unmatched (e.g.
+    before the class exists)."""
+    if not pattern:
+        return set()
+    m = re.match(r"([A-Za-z_]\w*)::", pattern)
+    if m:
+        stem = m.group(1) + ".java"
+        files = {f["file"] for f in fns if f["file"].split("/")[-1] == stem}
+        if files:
+            return files
+    rx = re.compile(pattern)   # pattern not in Class::method form, or class absent
+    return {f["file"] for f in fns if rx.search(f"{f['file']}::{f['name']}")}
+
+
+def handler_wmc_stats(fns: list[dict], pattern: Optional[str]) -> dict:
+    """WMC of the entry handler's OWN class: the role-comparable god-class number.
+
+    `wmc_max` reports the heaviest class *whatever it is*, and the two arms answer
+    with different kinds of class. On full-202608102319 OfficeFloor's heaviest is
+    the Owner ENTITY (roughly 60 accessors at CC 1, WMC ~67) while Spring's is
+    usually the CONTROLLER (~32 methods averaging CC 3+, WMC ~142). Same metric,
+    different meaning: one is data, the other is decisions. Comparing them across
+    arms compares roles, not architectures.
+
+    This pins the measurement to the same ROLE in both arms -- the class the create
+    endpoint routes through -- so the god-class claim can be made on a like-for-like
+    number, exactly as `erosion_handler` does for erosion. Blank when the pattern is
+    null or the class is not present yet."""
+    blank = {"wmc_handler": None, "wmc_handler_class": None,
+             "wmc_handler_methods": None, "wmc_handler_nloc": None}
+    files = _handler_files(fns, pattern)
+    if not files:
+        return dict(blank)
+    grp = [f for f in fns if f["file"] in files]
+    if not grp:
+        return dict(blank)
+    return {
+        "wmc_handler": sum(g["cc"] for g in grp),
+        "wmc_handler_class": ", ".join(sorted(p.split("/")[-1] for p in files)),
+        "wmc_handler_methods": len(grp),
+        "wmc_handler_nloc": sum(g["nloc"] for g in grp),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-node comprehension load: what must be understood to change ONE rule.
+#
+# `entry_cc`, `wmc_handler` and `erosion_handler` all measure the class the request
+# ENTERS, and a pipeline architecture can look flat on all three simply by pushing work
+# to the next node -- a real objection, and measurably true here: OfficeFloor's entry
+# node is CC ~1.3 while its worst pipeline node reaches CC ~13, and once helper calls
+# are followed its whole create path carries the SAME total complexity as Spring's
+# controller (217 vs 204 on blind-202608100006).
+#
+# This metric is immune to that move. It asks, per node, how much code is reachable from
+# it -- so relocating logic downstream just relocates the number to the receiving node's
+# closure. The only way to score well is to keep rules genuinely separable.
+# ---------------------------------------------------------------------------
+
+_CALL_RE = re.compile(r"(?:\.\s*|\b)([a-z]\w*)\s*\(")
+_JAVA_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "new", "super",
+                  "this", "synchronized", "try", "do", "else", "assert", "throw"}
+
+
+def _call_index(worktree: str, fns: list[dict]) -> tuple[dict, dict]:
+    """(class, method) -> record and method -> [records], each record carrying the set of
+    names it calls. Class comes from the FILE (one top-level class per Java file), which
+    also absorbs lizard's variation between 'Class::method' and bare 'method' naming."""
+    by_key: dict[tuple[str, str], dict] = {}
+    by_name: dict[str, list[dict]] = defaultdict(list)
+    src: dict[str, list[str]] = {}
+    for f in fns:
+        cls = f["file"].split("/")[-1].removesuffix(".java")
+        meth = f["name"].split("::")[-1]
+        f["_cls"], f["_meth"] = cls, meth
+        by_key[(cls, meth)] = f
+        by_name[meth].append(f)
+        path = os.path.join(worktree, f["file"])
+        if path not in src:
+            try:
+                src[path] = open(path, encoding="utf-8", errors="replace").read().splitlines()
+            except OSError:
+                src[path] = []
+        body = "\n".join(src[path][f["start"] - 1:f["end"]])
+        f["_calls"] = {m for m in _CALL_RE.findall(body) if m not in _JAVA_KEYWORDS}
+    return by_key, by_name
+
+
+def _closure(roots: list[dict], by_key: dict, by_name: dict) -> set[tuple[str, str]]:
+    """Methods transitively reachable from `roots`, resolved CONSERVATIVELY.
+
+    Java call resolution without a type checker is inexact, so this takes the lower
+    bound: a call resolves only when it names a method of the same class, or a method
+    name that exists in exactly one class project-wide. Ambiguous names (`getName`) and
+    everything outside the project (JDK, Spring Data repositories, generated MapStruct
+    impls) resolve to nothing -- symmetric across arms, so both paths are undercounted
+    the same way. An upper bound that follows every same-named method was checked
+    off-line and agrees on every between-arm comparison."""
+    seen: set[tuple[str, str]] = set()
+    queue = list(roots)
+    while queue:
+        f = queue.pop()
+        key = (f["_cls"], f["_meth"])
+        if key in seen:
+            continue
+        seen.add(key)
+        for name in f["_calls"]:
+            same = by_key.get((f["_cls"], name))
+            if same:
+                cands = [same]
+            elif name in by_name and len({h["_cls"] for h in by_name[name]}) == 1:
+                cands = by_name[name]
+            else:
+                continue          # ambiguous or external -> not followed
+            for c in cands:
+                if (c["_cls"], c["_meth"]) not in seen:
+                    queue.append(c)
+    return seen
+
+
+def _node_roots(worktree: str, by_key: dict, arm_cfg: dict) -> list[dict]:
+    """The handling nodes for this arm's create endpoint.
+
+    Deliberately asymmetric, because the architectures are: OfficeFloor DECLARES its
+    pipeline, so each wired step is a node (`node_roots.wiring_file` + `node_method`);
+    Spring has no per-rule node -- the rules are interleaved inside one handler -- so its
+    single node is the `entry_handler` function. That asymmetry is the phenomenon being
+    measured, not a distortion of it: an arm only gets many nodes by actually having
+    separable rules. Any arm can opt in by declaring a wiring file."""
+    nr = arm_cfg.get("node_roots") or {}
+    wiring = nr.get("wiring_file")
+    if wiring:
+        path = os.path.join(worktree, wiring)
+        if os.path.isfile(path):
+            rx = re.compile(nr.get("class_regex", r"class:\s*([\w.]+)"))
+            method = nr.get("node_method", "service")
+            text = open(path, encoding="utf-8", errors="replace").read()
+            roots = []
+            for cls in dict.fromkeys(rx.findall(text)):       # ordered, de-duplicated
+                rec = by_key.get((cls.split(".")[-1], method))
+                if rec:
+                    roots.append(rec)
+            if roots:
+                return roots
+    pattern = arm_cfg.get("entry_handler")
+    if not pattern:
+        return []
+    rx = re.compile(pattern)
+    hits = [f for f in by_key.values() if rx.search(f"{f['file']}::{f['name']}")]
+    return [max(hits, key=lambda f: (f["cc"], f["nloc"]))] if hits else []
+
+
+def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict) -> dict:
+    """Per-node comprehension load, and how much of it each node owns.
+
+    `node_cc_median` is the headline: the complexity reachable from a typical node, i.e.
+    what a developer loads to change one rule. `node_exclusive_share` is cohesion --
+    the fraction of all node-reachable CC that is reachable from exactly ONE node, so a
+    pipeline of thin wrappers over a shared blob scores low while genuinely separable
+    rules score high. `node_path_cc` is the union across nodes: the whole handling path,
+    which is the number the 'you just relocated it downstream' objection asks for."""
+    blank = {"node_count": None, "node_cc_median": None, "node_cc_mean": None,
+             "node_cc_p90": None, "node_cc_max": None, "node_methods_median": None,
+             "node_exclusive_share": None, "node_path_cc": None, "node_path_methods": None}
+    if not fns:
+        return dict(blank)
+    by_key, by_name = _call_index(worktree, fns)
+    roots = _node_roots(worktree, by_key, arm_cfg)
+    if not roots:
+        return dict(blank)
+    per = [_closure([r], by_key, by_name) for r in roots]
+    cc_of = lambda keys: sum(by_key[k]["cc"] for k in keys if k in by_key)
+    ccs = sorted(cc_of(s) for s in per)
+    reach = Counter(k for s in per for k in s)          # how many nodes reach each method
+    total = sum(ccs)
+    exclusive = sum(cc_of({k for k in s if reach[k] == 1}) for s in per)
+    union = set().union(*per)
+    # Exclusivity is only meaningful with something to be exclusive AGAINST. With one
+    # node it is trivially 1.0, which in an arm-vs-arm table would read as "Spring is
+    # perfectly cohesive" when it means "Spring has no separable rules to share
+    # between". Blank it instead.
+    excl_share = (round(exclusive / total, 4) if total and len(per) > 1 else None)
+    return {
+        "node_count": len(per),
+        "node_cc_median": round(statistics.median(ccs), 2),
+        "node_cc_mean": round(statistics.mean(ccs), 2),
+        "node_cc_p90": ccs[int(0.9 * (len(ccs) - 1))],
+        "node_cc_max": max(ccs),
+        "node_methods_median": round(statistics.median(len(s) for s in per), 2),
+        "node_exclusive_share": excl_share,
+        "node_path_cc": cc_of(union),
+        "node_path_methods": len(union),
+    }
+
+
 def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
                            cc_threshold: int = CC_THRESHOLD) -> dict:
     """Erosion (Eq.3) restricted to the entry handler's OWN class file(s).
@@ -426,22 +629,7 @@ def handler_scoped_erosion(fns: list[dict], pattern: Optional[str],
     blank = {"erosion_handler": None, "erosion_handler_high_mass": None,
              "erosion_handler_total_mass": None, "erosion_handler_hot_fns": None,
              "erosion_handler_class": None, "erosion_handler_nfns": None}
-    if not pattern:
-        return dict(blank)
-    # Scope by the handler's CLASS FILE. The entry_handler convention is
-    # 'Class::method', and the class is what we want — every method that accreted
-    # onto the handler's class, not just the one entry method. Matching the file is
-    # also robust to lizard's checkpoint-to-checkpoint variation in whether it names
-    # a function 'Class::method' or bare 'method'; matching the method name blanks
-    # the metric exactly on the checkpoints where the handler bloats most.
-    m = re.match(r"([A-Za-z_]\w*)::", pattern)
-    files: set[str] = set()
-    if m:
-        stem = m.group(1) + ".java"
-        files = {f["file"] for f in fns if f["file"].split("/")[-1] == stem}
-    if not files:  # pattern not in Class::method form, or the class isn't present yet
-        rx = re.compile(pattern)
-        files = {f["file"] for f in fns if rx.search(f"{f['file']}::{f['name']}")}
+    files = _handler_files(fns, pattern)   # identical class scoping to handler_wmc_stats
     if not files:
         return dict(blank)
     ed = erosion_detail([f for f in fns if f["file"] in files], cc_threshold)
@@ -665,6 +853,8 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     wmc = wmc_stats(touched_fns)                             # god-class over the subsystem
     eh = entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: found even if unchanged
     ehe = handler_scoped_erosion(fns, arm_cfg.get("entry_handler"))  # erosion of the handler's own class
+    hw = handler_wmc_stats(fns, arm_cfg.get("entry_handler"))    # god-class, pinned to the SAME role in both arms
+    nc = node_closure_stats(worktree, fns, arm_cfg)              # per-node comprehension load (relocation-proof)
     spread = change_spread(worktree, prev_ref, cur_ref)
     reedit = reedit_stats(worktree, base_commit, prev_ref, cur_ref)  # temporal coupling vs base
     imp = impact_stats(worktree, prev_ref, cur_ref)  # blast weighted by complexity disturbed
@@ -692,6 +882,8 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     row.update(wmc)
     row.update(eh)
     row.update(ehe)
+    row.update(hw)
+    row.update(nc)
     row.update(spread)
     row.update(reedit)
     row.update(imp)
@@ -707,6 +899,8 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "blast_radius": br,
         "blast_radius_detail": brd,
         "wmc": wmc,
+        "wmc_handler": hw,
+        "node_closure": nc,
         "entry_handler": eh,
         "erosion_handler": ehe,
         "change_spread": spread,

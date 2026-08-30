@@ -22,11 +22,24 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 CLASS_RE = re.compile(r"Cp0*(\d+)Tests", re.IGNORECASE)
 CAT_RE = re.compile(r"(core|error|functionality)", re.IGNORECASE)
+
+# Signatures of a gate run that ABORTED rather than ran: the Surefire fork died
+# (JVM crash / SIGABRT / OOM-killer), so some or all classes produced no report.
+# These are infrastructure faults, NOT the agent's code failing -- see
+# `_gate_invalid`. Kept narrow and Surefire-specific so ordinary test-failure
+# output (which the agent's own code can emit) can never match.
+_CRASH_MARKERS = (
+    "The forked VM terminated without properly saying goodbye",
+    "Error occurred in starting fork",
+    "Corrupted STDOUT by directly writing to native stream in forked JVM",
+    "Crashed tests:",
+)
 
 
 @dataclass
@@ -39,6 +52,8 @@ class TestOutcome:
     results: dict[str, bool] = field(default_factory=dict)  # RAW {test_id: passed} — the atom
     detail: list[dict] = field(default_factory=list)   # per-test time + failure text
     total_selected: int = 0                            # tests actually run
+    gate_invalid: bool = False                         # run ABORTED -> results unusable (not a failure)
+    gate_attempts: int = 0                             # test-command tries spent (>1 = a retry happened)
     # category pass/total at the *current* checkpoint
     core_pass: int = 0
     core_total: int = 0
@@ -162,32 +177,84 @@ def score_results(results: dict[str, bool], checkpoint_k: int) -> TestOutcome:
     return outcome
 
 
+def _gate_invalid(results: dict[str, bool], test_console: str) -> str:
+    """Reason this gate run is UNUSABLE, or "" if it is a valid measurement.
+
+    The distinction that matters: a test that RAN and failed is the signal the
+    experiment exists to capture and must never be retried away. A run that
+    ABORTED produced no verdict at all, and scoring it silently reads the missing
+    results as "every prior rule broke" (`count_regressions` is
+    `prior_passing - now_passing`). Only the latter is retried.
+
+    Two independent detectors, because a fork can die either before any class runs
+    (no reports at all) or partway (some classes reported, the rest lost):
+      * no results while the build compiled -- at checkpoint K the authored suite
+        always holds at least cp01's test, so an empty map cannot be legitimate.
+        (A *failed build* returns earlier, with build_ok=False; that IS the agent
+        breaking compilation and stays scored.)
+      * a Surefire fork-death marker in the console, which is the only way a
+        partial run announces that the rest of the suite never got a verdict.
+    """
+    if not results:
+        return "gate produced no test results (fork died before any class reported)"
+    hit = next((m for m in _CRASH_MARKERS if m in test_console), None)
+    return f"gate run aborted mid-suite: {hit!r}" if hit else ""
+
+
 def run_tests(worktree: str, checkpoint_k: int, cfg: dict) -> TestOutcome:
     """Run the accumulated suite cp01..cpK and score by category. The full build +
     test console is retained on the outcome (`console`) so it can be captured — a
     test that errors before producing a Surefire report (e.g. context startup)
-    would otherwise leave no trace beyond a lower selected-count."""
+    would otherwise leave no trace beyond a lower selected-count.
+
+    An ABORTED run (Surefire fork crash) is retried up to `build.test_attempts`
+    times; a run whose tests merely FAIL is returned on the first attempt, always.
+    If every attempt aborts the outcome is flagged `gate_invalid` and carries NO
+    correctness verdict — the checkpoint becomes missing data rather than a
+    fabricated mass regression."""
     ok, build_out = build(worktree, cfg)
     console = f"$ {' '.join(cfg['build']['cmd'])}\n{build_out}"
     if not ok:
         return TestOutcome(build_ok=False, error=f"build failed:\n{build_out[-1600:]}",
                            build_output=build_out[-1600:], console=console)
 
-    _clear_surefire(worktree, cfg)
     tags = ",".join(f"cp{str(i).zfill(2)}" for i in range(1, checkpoint_k + 1))
     tmpl = cfg["build"]["test_cmd_template"]
     cmd = [part.replace("{tags}", tags) for part in tmpl]
-    try:
-        tproc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
-                               timeout=cfg["build"].get("test_timeout", 3600))
-        console += f"\n$ {' '.join(cmd)}\n{(tproc.stdout or '') + (tproc.stderr or '')}"
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return TestOutcome(build_ok=True, error=f"test run failed to launch/timed out: {exc}",
-                           console=console + f"\n$ {' '.join(cmd)}\n[launch/timeout] {exc}")
+    attempts = max(1, int(cfg["build"].get("test_attempts", 3)))
+    backoff = int(cfg["build"].get("test_retry_seconds", 30))
 
-    results, detail = _parse_surefire(worktree, cfg)
-    outcome = score_results(results, checkpoint_k)
-    outcome.detail = detail
+    outcome = TestOutcome(build_ok=True)
+    for attempt in range(1, attempts + 1):
+        _clear_surefire(worktree, cfg)
+        header = f"\n$ {' '.join(cmd)}" + (f"   [gate attempt {attempt}/{attempts}]"
+                                           if attempt > 1 else "")
+        try:
+            tproc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
+                                   timeout=cfg["build"].get("test_timeout", 3600))
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            # Not retried: a missing command will not fix itself, and a timeout has
+            # already burned test_timeout (retrying could multiply it by attempts).
+            return TestOutcome(build_ok=True, gate_invalid=True, gate_attempts=attempt,
+                               error=f"test run failed to launch/timed out: {exc}",
+                               console=console + f"{header}\n[launch/timeout] {exc}")
+        test_console = (tproc.stdout or "") + (tproc.stderr or "")
+        console += f"{header}\n{test_console}"
+
+        results, detail = _parse_surefire(worktree, cfg)
+        reason = _gate_invalid(results, test_console)
+        outcome = score_results(results, checkpoint_k)
+        outcome.detail = detail
+        outcome.gate_attempts = attempt
+        if not reason:
+            outcome.console = console
+            return outcome
+        outcome.gate_invalid = True
+        outcome.error = f"{reason} (attempt {attempt}/{attempts}, exit {tproc.returncode})"
+        if attempt < attempts:
+            print(f"    ! {outcome.error} — retrying gate in {backoff}s")
+            time.sleep(backoff)
+
     outcome.console = console
     return outcome
 
@@ -235,9 +302,22 @@ def count_true_regressions(prior_passing: set[str], now_passing: set[str],
 def outcome_row(outcome: "TestOutcome", prior_passing: set[str], mutated_cps=()) -> dict:
     """Map a scored TestOutcome to the flat correctness row fields (incl. Normalized
     Change + regressions vs prior_passing). One definition, called by both the
-    runner (run time) and analyze (recompute), so the schema lives in one place."""
+    runner (run time) and analyze (recompute), so the schema lives in one place.
+
+    An aborted gate (`gate_invalid`) yields BLANK correctness fields: it has no
+    verdict to report, and the empty result set would otherwise be scored as a
+    regression on every prior rule. `gate_invalid` marks the hole so analyze can
+    exclude it from the correctness aggregates instead of reading blanks as
+    failures — and so it stays visible rather than becoming a quiet zero."""
+    if outcome.gate_invalid:
+        blanks = {f: "" for f in (
+            "total_selected", "strict_pass", "iso_pass", "core_pass",
+            "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
+            "regr_p", "regr_t", "normalized_change", "regressions", "true_regressions")}
+        return {"build_ok": outcome.build_ok, "gate_invalid": True, **blanks}
     return {
         "build_ok": outcome.build_ok,
+        "gate_invalid": False,
         "total_selected": outcome.total_selected,
         "strict_pass": outcome.all_pass,
         "iso_pass": outcome.iso_pass,

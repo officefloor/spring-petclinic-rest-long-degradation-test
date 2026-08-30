@@ -53,6 +53,10 @@ arms:
     # Entry-handler trajectory (#4): the ONE function POST /api/owners routes
     # through. Regex over '<file>::<name>'. Spring's single handler can bloat.
     entry_handler: "OwnerRestControllerV1::addOwner"
+    # No wiring file: Spring declares no per-rule nodes, so its single node IS the entry
+    # handler and `node_closure_cc_median` is the whole handler's closure. That is the
+    # measurement -- an arm earns multiple nodes only by having separable rules.
+    node_roots: null
 
   officefloor:
     repo: ${HOME}/compare/officefloor
@@ -66,7 +70,18 @@ arms:
     function_package_glob: "src/main/java/**/rest/function/**/*.java"
     # Designated create-entry function of the owner pipeline. Expected to stay
     # flat: new rules attach as NEW wired functions, not by growing this one.
+    # NOTE: entry_cc / wmc_handler / erosion_handler all scope to this ONE node, so a
+    # pipeline can look flat on them by pushing work downstream (it measurably does:
+    # entry CC ~1.3 while the worst pipeline node reaches ~13). Use `node_closure_*`
+    # for the relocation-proof comparison.
     entry_handler: "BuildOwner::service"
+    # Per-node comprehension load: every wired step of the create pipeline is a node,
+    # read from the declared wiring. Each node's transitive call closure is measured,
+    # so logic moved to a later node simply lands in that node's number.
+    node_roots:
+      wiring_file: "src/main/resources/officefloor/rest/api/owners.POST.yml"
+      class_regex: 'class:\s*([\w.]+)'
+      node_method: "service"
 
 # Prompt strategies mirror SlopCodeBench's intervention study. {spec} is replaced
 # with the checkpoint specification. Keep them neutral: never mention the
@@ -165,6 +180,11 @@ build:
   surefire_dir: "target/surefire-reports"
   timeout: 1800
   test_timeout: 3600
+  # Gate retries. ONLY an ABORTED run is retried (Surefire fork crash / JVM SIGABRT,
+  # which yields no verdict and would otherwise be scored as "every prior rule broke").
+  # A run whose tests merely FAIL is never retried -- that is the signal being measured.
+  test_attempts: 3          # tries per gate before the checkpoint is marked gate_invalid
+  test_retry_seconds: 30    # pause between those tries
 
 tools:
   jscpd: "jscpd"     # npm i -g jscpd  (clone detection for Verbosity)

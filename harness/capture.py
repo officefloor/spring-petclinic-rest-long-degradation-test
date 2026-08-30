@@ -197,6 +197,11 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
             "results": outcome.results,     # {test_id: passed} — the atom
             "detail": outcome.detail,       # per-test time + failure text
             "error": outcome.error,
+            # A gate that ABORTED (Surefire fork crash) after `gate_attempts` tries
+            # carries no verdict; analyze must treat it as missing data, never as a
+            # suite-wide regression. Persisted so the hole survives into re-analysis.
+            "gate_invalid": outcome.gate_invalid,
+            "gate_attempts": outcome.gate_attempts,
         },
         "probe": probe,
         "pinned_touched": pinned_touched,
