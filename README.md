@@ -387,11 +387,13 @@ in **[docs/RUN_WITH_A_DIFFERENT_MODEL.md](docs/RUN_WITH_A_DIFFERENT_MODEL.md)**.
 
 ## The impact-gated pipeline (ImpactGate refactor gate)
 
-Every strategy above just *implements* each checkpoint; erosion is observed, never
+Every strategy above just *implements* each checkpoint; concentration is observed, never
 acted on. The **`impact_gated`** strategy instead puts [ImpactGate](../ImpactGate)
 in the merge path as a gate that **triggers refactors**. The thesis it tests: given
 an active structural-impact gate and a refactor budget, does each architecture reach
-cp60, and does gating flatten the erosion slope?
+cp60, and can prompting flatten the **`node_cc_median`** (comprehension-load) slope —
+the concentration the fixed prompt could not, in the prior run, keep out of Spring's one
+growing handler?
 
 **The per-checkpoint loop** (only when `--strategy impact_gated`; every other strategy
 is an untouched control):
@@ -423,18 +425,46 @@ the **same before-context-WMC** signal `analyze` reports as `impact_composite`, 
 gates exactly the erosion metric the run analyses.
 
 **Configure** it under `impact_gate:` in `config.yaml` — `cmd` (how to invoke `impact-gate`),
-`strategy` (the activating strategy name), `block_percentile` / `warn_percentile`,
-`max_refactors`, `stop_scope`, `record_refactor_correctness` (run the full gate on each
-refactor, recorded but never enforced), and the `refactor_prompt` template
-(`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}` placeholders).
+`strategy` (the activating strategy name), `baseline_file` (a reference-arm distribution to
+grade against; null → the seed) + `curve_prior_weight` (0 → grade purely against it),
+`block_percentile` / `warn_percentile`, `max_refactors`, `stop_scope`,
+`record_refactor_correctness` (run the full gate on each refactor, recorded but never enforced),
+and the `refactor_prompt` template (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`
+placeholders).
 
-> **Calibration is essential.** The Java seed is heavy-tailed: p50≈1.5k, p90≈200k,
-> p98≈3.9M composite. This harness's own `impact_composite` peaks around ~36k for a Spring
-> *mutative* checkpoint (≈p76) and ~4.8k for OfficeFloor (≈p54). So `block_percentile: 90+`
-> **never fires** (an inert loop / null result); the shipped default **70** fires on Spring's
-> concentrated god-method mutations while mostly sparing OfficeFloor's fanned-out changes —
-> the discriminating behaviour under test. Smoke-run, watch the `impact-gate: implement grade
-> pXX` log line, and set `block_percentile` just under where the eroding arm lands.
+### Calibrating the gate to OfficeFloor's cohesion (the experiment)
+
+The [prior run](https://blog.officefloor.net/2026/08/the-same-complexity-one-unit-or-twenty.html)
+showed OfficeFloor spreads work into many small wired functions and does **not** erode into god
+classes, while Spring's one `@RestController` does. So the real question is: **can the refactor
+prompting hold Spring to OfficeFloor's cohesion?** Answer it by grading every change not against
+ImpactGate's generic OSS seed but against **OfficeFloor's own observed change-impact distribution**:
+
+1. Build the reference distribution from a completed **ungated OfficeFloor** run (the prior
+   experiment works):
+   ```bash
+   python -m harness.build_impact_baseline --config config.yaml --run-id blind-202608100006 \
+       --arm officefloor --strategy just-solve --out '${HOME}/pe-impact-baselines/officefloor.json'
+   ```
+   It reads the run's per-checkpoint `impact_composite` (from `results/<run_id>/records.concat.csv`,
+   or recomputed with `--recompute`) and writes an ImpactGate baseline JSON, printing the
+   percentile → composite grid.
+2. Point the gate at it: `impact_gate.baseline_file` = that path, `curve_prior_weight: 0` (grade
+   **purely** against OfficeFloor, ignoring the seed). Now `block_percentile` is read against
+   OfficeFloor: **90 = "refactor when a change is more impactful than 90% of OfficeFloor's changes."**
+
+This one shared cutoff is applied **identically to both arms** — run `--strategy impact_gated`
+with **no `--arm` filter** and Spring *and* OfficeFloor are graded against the same OfficeFloor-derived
+line, so OfficeFloor is held to it too (a drift into a "god pipeline" would fire). A *lower*
+`block_percentile` is the *stricter* end (harder to pass); a *higher* one is more lenient.
+
+> **Pick the percentile deliberately.** From `blind-202608100006`, OfficeFloor's `impact_composite`
+> is p50≈369, p90≈3,410, p95≈5,922, p98≈14,148. Spring's *median* change (≈4,736) already exceeds
+> OfficeFloor's p90. The shipped default is **p95 (composite ≈5,922)**: OfficeFloor fires on ~5% of
+> its own changes, Spring on ~45% — held to OfficeFloor's cohesion without being impossible to pass.
+> Raise toward **p98 (≈14,148, ~30% of Spring)** for more headroom; lower toward **p90 (≈3,410, ~61%
+> of Spring)** for OfficeFloor's *typical* cohesion (stricter, early stops likely). Leave
+> `baseline_file: null` to fall back to the generic seed curve instead.
 
 **Prerequisite.** The `impact-gate` CLI (standalone, lizard-only). `./setup.sh` installs it
 editable from a sibling `~/ImpactGate` checkout if present (then set
@@ -459,8 +489,17 @@ python -m harness.analyze --config config.yaml
 checkpoint, stop count, share of checkpoints needing a refactor, mean refactors/checkpoint,
 summed refactor cost, and the accepted change's mean grade) and per-checkpoint columns
 `ig_refactors` / `ig_passed` / `ig_stopped` / `ig_grade` / `ig_refactor_cost_usd` /
-`ig_refactor_tokens`. The headline comparison is the erosion / `entry_cc` / `wmc_max` slopes:
-`impact_gated` vs `just-solve`, per arm. Each checkpoint's capture record carries an
+`ig_refactor_tokens`. The headline comparison is the **`node_cc_median`** slope (comprehension
+load — the CC you must hold to change one rule; the decisive concentration statistic, and
+relocation-proof so a refactor can't just push complexity to the next node), with
+**`node_exclusive_share`** (cohesion) alongside it, `impact_gated` vs `just-solve` per arm.
+Confirmation for the gate: Spring's `node_cc_median` slope *flattens* under `impact_gated`
+(the refactors decompose the god-method so no single node's reachable complexity keeps
+climbing) while its cohesion holds, and it still reaches cp60 — without the gate lowering
+the *slope* being the strong result SlopCodeBench found prompting alone could not achieve.
+(`entry_cc` / `wmc_handler` / `erosion_handler` are reported too but flatter a pipeline
+architecture — they can read flat while work piles into a later node — so they are not the
+decisive line here.) Each checkpoint's capture record carries an
 `impact_gate` block (per-attempt grade/verdict/flagged-files, and the refactor turns'
 irreproducible cost/tokens).
 

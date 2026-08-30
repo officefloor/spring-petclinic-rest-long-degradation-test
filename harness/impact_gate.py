@@ -28,18 +28,29 @@ class ImpactGateError(RuntimeError):
 
 
 def score(cmd: list[str], repo: str, block_percentile: float, warn_percentile: float,
-          measure_config: str | None = None, timeout: int = 300) -> dict:
+          measure_config: str | None = None, baseline_file: str | None = None,
+          curve_prior_weight: float | None = None, timeout: int = 300) -> dict:
     """Score the STAGED production diff of `repo` and return the parsed JSON dict:
     `impact` (composite), `level` (ok|warn|block), `grade.percentile`, the ranked
     `files`, and `top_units`. Raises ImpactGateError if the binary is missing or
     emits no JSON.
 
     Stage the change (`git add -A`) before calling. `--mode staged` scores staged
-    vs HEAD, so the diff is exactly this checkpoint's (or refactor's) delta."""
+    vs HEAD, so the diff is exactly this checkpoint's (or refactor's) delta.
+
+    `baseline_file` (absolute, outside the worktree) grades the change against a
+    reference distribution instead of the shipped seed — e.g. OfficeFloor's own observed
+    impact_composite, so Spring is held to that cohesion (see build_impact_baseline). With
+    `curve_prior_weight=0` the grade is PURELY that distribution's percentile (seed
+    ignored); block_percentile is then read against the reference arm."""
     argv = [*cmd, "score", "--repo", repo, "--mode", "staged",
             "--format", "json", "--curve",
             "--block-percentile", str(block_percentile),
             "--warn-percentile", str(warn_percentile)]
+    if baseline_file:
+        argv += ["--baseline-file", baseline_file]
+    if curve_prior_weight is not None:
+        argv += ["--curve-prior-weight", str(curve_prior_weight)]
     if measure_config:
         argv += ["--measure-config", measure_config]
     try:

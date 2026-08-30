@@ -691,7 +691,10 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
     block_p = float(igc.get("block_percentile", 98))
     warn_p = float(igc.get("warn_percentile", 90))
     mcfg = igc.get("measure_config")
+    baseline_file = igc.get("baseline_file")           # grade vs a reference arm's distribution
+    K = igc.get("curve_prior_weight")                  # 0 => grade PURELY vs that distribution
     max_ref = int(igc.get("max_refactors", 3))
+    score_kw = dict(measure_config=mcfg, baseline_file=baseline_file, curve_prior_weight=K)
     acc_excl = (cfg["acceptance"]["dest_subpath"].rstrip("/") + "/",)
     k = cp["n"]
     pre_checkpoint_sha = base_for_cp
@@ -710,7 +713,7 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                                           f"cp{k:02d}.agent.jsonl", checkpoints)
         mirror_source(sandbox, wt, extra_excludes=acc_excl)
         git(["-C", wt, "add", "-A"])
-        ig = impact_gate.score(cmd, wt, block_p, warn_p, mcfg)
+        ig = impact_gate.score(cmd, wt, block_p, warn_p, **score_kw)
         blocked = impact_gate.is_blocked(ig, block_p)
         attempts.append(impact_gate.attempt_summary("implement", ig, block_p))
         pct = impact_gate.grade_percentile(ig)
@@ -743,7 +746,7 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                               confine=_confine_config(cfg))
         mirror_source(sandbox, wt, extra_excludes=acc_excl)
         git(["-C", wt, "add", "-A"])
-        ig_ref = impact_gate.score(cmd, wt, block_p, warn_p, mcfg)
+        ig_ref = impact_gate.score(cmd, wt, block_p, warn_p, **score_kw)
         rtests = None
         if igc.get("record_refactor_correctness", True):
             rtests = _refactor_correctness(sandbox, cfg, checkpoints, k, arm_cfg)
@@ -780,7 +783,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         gate = ""
         if _gate_active(cfg, strategy):
             igc = cfg["impact_gate"]
-            gate = (f" [impact-gate ON: block p{igc.get('block_percentile')}, "
+            ref = (f"vs baseline {os.path.basename(igc['baseline_file'])} (K={igc.get('curve_prior_weight')})"
+                   if igc.get("baseline_file") else "vs seed")
+            gate = (f" [impact-gate ON: block p{igc.get('block_percentile')} {ref}, "
                     f"max_refactors={igc.get('max_refactors')}, cmd={' '.join(igc.get('cmd', []))}]")
         print(f"[dry-run] {arm}/{strategy}/chain{chain} [test-mode={cfg['test_mode']}]{gate}: "
               f"{n} checkpoints from {arm_cfg['repo']}@{arm_cfg['base_ref']} -> branch {branch_preview}")
@@ -1126,6 +1131,10 @@ def main() -> int:
                                      for c in cfg["impact_gate"]["cmd"]]
     if cfg.get("impact_gate", {}).get("measure_config"):
         cfg["impact_gate"]["measure_config"] = resolve(cfg["impact_gate"]["measure_config"])
+    if cfg.get("impact_gate", {}).get("baseline_file"):
+        # Absolute so impact-gate joins it OUTSIDE the arm worktree (never committed / seen
+        # by the agent); a reference-arm distribution to grade against instead of the seed.
+        cfg["impact_gate"]["baseline_file"] = resolve(cfg["impact_gate"]["baseline_file"])
 
     # Sources snapshotted into each results commit so a run is self-contained: the
     # config that shaped its metrics travels with it (analyze prefers this over the

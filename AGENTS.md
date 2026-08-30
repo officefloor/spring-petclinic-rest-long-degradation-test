@@ -111,7 +111,8 @@ rationale (the "why", so it doesn't silently regress):
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
-| `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the refactor prompt from the flagged files/drivers + spec (`refactor_prompt`), and shapes the capture entry per attempt (`attempt_summary`). No effect on the other strategies. |
+| `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the refactor prompt from the flagged files/drivers + spec (`refactor_prompt`), and shapes the capture entry per attempt (`attempt_summary`). No effect on the other strategies. |
+| `build_impact_baseline.py` | builds an ImpactGate baseline JSON from a completed run's OWN per-checkpoint `impact_composite` (reads `results/<run_id>/records.concat.csv`, else recomputes). Used to calibrate the gate to OfficeFloor's observed cohesion so Spring is graded against it. Standalone `python -m harness.build_impact_baseline`. |
 | `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
 | `__init__.py` | shared helpers: `git_out` (graceful, for derive/analyze), `expand_path`. |
 
@@ -206,7 +207,12 @@ structural-metrics base are the refactored code (the checkpoint's `impact_compos
 the final implement delta; the refactor deltas + `pre_checkpoint_sha` live in the capture
 block). `analyze` still enumerates from the capture's `commit_sha` (the agent commit); the
 refactor commits are its ancestors, so the materialized checkpoint tree includes them and the
-absolute erosion/WMC/entry-CC snapshots reflect refactor+implement with **no grouping rework**.
+absolute snapshots — decisively **`node_cc_median`** (comprehension load) and
+`node_exclusive_share` (cohesion), plus `wmc_handler`/`entry_cc`/`erosion_*` — reflect
+refactor+implement with **no grouping rework**. The headline gate result is the `node_cc_median`
+slope, `impact_gated` vs `just-solve` per arm (it is relocation-proof, so a refactor that merely
+shifts complexity to a later node cannot fake a win); `entry_cc`/`wmc_handler` flatter pipelines
+and are corroborating, not decisive (see "What the experiment is").
 
 **Capture.** `checkpoint_record(..., impact_gate=ig_block)` adds an `impact_gate` block:
 `{enabled, block_percentile, warn_percentile, max_refactors, refactors, passed, stopped,
@@ -222,10 +228,19 @@ refactor event streams land as `cpNN.refactorM.jsonl` (staged by the existing
 summary table (reached-final rate, stops, refactor rate, mean refactors/cp, refactor $, mean
 accepted grade), shown only when a group has gate data.
 
-**Calibration (critical).** The Java seed is heavy-tailed: p50≈1.5k, p90≈200k, p98≈3.9M
-composite; this harness's `impact_composite` peaks ~36k (Spring mutative, ≈p76) / ~4.8k
-(OfficeFloor, ≈p54). So `block_percentile: 90+` never fires (null experiment); the default
-**70** fires on Spring's concentration while mostly sparing OfficeFloor. Tune per corpus.
+**Calibration — grade against OfficeFloor, not the seed (the experiment).** The prior run
+([blog](https://blog.officefloor.net/2026/08/the-same-complexity-one-unit-or-twenty.html))
+showed OfficeFloor stays cohesive while Spring erodes. So the gate grades against OfficeFloor's
+OWN `impact_composite` distribution, built by `build_impact_baseline` from a completed ungated
+OF run into an ImpactGate baseline JSON. `impact_gate.baseline_file` points at it and
+`curve_prior_weight: 0` makes the grade the PURE OfficeFloor percentile (seed ignored; verified:
+`grade.weight==1.0`, `percentile==project_percentile`). Then `block_percentile` is read against
+OfficeFloor: 90 = "more impactful than 90% of OfficeFloor's changes". From `blind-202608100006`,
+OF is p90≈3,410 / p95≈5,922 / p98≈14,148 and Spring's *median* (≈4,736) already tops OF p90, so
+p90→~61% of Spring changes fire, p95→~45%, p98→~30%. The `--curve-prior-weight` CLI flag was
+added to ImpactGate for exactly this (K in `w=n/(n+K)`). Leaving `baseline_file: null` reverts to
+the seed curve. The baseline file is passed as an ABSOLUTE path so `impact-gate` reads it from
+OUTSIDE the arm worktree — it is never committed to an evolve branch nor visible to the agent.
 
 **Do not regress.** The refactor turn reuses the *same* isolation as the implement turn
 (history-less sandbox, blind agent view, Landlock confine) — its prompt references only the
@@ -562,8 +577,11 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   (the activating strategy name), `block_percentile` / `warn_percentile` (fail line
   vs the Java seed; **calibrate** — default 70, see the pipeline section), `max_refactors`
   (default 3), `stop_scope` (`chain` default / `run`), `record_refactor_correctness`
-  (record-only full gate on each refactor), `measure_config` (optional impact-gate ignore
-  globs; resolved against the config dir), and the `refactor_prompt` template
+  (record-only full gate on each refactor), `baseline_file` (ImpactGate baseline JSON to grade
+  against — a reference arm's distribution, from `build_impact_baseline`; resolved to an
+  ABSOLUTE path so it stays outside the worktree; null → seed) + `curve_prior_weight` (0 → pure
+  baseline percentile), `measure_config` (optional impact-gate ignore globs; resolved against
+  the config dir), and the `refactor_prompt` template
   (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`). The `impact_gated` prompt-strategy
   (the *implement* prompt) must stay identical to `just-solve` so the loop is the only diff.
 

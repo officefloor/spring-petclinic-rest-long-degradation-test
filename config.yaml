@@ -132,19 +132,33 @@ impact_gate:
   # is installed on PATH / into this harness's .venv (pip install -e ~/ImpactGate).
   cmd: ["${HOME}/ImpactGate/.venv/bin/impact-gate"]
   strategy: impact_gated      # the prompt-strategy name that activates this loop
-  # FAIL line: a change graded at/above block_percentile (vs the Java seed) is discarded.
-  # CALIBRATION MATTERS — the seed is heavy-tailed. Its Java percentile->composite grid is:
-  #   p50=1,536  p75=21,576  p90=200,367  p95=782,002  p98=3,888,534  p99=11,755,119
-  # This harness's own impact_composite peaks around ~36k for a Spring MUTATIVE checkpoint
-  # (~p76) and ~4.8k for OfficeFloor (~p54); additive checkpoints score far lower. So p90+
-  # would NEVER fire (inert loop, a null experiment), while ~p70 fires on Spring's
-  # concentrated god-method mutations yet mostly spares OfficeFloor's fanned-out changes —
-  # exactly the discriminating behaviour under test. SMOKE-RUN and tune to your corpus:
-  # watch the "impact-gate: implement grade pXX" log line and set block just below where the
-  # eroding arm lands. (For a fixed project an absolute threshold also works; percentile is
-  # used here so the same line is architecture-neutral across the two arms.)
-  block_percentile: 70
-  warn_percentile: 55         # reported only (the gate keys off block_percentile)
+  # Grade each change against a REFERENCE DISTRIBUTION, not ImpactGate's generic OSS seed.
+  # The prior run (blog.officefloor.net "The same complexity: one unit or twenty?") showed
+  # OfficeFloor spreads work into many small wired functions and does NOT erode into god
+  # classes. So the experiment now asks: can the refactor prompting hold Spring (one growing
+  # @RestController) to OfficeFloor's cohesion? Calibrate the gate to OfficeFloor's OWN
+  # observed impact_composite distribution (build it with harness.build_impact_baseline) and
+  # grade every change against it. With curve_prior_weight: 0 the grade is PURELY that
+  # distribution's percentile (the seed is ignored), so block_percentile is read against the
+  # reference arm: "block_percentile 90" == refactor when a change is more impactful than 90%
+  # of OfficeFloor's changes. Leave baseline_file null to fall back to the seed curve instead.
+  #
+  # From run blind-202608100006, OfficeFloor/just-solve impact_composite (n=549):
+  #   P50=369  P75=1,412  P90=3,410  P95=5,922  P98=14,148  max=114,009
+  # Spring's median change (4,736) already exceeds OF's P90, so the block choice sets how hard
+  # Spring must fight: block_percentile 90 -> ~61% of Spring changes trigger a refactor;
+  # 95 -> ~45%; 98 -> ~30%. Lower = held to OF's TYPICAL cohesion (strict, early stops likely);
+  # higher = only Spring's worst concentrations are gated (lenient). SMOKE-RUN and tune via the
+  # "impact-gate: implement grade pXX" log line.
+  baseline_file: ${HOME}/pe-impact-baselines/officefloor.json  # reference distribution (null -> seed)
+  curve_prior_weight: 0       # 0 = grade PURELY vs baseline_file (ignore the seed); K in n/(n+K)
+  # SHARED cutoff applied identically to BOTH arms (run --strategy impact_gated with no --arm
+  # filter). p95 of OfficeFloor == composite ~5,922: each change must stay under that. OfficeFloor
+  # fires on ~5% of its own changes (its tail), Spring on ~45% — held to OfficeFloor's cohesion
+  # without being impossible to pass. Raise toward p98 (~14,148) for more headroom, lower toward
+  # p90 (~3,410) for OfficeFloor's typical cohesion (stricter, earlier stops likely).
+  block_percentile: 95        # read against the reference distribution (see numbers above)
+  warn_percentile: 85         # reported only (the gate keys off block_percentile)
   max_refactors: 3            # refactors allowed per checkpoint before the chain stops
   stop_scope: chain           # chain = stop this chain, keep running other arms/chains; run = abort all
   record_refactor_correctness: true  # run the full gate on each refactor (record only; not enforced)
