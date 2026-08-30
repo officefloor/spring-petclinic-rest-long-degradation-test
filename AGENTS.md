@@ -91,7 +91,8 @@ rationale (the "why", so it doesn't silently regress):
 | `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation). `probe()` is the read-only cold-reader. |
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
-| `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. |
+| `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
+| `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the refactor prompt from the flagged files/drivers + spec (`refactor_prompt`), and shapes the capture entry per attempt (`attempt_summary`). No effect on the other strategies. |
 | `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
 | `__init__.py` | shared helpers: `git_out` (graceful, for derive/analyze), `expand_path`. |
 
@@ -142,6 +143,73 @@ checkpoint's raw capture in its **reset** commit, so this normally adds nothing.
 table on the branch. `analyze` recomputes every metric, and derives the checkpoint→agent-SHA
 map from the per-checkpoint capture records' `commit_sha` (which encodes a no-op turn as `""`),
 **not** from provenance.
+
+## The impact-gated pipeline (`impact_gated` strategy)
+
+Added 2026-08. Makes ImpactGate an **active gate** in the checkpoint loop instead of a
+post-hoc metric. Activated only when the active strategy equals `impact_gate.strategy`
+(`_gate_active` in `run_experiment.py`); all other strategies run the unchanged flow above,
+so it is a strict superset and a clean control comparison.
+
+**Where it hooks.** In `run_chain`, the single agent turn (lifecycle steps 2–3) is replaced
+by `_impact_gated_implement(...)` when the gate is active. Everything downstream (tamper →
+COMMIT 1 → measurement suite → correctness gate → COMMIT 2 → capture) is unchanged and runs
+on the *accepted* implementation. The helper returns `(ar, attempt_log, ig_block,
+base_for_cp, stopped)` with the worktree already mirrored + `git add -A` staged.
+
+**The loop** (`base_for_cp` starts at the previous reset commit):
+1. Implement via the existing `_run_agent_turn` (fresh, blind sandbox rebuilt from the wt).
+2. `mirror_source(sandbox→wt)`, `git add -A`, then `impact_gate.score(cmd, wt, ...)` — the CLI
+   runs `score --mode staged --curve` on the wt (a real git repo; the sandbox has no `.git`).
+3. `is_blocked` keys on `grade.percentile >= block_percentile` directly (NOT the CLI's
+   `blocked` flag, which additionally needs `--enforcement block`), so it means exactly
+   "grade ≥ block_percentile" and is enforcement-independent.
+4. **Pass** → return the accepted turn; downstream proceeds normally.
+5. **Fail** → `git reset --hard base_for_cp` + `git clean -fd` (discard the change; ignored
+   `target/` survives, tracked `evolve-results/` capture is untouched, the `-capture` sibling
+   is outside the wt), then a **refactor turn** via `agent.run_agent` on the clean base with
+   the same Landlock `confine` as the implement turn, prompted from `refactor_prompt` (flagged
+   files + cost-driver units + the change spec). Mirror back, `impact_gate.score` again
+   (recorded, not enforced), optionally `_refactor_correctness` (full gate, record-only), then
+   commit **`cpNN refactorM <id>`** and set `base_for_cp = HEAD`.
+6. Up to `max_refactors` refactors; still blocked after the last → leave the failing change
+   staged, set `stopped=True`; `run_chain` records the full failing checkpoint then `break`s
+   the checkpoint loop. `stop_scope: run` additionally raises `ChainStopped` (caught in `main`,
+   exit 3) to abort every remaining arm/chain.
+
+**Commit shape & analyze.** A gated checkpoint is `0..N × cpNN refactorM` + `cpNN agent` +
+`cpNN reset`. `base_for_cp` advances past each refactor, so COMMIT 1's parent and the log-only
+structural-metrics base are the refactored code (the checkpoint's `impact_composite` is thus
+the final implement delta; the refactor deltas + `pre_checkpoint_sha` live in the capture
+block). `analyze` still enumerates from the capture's `commit_sha` (the agent commit); the
+refactor commits are its ancestors, so the materialized checkpoint tree includes them and the
+absolute erosion/WMC/entry-CC snapshots reflect refactor+implement with **no grouping rework**.
+
+**Capture.** `checkpoint_record(..., impact_gate=ig_block)` adds an `impact_gate` block:
+`{enabled, block_percentile, warn_percentile, max_refactors, refactors, passed, stopped,
+pre_checkpoint_sha, attempts:[...]}`. Each attempt is `{kind: implement|refactor, grade,
+impact, blocked, files, drivers, sha}`; a refactor attempt also carries its `agent` envelope
+(irreproducible cost/tokens — MUST be captured) and, if enabled, `tests` (record-only). The
+refactor event streams land as `cpNN.refactorM.jsonl` (staged by the existing
+`startswith("cpNN.")` copy into `evolve-results/capture/`).
+
+**analyze columns.** `recompute_rows` reads the block into `ig_refactors`, `ig_passed`,
+`ig_stopped`, `ig_grade` (last implement attempt), `ig_refactor_cost_usd`, `ig_refactor_tokens`
+(added to `CSV_FIELDS`, blank for ungated/old runs). `main` renders an **ImpactGate pipeline**
+summary table (reached-final rate, stops, refactor rate, mean refactors/cp, refactor $, mean
+accepted grade), shown only when a group has gate data.
+
+**Calibration (critical).** The Java seed is heavy-tailed: p50≈1.5k, p90≈200k, p98≈3.9M
+composite; this harness's `impact_composite` peaks ~36k (Spring mutative, ≈p76) / ~4.8k
+(OfficeFloor, ≈p54). So `block_percentile: 90+` never fires (null experiment); the default
+**70** fires on Spring's concentration while mostly sparing OfficeFloor. Tune per corpus.
+
+**Do not regress.** The refactor turn reuses the *same* isolation as the implement turn
+(history-less sandbox, blind agent view, Landlock confine) — its prompt references only the
+current change + flagged files, never future tests. The gate scores production Java only (the
+acceptance dir is excluded from the mirror-back, non-Java is ignored by lizard). Correctness is
+still enforced exactly where it was (the final accepted implementation's gate); refactors are
+measured, never enforced. Keep the ungated strategies byte-for-byte unchanged.
 
 ## The two design pillars added 2026-08 (do not regress these)
 
@@ -413,6 +481,15 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
 - `probe.at_checkpoints` (every 10) and `probe.expected` (recall tokens spanning
   cp1..60).
 - `isolation.pin_files`: `["CLAUDE.md"]`.
+- `impact_gate.*` (the `impact_gated` strategy only): `cmd` (how to invoke the
+  `impact-gate` CLI; each element `${HOME}`/`~`/`$VAR`-expanded in `main`), `strategy`
+  (the activating strategy name), `block_percentile` / `warn_percentile` (fail line
+  vs the Java seed; **calibrate** — default 70, see the pipeline section), `max_refactors`
+  (default 3), `stop_scope` (`chain` default / `run`), `record_refactor_correctness`
+  (record-only full gate on each refactor), `measure_config` (optional impact-gate ignore
+  globs; resolved against the config dir), and the `refactor_prompt` template
+  (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`). The `impact_gated` prompt-strategy
+  (the *implement* prompt) must stay identical to `just-solve` so the loop is the only diff.
 
 ## Gotchas / lessons (2026-08)
 

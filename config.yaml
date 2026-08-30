@@ -90,6 +90,72 @@ prompt_strategies:
     and refactor if needed. Make all tests pass before finishing.
 
     {spec}
+  # The IMPLEMENT prompt for the impact_gated pipeline. Deliberately identical to
+  # just-solve so the ONLY difference from that control is the ImpactGate score+refactor
+  # loop (see the impact_gate: section), never the wording. Never mention the gate or
+  # "refactor" here — the refactor is a separate turn with its own prompt.
+  impact_gated: |
+    Implement the following change to the application so that it fully satisfies
+    the specification and all existing and new tests pass. Run the test suite and
+    make it green before finishing.
+
+    {spec}
+
+# --- ImpactGate pipeline (the impact_gated strategy) --------------------------------
+# When the active strategy == impact_gate.strategy, each checkpoint runs a control loop:
+# the agent implements the change, the staged production diff is scored by the standalone
+# `impact-gate` CLI against its Java seed distribution (--curve), and a change graded at or
+# above block_percentile is DISCARDED. A refactor turn then runs on the clean pre-change
+# code, told which classes ImpactGate flagged AND what change is coming, and is committed as
+# `cpNN refactorM <id>`; the change is re-attempted on top of it. Up to max_refactors
+# refactors; still blocked after the last stops the chain (a clean-code failure). ImpactGate
+# is only MEASURED on the refactor, never gates it. The measure is the same before-context
+# WMC that analyze reports as impact_composite, so the gate gates exactly the erosion signal.
+impact_gate:
+  # How to invoke the standalone impact-gate CLI. Each element is ${HOME}/~/$VAR-expanded.
+  # Default points at the sibling ImpactGate checkout's venv; set to ["impact-gate"] if it
+  # is installed on PATH / into this harness's .venv (pip install -e ~/ImpactGate).
+  cmd: ["${HOME}/ImpactGate/.venv/bin/impact-gate"]
+  strategy: impact_gated      # the prompt-strategy name that activates this loop
+  # FAIL line: a change graded at/above block_percentile (vs the Java seed) is discarded.
+  # CALIBRATION MATTERS — the seed is heavy-tailed. Its Java percentile->composite grid is:
+  #   p50=1,536  p75=21,576  p90=200,367  p95=782,002  p98=3,888,534  p99=11,755,119
+  # This harness's own impact_composite peaks around ~36k for a Spring MUTATIVE checkpoint
+  # (~p76) and ~4.8k for OfficeFloor (~p54); additive checkpoints score far lower. So p90+
+  # would NEVER fire (inert loop, a null experiment), while ~p70 fires on Spring's
+  # concentrated god-method mutations yet mostly spares OfficeFloor's fanned-out changes —
+  # exactly the discriminating behaviour under test. SMOKE-RUN and tune to your corpus:
+  # watch the "impact-gate: implement grade pXX" log line and set block just below where the
+  # eroding arm lands. (For a fixed project an absolute threshold also works; percentile is
+  # used here so the same line is architecture-neutral across the two arms.)
+  block_percentile: 70
+  warn_percentile: 55         # reported only (the gate keys off block_percentile)
+  max_refactors: 3            # refactors allowed per checkpoint before the chain stops
+  stop_scope: chain           # chain = stop this chain, keep running other arms/chains; run = abort all
+  record_refactor_correctness: true  # run the full gate on each refactor (record only; not enforced)
+  measure_config: null        # optional Surveyor-style ignore-globs YAML for impact-gate
+  # The REFACTOR prompt. Placeholders: {spec} the upcoming change, {files} the flagged files,
+  # {drivers} the specific methods/classes driving the cost, {grade}/{block} the percentiles.
+  refactor_prompt: |
+    A change is about to be made to this codebase, but implementing it directly would
+    concentrate too much complexity. Before that change is made, refactor the code so the
+    change can land cleanly. Do NOT implement the change itself in this step.
+
+    The upcoming change (do not implement it now, only prepare for it):
+    {spec}
+
+    ImpactGate flagged these files as the highest structural-impact cost for that change
+    (grade p{grade}, must come under p{block}):
+    {files}
+
+    The specific methods/classes driving the cost:
+    {drivers}
+
+    Refactor these to reduce complexity: break large methods and classes into smaller, more
+    cohesive units, extract collaborators, and remove duplication, so the upcoming change
+    touches small focused units instead of one growing god-method or god-class. Preserve all
+    existing behaviour exactly — every current test must still pass. Run the tests and make
+    them green before finishing.
 
 build:
   # Compile step used as the build gate (fast; tests run separately by tag).

@@ -147,7 +147,7 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
                       diff_file: str | None, build_log_file: str | None = None,
                       attempts: list[dict] | None = None, spec: str | None = None,
                       prompt: str | None = None, ckpt_type: str = "additive",
-                      mutates: list | None = None) -> dict:
+                      mutates: list | None = None, impact_gate: dict | None = None) -> dict:
     """Assemble the raw, irreproducible record for one checkpoint. `outcome` is a
     correctness.TestOutcome (its RAW results map + detail are what matter here —
     every set-based correctness metric is re-derivable from them).
@@ -201,6 +201,10 @@ def checkpoint_record(k: int, cp_id: str, phase: str, shas: dict, agent_result,
         "probe": probe,
         "pinned_touched": pinned_touched,
         "acceptance_touched": acceptance_touched,
+        # impact_gated strategy only: the ImpactGate verdict per implement/refactor
+        # attempt for this checkpoint, plus the refactor agent turns (irreproducible
+        # cost/tokens). None for ungated strategies. See harness/impact_gate.py.
+        "impact_gate": impact_gate,
     }
 
 

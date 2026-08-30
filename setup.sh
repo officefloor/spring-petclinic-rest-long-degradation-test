@@ -50,6 +50,20 @@ fi
 ./.venv/bin/pip install --quiet -r requirements.txt
 echo "   venv ready at $HARNESS_DIR/.venv"
 
+# ImpactGate (the impact_gated strategy's structural-impact gate). Optional: only the
+# impact_gated strategy needs it. Installed editable from a sibling checkout if present,
+# so `impact-gate` is on PATH inside this venv; otherwise the run uses config.yaml's
+# impact_gate.cmd (default: the sibling ImpactGate venv binary). Override with IMPACT_GATE_SRC.
+IG_SRC="${IMPACT_GATE_SRC:-${HOME}/ImpactGate}"
+if [ -f "$IG_SRC/pyproject.toml" ]; then
+  echo "== installing ImpactGate (editable) from $IG_SRC =="
+  ./.venv/bin/pip install --quiet -e "$IG_SRC" && \
+    echo "   impact-gate on PATH in venv (set impact_gate.cmd: [\"impact-gate\"] in config.yaml to use it)"
+else
+  echo "== ImpactGate source not found at $IG_SRC (only needed for --strategy impact_gated) =="
+  echo "   set config.yaml impact_gate.cmd to your impact-gate binary, or IMPACT_GATE_SRC=<path> ./setup.sh"
+fi
+
 echo
 echo "Setup complete."
 echo

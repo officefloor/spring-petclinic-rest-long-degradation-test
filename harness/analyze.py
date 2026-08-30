@@ -297,6 +297,25 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 })
             row["pinned_touched"] = ",".join(cap.get("pinned_touched") or [])
             row["acceptance_touched"] = ",".join(cap.get("acceptance_touched") or [])
+
+            # impact_gated pipeline ephemera (irreproducible: the refactor agent turns).
+            # The accepted change's grade is the LAST 'implement' attempt's grade; refactor
+            # cost/tokens sum every 'refactor' attempt. Blank for ungated strategies.
+            ig = cap.get("impact_gate")
+            if ig:
+                impls = [a for a in ig.get("attempts", []) if a.get("kind") == "implement"]
+                refs = [a for a in ig.get("attempts", []) if a.get("kind") == "refactor"]
+                r_cost = sum((a.get("agent") or {}).get("cost_usd") or 0 for a in refs)
+                r_tok = sum(((a.get("agent") or {}).get("input_tokens") or 0)
+                            + ((a.get("agent") or {}).get("output_tokens") or 0) for a in refs)
+                row.update({
+                    "ig_refactors": ig.get("refactors", len(refs)),
+                    "ig_passed": ig.get("passed"),
+                    "ig_stopped": ig.get("stopped"),
+                    "ig_grade": (impls[-1].get("grade") if impls else None),
+                    "ig_refactor_cost_usd": round(r_cost, 4),
+                    "ig_refactor_tokens": r_tok,
+                })
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
               + (f" ({n_noop} no-op)" if n_noop else "")
@@ -666,6 +685,42 @@ def main() -> int:
                 continue
             lines.append(f"| {gk[0]}/{gk[1]} | {field} | {m:.4g} | {lo:.4g} | {hi:.4g} |")
     lines.append("")
+
+    # ImpactGate pipeline (impact_gated strategy only) — did the architecture absorb the
+    # change stream under the gate, and at what refactor cost? Rendered only when a group
+    # carries gate data (rows with a non-blank ig_refactors), so ungated runs are unaffected.
+    def _has_gate(grp):
+        return any(str(r.get("ig_refactors", "")) != "" for r in grp)
+    gate_groups = {gk: grp for gk, grp in groups.items() if _has_gate(grp)}
+    if gate_groups:
+        n_cp = max((int(r["checkpoint"]) for grp in gate_groups.values() for r in grp), default=0)
+        lines.append("## ImpactGate pipeline (impact_gated)\n")
+        lines.append("Per (arm, chain-pooled): whether the gated chains reached the final "
+                     f"checkpoint (cp{n_cp:02d}), how often a checkpoint needed a refactor, the "
+                     "mean refactors/checkpoint, the refactor cost, and the accepted change's mean "
+                     "seed grade. A STOP (still over the block percentile after max_refactors) is "
+                     "the clean-code failure signal.\n")
+        lines.append("| arm/strategy | chains reached final | stops | checkpoints w/ refactor | "
+                     "mean refactors/cp | refactor $ (sum) | accepted grade (mean) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        for gk, grp in sorted(gate_groups.items()):
+            gated = [r for r in grp if str(r.get("ig_refactors", "")) != ""]
+            chains = sorted({int(r["chain"]) for r in gated})
+            reached = sum(1 for ch in chains
+                          if max(int(r["checkpoint"]) for r in gated if int(r["chain"]) == ch) >= n_cp)
+            stops = sum(1 for r in gated if _b(r.get("ig_stopped")))
+            nref = [int(_f(r.get("ig_refactors", "")) or 0) for r in gated]
+            with_ref = sum(1 for v in nref if v > 0)
+            grades = [_f(r.get("ig_grade", "")) for r in gated]
+            grades = [g for g in grades if not math.isnan(g)]
+            rcost = sum(_f(r.get("ig_refactor_cost_usd", "")) or 0 for r in gated
+                        if not math.isnan(_f(r.get("ig_refactor_cost_usd", ""))))
+            mean_ref = (sum(nref) / len(nref)) if nref else 0.0
+            mean_grade = (sum(grades) / len(grades)) if grades else float("nan")
+            lines.append(f"| {gk[0]}/{gk[1]} | {reached}/{len(chains)} | {stops} | "
+                         f"{with_ref}/{len(gated)} | {mean_ref:.2f} | ${rcost:.2f} | "
+                         f"{'—' if math.isnan(mean_grade) else f'p{mean_grade:.1f}'} |")
+        lines.append("")
 
     # Difference of slopes — the PAIRED test (per-arm CIs vs zero are not a between-arm test)
     lines.append("## Difference of slopes (arm A − arm B; 95% bootstrap CI over chains)\n")

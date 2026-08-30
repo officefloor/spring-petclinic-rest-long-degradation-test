@@ -377,6 +377,85 @@ python -m harness.analyze --config config.yaml --run-id sprint7-baseline
 what to compare, and how to share your run back for independent replication — is
 in **[docs/RUN_WITH_A_DIFFERENT_MODEL.md](docs/RUN_WITH_A_DIFFERENT_MODEL.md)**.
 
+## The impact-gated pipeline (ImpactGate refactor gate)
+
+Every strategy above just *implements* each checkpoint; erosion is observed, never
+acted on. The **`impact_gated`** strategy instead puts [ImpactGate](../ImpactGate)
+in the merge path as a gate that **triggers refactors**. The thesis it tests: given
+an active structural-impact gate and a refactor budget, does each architecture reach
+cp60, and does gating flatten the erosion slope?
+
+**The per-checkpoint loop** (only when `--strategy impact_gated`; every other strategy
+is an untouched control):
+
+1. **Implement.** The agent implements the checkpoint (same isolation, same blind view,
+   same prompt text as `just-solve` — the *only* difference from that control is this loop).
+2. **Score.** The production diff is staged and scored by the standalone `impact-gate`
+   CLI: `impact-gate score --mode staged --curve`. The change's structural-impact composite
+   is graded against ImpactGate's Java seed distribution.
+3. **Pass?** Grade **below** `block_percentile` → **accept**; continue to the normal
+   correctness gate exactly as the other strategies do.
+4. **Fail?** Grade **at/above** `block_percentile` → **discard the change** (worktree reset
+   to the clean pre-checkpoint state) and run a **refactor turn** on that clean base. The
+   refactor is told which files/classes ImpactGate flagged **and the change that is coming**,
+   and asked to break those classes into smaller, cohesive units so the change lands cleanly
+   *without* implementing it. It is committed as **`cpNN refactorM <id>`** (visible in the
+   log) — ImpactGate is *measured* on it but never gates it.
+5. **Re-attempt.** The change is re-implemented on top of the refactor and re-scored. Up to
+   `max_refactors` (default 3) refactors per checkpoint.
+6. **Stop.** Still failing after the last refactor → the failing checkpoint is fully recorded
+   and the **chain stops** — a "the AI could not keep the code clean" outcome. `stop_scope`
+   (`chain`, default, vs `run`) decides whether the other arms/chains still run.
+
+So a gated checkpoint's commits are `0..N × cpNN refactorM` + `cpNN agent` + `cpNN reset`.
+The refactor commits are ancestors of the agent commit, so `analyze` (which enumerates from
+the agent commit) materializes a checkpoint tree that already includes them — erosion / WMC /
+entry-CC snapshots reflect refactor+implement with no analysis rework. ImpactGate's measure is
+the **same before-context-WMC** signal `analyze` reports as `impact_composite`, so the gate
+gates exactly the erosion metric the run analyses.
+
+**Configure** it under `impact_gate:` in `config.yaml` — `cmd` (how to invoke `impact-gate`),
+`strategy` (the activating strategy name), `block_percentile` / `warn_percentile`,
+`max_refactors`, `stop_scope`, `record_refactor_correctness` (run the full gate on each
+refactor, recorded but never enforced), and the `refactor_prompt` template
+(`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}` placeholders).
+
+> **Calibration is essential.** The Java seed is heavy-tailed: p50≈1.5k, p90≈200k,
+> p98≈3.9M composite. This harness's own `impact_composite` peaks around ~36k for a Spring
+> *mutative* checkpoint (≈p76) and ~4.8k for OfficeFloor (≈p54). So `block_percentile: 90+`
+> **never fires** (an inert loop / null result); the shipped default **70** fires on Spring's
+> concentrated god-method mutations while mostly sparing OfficeFloor's fanned-out changes —
+> the discriminating behaviour under test. Smoke-run, watch the `impact-gate: implement grade
+> pXX` log line, and set `block_percentile` just under where the eroding arm lands.
+
+**Prerequisite.** The `impact-gate` CLI (standalone, lizard-only). `./setup.sh` installs it
+editable from a sibling `~/ImpactGate` checkout if present (then set
+`impact_gate.cmd: ["impact-gate"]`); otherwise the default `cmd` points at that checkout's
+venv binary. See `impact_gate.cmd` in `config.yaml`.
+
+**Run and read it:**
+
+```bash
+# wiring check (shows the gate is ON, the block percentile, and the resolved impact-gate cmd):
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy impact_gated --dry-run
+
+# smoke one cell / one checkpoint:
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy impact_gated --arm spring --chain 0 --max-checkpoints 1
+
+# full gated run for both arms, then analyze (compares impact_gated vs just-solve per arm):
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy impact_gated
+python -m harness.analyze --config config.yaml
+```
+
+`analyze` adds an **ImpactGate pipeline** table (per arm: chains that reached the final
+checkpoint, stop count, share of checkpoints needing a refactor, mean refactors/checkpoint,
+summed refactor cost, and the accepted change's mean grade) and per-checkpoint columns
+`ig_refactors` / `ig_passed` / `ig_stopped` / `ig_grade` / `ig_refactor_cost_usd` /
+`ig_refactor_tokens`. The headline comparison is the erosion / `entry_cc` / `wmc_max` slopes:
+`impact_gated` vs `just-solve`, per arm. Each checkpoint's capture record carries an
+`impact_gate` block (per-attempt grade/verdict/flagged-files, and the refactor turns'
+irreproducible cost/tokens).
+
 ## Where results live
 
 The **evolve branches are the single source of truth**, and they carry **raw data

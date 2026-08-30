@@ -44,9 +44,15 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-from . import agent, capture, correctness, expand_path, metrics
+from . import agent, capture, correctness, expand_path, impact_gate, metrics
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class ChainStopped(Exception):
+    """Raised/flagged when the impact_gated pipeline gives up on a checkpoint: the
+    change still fails ImpactGate after `max_refactors` refactors. The chain ends and
+    is recorded as a clean-code failure (see run_chain / _impact_gated_implement)."""
 
 
 def _confine_config(cfg: dict) -> dict | None:
@@ -96,6 +102,10 @@ CSV_FIELDS = [
     # structural-impact score: context-weighted blast (max(WMC_other,1)·CC·max(1,Δlines)·files)
     "impact_mutation", "impact_godclass", "impact_composite",
     "impact_files_changed", "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
+    # impact_gated pipeline (blank for ungated strategies): refactor count, verdict, the
+    # accepted change's grade, and the refactor turns' cost/tokens (irreproducible)
+    "ig_refactors", "ig_passed", "ig_stopped", "ig_grade",
+    "ig_refactor_cost_usd", "ig_refactor_tokens",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
@@ -624,6 +634,140 @@ def _log_checkpoint(row: dict, where: str, wt: str, base_for_cp: str,
     print(flush=True)
 
 
+def _gate_active(cfg: dict, strategy: str) -> bool:
+    """True when the impact_gated pipeline should run for this strategy: the config
+    has an `impact_gate` section whose `strategy` name matches the active strategy."""
+    igc = cfg.get("impact_gate") or {}
+    return bool(igc) and igc.get("strategy") == strategy
+
+
+def _refactor_correctness(sandbox: str, cfg: dict, checkpoints: list[dict], k: int,
+                          arm_cfg: dict) -> dict:
+    """Record-only correctness of a refactor state: install the full authored cp01..cpK
+    suite into the sandbox (which still holds the just-refactored code) and run the gate,
+    returning a compact summary. NOT enforced — it never stops the pipeline; it lets
+    `analyze` see whether a refactor preserved prior behaviour. The sandbox is rebuilt
+    fresh for the next implement turn, so mutating it here is harmless."""
+    acc_sandbox = os.path.join(sandbox, cfg["acceptance"]["dest_subpath"].rstrip("/"))
+    for pf in cfg.get("isolation", {}).get("pin_files", []):
+        base_txt = subprocess.run(["git", "-C", arm_cfg["repo"], "show",
+                                   f"{arm_cfg['base_ref']}:{pf}"], capture_output=True, text=True)
+        dst = os.path.join(sandbox, pf)
+        if base_txt.returncode == 0:
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            with open(dst, "w") as fh:
+                fh.write(base_txt.stdout)
+    shutil.rmtree(acc_sandbox, ignore_errors=True)
+    install_measurement_suite(sandbox, cfg, checkpoints, k)
+    scrub_test_artifacts(sandbox, cfg)
+    outcome = correctness.run_tests(sandbox, k, cfg)
+    passed = sum(1 for ok in (outcome.results or {}).values() if ok)
+    return {"build_ok": outcome.build_ok, "total_selected": outcome.total_selected,
+            "passed": passed, "total": len(outcome.results or {}),
+            "error": (outcome.error or "")[:200] or None}
+
+
+def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
+                            template: str, cap_dir: str, checkpoints: list[dict],
+                            arm_cfg: dict, base_for_cp: str):
+    """The impact_gated implement->score->refactor loop for one checkpoint.
+
+    Each iteration: the agent implements the change in the history-less sandbox, the
+    production result is mirrored + staged on the worktree, and ImpactGate scores that
+    staged delta (`--curve` vs the Java seed). If the grade clears the block percentile
+    the implementation is ACCEPTED. Otherwise the implementation is DISCARDED (worktree
+    reset to the clean base) and a refactor turn runs on that clean base, seeded with the
+    files/drivers ImpactGate flagged and the change spec, then committed as
+    `cpNN refactorM` for visibility; the next implement builds on it. Up to
+    `max_refactors` refactors; still blocked after the last leaves the failing change
+    staged and flags `stopped` so the caller ends the chain.
+
+    Returns (ar, attempt_log, ig_block, base_for_cp, stopped). On return the worktree is
+    mirrored + `git add -A` staged with the accepted (or, if stopped, the last failing)
+    implementation, ready for the caller's COMMIT 1; refactor commits already landed.
+    """
+    igc = cfg["impact_gate"]
+    cmd = igc["cmd"]
+    block_p = float(igc.get("block_percentile", 98))
+    warn_p = float(igc.get("warn_percentile", 90))
+    mcfg = igc.get("measure_config")
+    max_ref = int(igc.get("max_refactors", 3))
+    acc_excl = (cfg["acceptance"]["dest_subpath"].rstrip("/") + "/",)
+    k = cp["n"]
+    pre_checkpoint_sha = base_for_cp
+    attempts: list[dict] = []
+    refactors = 0
+
+    def block(passed: bool, stopped: bool) -> dict:
+        return {"enabled": True, "block_percentile": block_p, "warn_percentile": warn_p,
+                "max_refactors": max_ref, "refactors": refactors, "passed": passed,
+                "stopped": stopped, "pre_checkpoint_sha": pre_checkpoint_sha,
+                "attempts": attempts}
+
+    for attempt in range(max_ref + 1):   # 0 = first implement; then up to max_ref refactors
+        prompt = build_prompt(template, cp["spec"])
+        ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir,
+                                          f"cp{k:02d}.agent.jsonl", checkpoints)
+        mirror_source(sandbox, wt, extra_excludes=acc_excl)
+        git(["-C", wt, "add", "-A"])
+        ig = impact_gate.score(cmd, wt, block_p, warn_p, mcfg)
+        blocked = impact_gate.is_blocked(ig, block_p)
+        attempts.append(impact_gate.attempt_summary("implement", ig, block_p))
+        pct = impact_gate.grade_percentile(ig)
+        print(f"    impact-gate: implement grade p{pct if pct is None else round(pct, 1)} "
+              f"(block p{block_p:g})  impact={ig.get('impact')}  -> "
+              f"{'BLOCKED' if blocked else 'PASS'}"
+              + (f"  [refactors so far: {refactors}]" if refactors else ""), flush=True)
+        if not blocked:
+            return ar, attempt_log, block(passed=True, stopped=False), base_for_cp, False
+        if attempt == max_ref:
+            # Out of refactor budget and still blocked: keep the failing change staged for
+            # inspection and end the chain. The caller records the full (failing) checkpoint.
+            print(f"    impact-gate: STILL BLOCKED after {refactors} refactor(s) -> "
+                  f"stopping the chain at cp{k:02d}", flush=True)
+            return ar, attempt_log, block(passed=False, stopped=True), base_for_cp, True
+
+        # DISCARD the blocked implementation, then REFACTOR on the clean base.
+        git(["-C", wt, "reset", "--hard", base_for_cp])
+        subprocess.run(["git", "-C", wt, "clean", "-fd"], capture_output=True, text=True)
+        refactors += 1
+        _prepare_agent_sandbox(wt, sandbox, cfg, cp, checkpoints)   # clean base + agent test view
+        rprompt = impact_gate.refactor_prompt(igc["refactor_prompt"], cp, ig, block_p)
+        rstream = f"cp{k:02d}.refactor{refactors}.jsonl"
+        print(f"    impact-gate: refactor {refactors}/{max_ref} — restructuring flagged "
+              f"classes before re-attempting the change", flush=True)
+        rar = agent.run_agent(rprompt, cwd=sandbox, model=model,
+                              timeout=cfg.get("agent_timeout", 3600),
+                              label=f"refactor{refactors}",
+                              capture_path=os.path.join(cap_dir, rstream),
+                              confine=_confine_config(cfg))
+        mirror_source(sandbox, wt, extra_excludes=acc_excl)
+        git(["-C", wt, "add", "-A"])
+        ig_ref = impact_gate.score(cmd, wt, block_p, warn_p, mcfg)
+        rtests = None
+        if igc.get("record_refactor_correctness", True):
+            rtests = _refactor_correctness(sandbox, cfg, checkpoints, k, arm_cfg)
+        subprocess.run(["git", "-C", wt, "commit", "--allow-empty",
+                        "-m", f"cp{k:02d} refactor{refactors} {cp['id']}"],
+                       capture_output=True, text=True)
+        rsha = git(["-C", wt, "rev-parse", "HEAD"])
+        attempts.append(impact_gate.attempt_summary("refactor", ig_ref, block_p,
+                                                    sha=rsha, agent=rar, tests=rtests))
+        rpct = impact_gate.grade_percentile(ig_ref)
+        print(f"    impact-gate: refactor {refactors} committed {rsha[:9]}  "
+              f"grade p{rpct if rpct is None else round(rpct, 1)}  "
+              f"cost=${rar.cost_usd:.4f}"
+              + (f"  tests={rtests['passed']}/{rtests['total']} build_ok={rtests['build_ok']}"
+                 if rtests else ""), flush=True)
+        # Wipe the sandbox so the next implement turn rebuilds fresh from the refactored wt.
+        # Critical for isolation: _refactor_correctness installs+builds the FULL cp01..cpK
+        # suite, and rsync --delete PROTECTS target/, so its CpNN surefire reports + compiled
+        # test classes would otherwise persist into the next (blind, Landlock-confined) turn
+        # and leak the checkpoint sequence. A full wipe forces a clean history-less rebuild.
+        shutil.rmtree(sandbox, ignore_errors=True)
+        base_for_cp = rsha   # the refactor is the base the next implement builds on
+
+
 def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
               checkpoints: list[dict], dry_run: bool, max_cp: int | None) -> None:
     arm_cfg = cfg["arms"][arm]
@@ -633,7 +777,12 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     branch_preview = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
 
     if dry_run:
-        print(f"[dry-run] {arm}/{strategy}/chain{chain} [test-mode={cfg['test_mode']}]: "
+        gate = ""
+        if _gate_active(cfg, strategy):
+            igc = cfg["impact_gate"]
+            gate = (f" [impact-gate ON: block p{igc.get('block_percentile')}, "
+                    f"max_refactors={igc.get('max_refactors')}, cmd={' '.join(igc.get('cmd', []))}]")
+        print(f"[dry-run] {arm}/{strategy}/chain{chain} [test-mode={cfg['test_mode']}]{gate}: "
               f"{n} checkpoints from {arm_cfg['repo']}@{arm_cfg['base_ref']} -> branch {branch_preview}")
         for cp in checkpoints[: (max_cp or n)]:
             print(f"    cp{cp['n']:02d} [{phase_for(cp['n'], n)}] {cp['id']}")
@@ -680,6 +829,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     prior_passing: set[str] = set()
     captures: list[dict] = []
     strict_count = regr_count = 0  # running tallies for the results commit headline
+    stopped = False                # impact_gated: set when a checkpoint gives up (ends the chain)
 
     limit = max_cp or n
     for cp in checkpoints[:limit]:
@@ -711,16 +861,26 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # no target/) + a fresh acceptance dir holding only the shared infra and THIS
         # checkpoint's test as AcceptanceTest.java (no CpNN name, no @Tag). So the agent
         # gets no git history, no prior build output, and no hint of a checkpoint sequence.
-        prompt = build_prompt(template, cp["spec"])
         stream_file = f"cp{k:02d}.agent.jsonl"
-        ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir,
-                                          stream_file, checkpoints)
+        prompt = build_prompt(template, cp["spec"])   # the implement prompt (recorded either way)
+        ig_block = None
+        stopped = False
+        if _gate_active(cfg, strategy):
+            # impact_gated pipeline: implement -> ImpactGate -> discard+refactor -> re-implement,
+            # up to max_refactors. Returns the accepted (or, if stopped, last failing) turn with
+            # the worktree already mirrored + staged; base_for_cp advances past any refactor commit
+            # so COMMIT 1's parent and the metrics base are the refactored code.
+            ar, attempt_log, ig_block, base_for_cp, stopped = _impact_gated_implement(
+                cfg, wt, sandbox, cp, model, template, cap_dir, checkpoints, arm_cfg, base_for_cp)
+        else:
+            ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir,
+                                              stream_file, checkpoints)
+            # 4. Copy the agent's PRODUCTION result back onto the worktree (the sandbox-only
+            # acceptance dir is excluded; .git/target preserved).
+            mirror_source(sandbox, wt, extra_excludes=(acc_sub + "/",))
+            git(["-C", wt, "add", "-A"])
 
-        # 4. Copy the agent's PRODUCTION result back onto the worktree (the sandbox-only
-        # acceptance dir is excluded; .git/target preserved), and capture the production-
-        # only delta on top of the previous reset.
-        mirror_source(sandbox, wt, extra_excludes=(acc_sub + "/",))
-        git(["-C", wt, "add", "-A"])
+        # Capture the production-only delta on top of the previous reset (or the last refactor).
         diff_file = f"cp{k:02d}.agent.diff"
         agent_diff = subprocess.run(["git", "-C", wt, "diff", "--cached", base_for_cp],
                                     capture_output=True, text=True).stdout
@@ -841,7 +1001,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
             attempts=attempt_log, spec=cp["spec"], prompt=prompt,
-            ckpt_type=cp.get("type", "additive"), mutates=mutated)
+            ckpt_type=cp.get("type", "additive"), mutates=mutated, impact_gate=ig_block)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
         wt_cap = os.path.join(wt, "evolve-results", "capture")
         os.makedirs(wt_cap, exist_ok=True)
@@ -866,15 +1026,33 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # rebuilt copy (no leftover Cp01..cpK gate tests or agent build output).
         shutil.rmtree(sandbox, ignore_errors=True)
 
+        # impact_gated stop: the change never came under the block percentile within
+        # max_refactors. The failing checkpoint is fully recorded above; end the chain
+        # here (a clean-code failure — this architecture couldn't absorb the change
+        # cleanly in the refactor budget).
+        if stopped:
+            igc = cfg.get("impact_gate", {})
+            print(f"\n!!! {where} | STOPPED at cp{k:02d} {cp['id']}: still over the "
+                  f"block percentile (p{igc.get('block_percentile')}) after "
+                  f"{igc.get('max_refactors')} refactors.", flush=True)
+            break
+
     # Terminal 'results:' commit: a completion marker. Provenance + config already
     # landed in the manifest commit and each checkpoint's raw capture in its reset
     # commit, so this normally adds nothing — it backstops any unstaged capture and
     # carries a derived one-liner for at-a-glance history (text only, not data).
     n_done = len(captures)
+    stopped_at = f" STOPPED_AT_cp{captures[-1]['checkpoint']:02d}" if (captures and stopped) else ""
     headline = (f"checkpoints={n_done} strict_pass={strict_count}/{n_done} "
-                f"regressions={regr_count} (derived numbers recomputed by analyze)")
+                f"regressions={regr_count}{stopped_at} (derived numbers recomputed by analyze)")
     commit_chain_results(wt, branch, run_id, arm, strategy, chain, cap_dir, headline)
     shutil.rmtree(sandbox, ignore_errors=True)  # the agent's history-less working copy
+
+    # A gated stop ends this chain (recorded above). With stop_scope: run it also aborts
+    # the whole run (every remaining arm/chain); default 'chain' lets the other cells run
+    # so the comparison still gets data.
+    if stopped and (cfg.get("impact_gate", {}).get("stop_scope") == "run"):
+        raise ChainStopped(f"{arm}/{strategy}/chain{chain} stopped at cp{captures[-1]['checkpoint']:02d}")
 
 
 def main() -> int:
@@ -941,6 +1119,13 @@ def main() -> int:
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])
     if cfg.get("acceptance", {}).get("src_dir"):
         cfg["acceptance"]["src_dir"] = resolve(cfg["acceptance"]["src_dir"])
+    # impact_gated pipeline: expand the impact-gate command (each element may use ${HOME})
+    # and anchor any measure-config to the config dir.
+    if cfg.get("impact_gate", {}).get("cmd"):
+        cfg["impact_gate"]["cmd"] = [expand_path(c, "impact_gate.cmd")
+                                     for c in cfg["impact_gate"]["cmd"]]
+    if cfg.get("impact_gate", {}).get("measure_config"):
+        cfg["impact_gate"]["measure_config"] = resolve(cfg["impact_gate"]["measure_config"])
 
     # Sources snapshotted into each results commit so a run is self-contained: the
     # config that shaped its metrics travels with it (analyze prefers this over the
@@ -967,10 +1152,15 @@ def main() -> int:
     # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1,
     # ... so the two arms are matched in time (no temporal confound) and a run cut
     # short still has both arms for the chains it completed.
-    for chain in chains:
-        for arm in arms:
-            run_chain(cfg, arm, strategy, chain, run_id, checkpoints,
-                      args.dry_run, args.max_checkpoints)
+    try:
+        for chain in chains:
+            for arm in arms:
+                run_chain(cfg, arm, strategy, chain, run_id, checkpoints,
+                          args.dry_run, args.max_checkpoints)
+    except ChainStopped as e:
+        # impact_gated with stop_scope: run — a chain gave up, abort the whole run.
+        print(f"\n=== RUN STOPPED: {e} (impact_gate.stop_scope=run) ===")
+        return 3
 
     if args.dry_run:
         return 0
