@@ -164,7 +164,12 @@ impact_gate:
   # 95 -> ~45%; 98 -> ~30%. Lower = held to OF's TYPICAL cohesion (strict, early stops likely);
   # higher = only Spring's worst concentrations are gated (lenient). SMOKE-RUN and tune via the
   # "impact-gate: implement grade pXX" log line.
-  baseline_file: ${HOME}/pe-impact-baselines/officefloor.json  # reference distribution (null -> seed)
+  # Reference distribution, committed IN THIS REPO so it travels with a checkout (it is a run
+  # INPUT, like ImpactGate's seed, not derived output; and it cannot be rebuilt on a fresh
+  # machine because the prior run's branches are not pushed). Relative, so main() anchors it to
+  # this config's dir and passes an ABSOLUTE path to impact-gate (kept outside the arm worktree,
+  # never seen by the agent). Rebuild with harness.build_impact_baseline. null -> generic seed.
+  baseline_file: baselines/officefloor.json
   curve_prior_weight: 0       # 0 = grade PURELY vs baseline_file (ignore the seed); K in n/(n+K)
   # SHARED cutoff applied identically to BOTH arms (run --strategy impact_gated with no --arm
   # filter). p95 of OfficeFloor == composite ~5,922: each change must stay under that. OfficeFloor

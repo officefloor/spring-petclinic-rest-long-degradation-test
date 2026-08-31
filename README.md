@@ -446,18 +446,19 @@ classes, while Spring's one `@RestController` does. So the real question is: **c
 prompting hold Spring to OfficeFloor's cohesion?** Answer it by grading every change not against
 ImpactGate's generic OSS seed but against **OfficeFloor's own observed change-impact distribution**:
 
-1. Build the reference distribution from a completed **ungated OfficeFloor** run (the prior
-   experiment works):
-   ```bash
-   python -m harness.build_impact_baseline --config config.yaml --run-id blind-202608100006 \
-       --arm officefloor --strategy just-solve --out '${HOME}/pe-impact-baselines/officefloor.json'
-   ```
-   It reads the run's per-checkpoint `impact_composite` (from `results/<run_id>/records.concat.csv`,
-   or recomputed with `--recompute`) and writes an ImpactGate baseline JSON, printing the
-   percentile → composite grid.
-2. Point the gate at it: `impact_gate.baseline_file` = that path, `curve_prior_weight: 0` (grade
-   **purely** against OfficeFloor, ignoring the seed). Now `block_percentile` is read against
-   OfficeFloor: **90 = "refactor when a change is more impactful than 90% of OfficeFloor's changes."**
+The reference distribution is **already built and committed** at `baselines/officefloor.json`
+(from the prior run `blind-202608100006`), and `config.yaml` already points at it, so a fresh
+checkout needs no rebuild. To regenerate it (e.g. from a newer OfficeFloor run):
+```bash
+python -m harness.build_impact_baseline --config config.yaml --run-id blind-202608100006 \
+    --arm officefloor --strategy just-solve --out baselines/officefloor.json
+```
+It reads the run's per-checkpoint `impact_composite` (from `results/<run_id>/records.concat.csv`,
+or recomputed with `--recompute`) and writes an ImpactGate baseline JSON, printing the
+percentile → composite grid. The gate points at it via `impact_gate.baseline_file`
+(committed in-repo so it travels with a checkout) with `curve_prior_weight: 0` (grade **purely**
+against OfficeFloor, ignoring the seed). So `block_percentile` is read against OfficeFloor:
+**95 = "refactor when a change is more impactful than 95% of OfficeFloor's changes."**
 
 This one shared cutoff is applied **identically to both arms** — run `--strategy impact_gated`
 with **no `--arm` filter** and Spring *and* OfficeFloor are graded against the same OfficeFloor-derived
@@ -472,10 +473,45 @@ line, so OfficeFloor is held to it too (a drift into a "god pipeline" would fire
 > of Spring)** for OfficeFloor's *typical* cohesion (stricter, early stops likely). Leave
 > `baseline_file: null` to fall back to the generic seed curve instead.
 
-**Prerequisite.** The `impact-gate` CLI (standalone, lizard-only). `./setup.sh` installs it
-editable from a sibling `~/ImpactGate` checkout if present (then set
-`impact_gate.cmd: ["impact-gate"]`); otherwise the default `cmd` points at that checkout's
-venv binary. See `impact_gate.cmd` in `config.yaml`.
+### Setting up `impact_gated` on a fresh machine
+
+A checkout of the harness + `~/ImpactGate` on `main` is **not** quite enough. Do all of this,
+then leave it running (a full gated run is 60 checkpoints × 2 arms × 10 chains and can run for
+days):
+
+1. **Clone to matching `${HOME}` paths.** `config.yaml` resolves `~/compare`, `~/pe-work`,
+   `~/sandbox`, and `~/ImpactGate/.venv/...` from `${HOME}`. Keep ImpactGate at `~/ImpactGate`.
+2. **`./setup.sh`** — clones the arm repos to `~/compare/{spring,officefloor}` on their base
+   branches and builds the harness `.venv`.
+3. **Create ImpactGate's venv** (venvs are gitignored; the default `impact_gate.cmd` points at
+   `~/ImpactGate/.venv/bin/impact-gate`):
+   ```bash
+   cd ~/ImpactGate && python3 -m venv .venv && .venv/bin/pip install -e .
+   ```
+   Alternatively set `impact_gate.cmd: ["impact-gate"]` and use setup.sh's editable install in
+   the harness venv (run with that venv activated).
+4. **The baseline travels with the repo.** `baselines/officefloor.json` is committed and
+   `config.yaml` points at it, so there is nothing to copy. (It is a run *input*, and cannot be
+   rebuilt on a fresh machine because the prior run's branches are not pushed — hence committed.)
+5. **Landlock (Linux only).** The blind-agent confinement uses Landlock and **fails closed**: on
+   macOS or a kernel without Landlock, every checkpoint is *refused*, not run. Verify first:
+   `python harness/landlock_selftest.py` (expect `OVERALL: PASS`).
+6. **`claude` auth is the top unattended risk.** Quota/session limits auto-wait and resume, but
+   an auth/OAuth expiry needs a manual `/login` and will otherwise stall the run. Ensure a
+   long-lived login and check in periodically. The auth-dead signature is `$0 / 1 turn / empty
+   commit`.
+7. **Disable sleep/hibernate** (hibernation interrupts a run):
+   `sudo systemctl mask sleep.target suspend.target hibernate.target`, and set lid-close to
+   ignore.
+8. **JDK + Maven** present; the first `./mvnw` build downloads dependencies (needs network), then
+   `~/.m2` is warm.
+
+**Pre-flight** (before leaving it for the week):
+```bash
+python harness/landlock_selftest.py                                   # OVERALL: PASS
+python -m harness.run_experiment --config config.yaml --test-mode blind \
+    --strategy impact_gated --dry-run    # line reads: block p95 vs baseline officefloor.json (K=0)
+```
 
 **Run and read it:**
 

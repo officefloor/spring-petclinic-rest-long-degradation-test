@@ -25,7 +25,7 @@ by `analyze`) when present — fast, no recompute — else they are recomputed f
 
 Usage:
   python -m harness.build_impact_baseline --config config.yaml --run-id blind-202608100006 \
-      --arm officefloor --strategy just-solve --out ${HOME}/pe-impact-baselines/officefloor.json
+      --arm officefloor --strategy just-solve --out baselines/officefloor.json
 """
 from __future__ import annotations
 
