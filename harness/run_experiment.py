@@ -44,7 +44,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-from . import agent, capture, correctness, expand_path, impact_gate, metrics
+from . import agent, capture, correctness, expand_path, impact_gate, metrics, parser_selftest
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1159,6 +1159,25 @@ def main() -> int:
     print(f"run_id = {run_id}")
     print(f"model = {cfg['model']}")
     print(f"test mode = {args.test_mode}: {TEST_MODES[args.test_mode]}")
+
+    # Fail CLOSED on a blind measure. Every structural metric — and every gate
+    # verdict — is function-based, so a Java file the parser cannot read scores as
+    # "no complexity, no change" instead of erroring (lizard 1.24.0 does exactly
+    # that to @Entity/@Table classes). Both stacks are probed with a change of that
+    # shape before any agent runs; the gate probe is kept for provenance so each
+    # run records the parser that actually decided its verdicts.
+    gated = bool(strategy == (cfg.get("impact_gate") or {}).get("strategy"))
+    try:
+        probe = parser_selftest.require(cfg, gated)
+    except (parser_selftest.ParserBlind, impact_gate.ImpactGateError) as e:
+        # A blind parser, or a gate that cannot run at all — either way the gated
+        # experiment cannot be measured. Fail here, before any worktree or agent turn.
+        print(f"\n=== REFUSING TO RUN: {e}")
+        return 2
+    if gated and probe:
+        cfg["impact_gate"]["_parser_probe"] = probe
+        print(f"parser check = ok (gate lizard "
+              f"{probe.get('lizard_version') or 'unknown'}, sees annotated classes)")
 
     # The run persists NO derived CSV — only raw capture onto the evolve branches.
     # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1,

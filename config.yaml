@@ -144,6 +144,10 @@ impact_gate:
   # How to invoke the standalone impact-gate CLI. Each element is ${HOME}/~/$VAR-expanded.
   # Default points at the sibling ImpactGate checkout's venv; set to ["impact-gate"] if it
   # is installed on PATH / into this harness's .venv (pip install -e ~/ImpactGate).
+  # NOTE: whichever venv this points at supplies the LIZARD that decides every verdict, and it
+  # must be the same version this harness uses (requirements.txt pins lizard==1.23.0; 1.24.0
+  # parses @Entity/@Table classes as zero functions, so changes to them score 0 and can never
+  # fail the gate). run_experiment refuses to start if it cannot see them — harness/parser_selftest.py.
   cmd: ["${HOME}/ImpactGate/.venv/bin/impact-gate"]
   strategy: impact_gated      # the prompt-strategy name that activates this loop
   # Grade each change against a REFERENCE DISTRIBUTION, not ImpactGate's generic OSS seed.

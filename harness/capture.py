@@ -132,9 +132,17 @@ def _is_sha(s: str) -> bool:
 def impact_gate_provenance(cfg: dict) -> dict | None:
     """The control for the impact_gated strategy: exactly which gate decided each refactor.
     Records the impact-gate version + its git SHA (resolved from the configured cmd path),
-    the effective gate policy, and the reference baseline's HASH + n — so a gated run is
-    reproducible and every verdict is traceable to a tool version and a distribution. None
-    when no `impact_gate` config is present (ungated runs are unaffected)."""
+    the effective gate policy, the reference baseline's HASH + n, and the gate's PARSER
+    probe — so a gated run is reproducible and every verdict is traceable to a tool
+    version, a distribution, and a demonstrated ability to see annotated classes. None
+    when no `impact_gate` config is present (ungated runs are unaffected).
+
+    `parser_probe` comes from `parser_selftest.require` at run start (see
+    run_experiment.main). It matters because the gate's lizard lives in the CLI's own
+    venv, NOT this harness's: lizard 1.24.0 scores a method added to an @Entity class as
+    impact 0, which silently turns the gate off for exactly the god-class changes it
+    exists to catch. Recording the probe (and the gate's lizard version next to the
+    harness's in `tool_versions`) makes that visible in the run, not months later."""
     igc = cfg.get("impact_gate") or {}
     cmd = igc.get("cmd")
     if not cmd:
@@ -173,6 +181,8 @@ def impact_gate_provenance(cfg: dict) -> dict | None:
         "stop_scope": igc.get("stop_scope"),
         "record_refactor_correctness": igc.get("record_refactor_correctness"),
         "baseline": baseline,     # basename + sha256 + n (never the distribution itself)
+        # {lizard_version, impact, units_seen, ok} for a method added to an @Entity class
+        "parser_probe": igc.get("_parser_probe") or None,
     }
 
 

@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import yaml
 
-from . import correctness, expand_path, git_out, metrics
+from . import correctness, expand_path, git_out, metrics, parser_selftest
 from .run_experiment import CSV_FIELDS, phase_for
 
 try:
@@ -683,6 +683,16 @@ def main() -> int:
     args = ap.parse_args()
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
+
+    # Every structural metric below is function-based, so a Java file this lizard
+    # cannot parse silently recomputes as zero complexity and zero change rather
+    # than erroring. Refuse to analyze with a parser that is blind to annotated
+    # classes (see harness/parser_selftest.py).
+    harness_parser = parser_selftest.check_lizard()
+    if not harness_parser["ok"]:
+        raise SystemExit(f"lizard {harness_parser['version']} cannot see methods in an "
+                         f"@Entity/@Table class — every structural metric would be wrong. "
+                         f"Run: python -m harness.parser_selftest --config <config.yaml>")
 
     # Everything derived is recomputed here from the commits + capture (see module
     # header); nothing derived is read from the branches.

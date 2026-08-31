@@ -59,6 +59,16 @@ if [ -f "$IG_SRC/pyproject.toml" ]; then
   echo "== installing ImpactGate (editable) from $IG_SRC =="
   ./.venv/bin/pip install --quiet -e "$IG_SRC" && \
     echo "   impact-gate on PATH in venv (set impact_gate.cmd: [\"impact-gate\"] in config.yaml to use it)"
+  # The gate CLI usually runs from ImpactGate's OWN venv (config.yaml impact_gate.cmd),
+  # which pip never sees from here — so pin the same lizard there. A gate measured by a
+  # different parser than metrics.py is not comparing like with like, and lizard 1.24.0
+  # in particular scores any change to an @Entity/@Table class as 0 (see
+  # requirements.txt / harness/parser_selftest.py).
+  LIZARD_PIN="$(grep -iE '^lizard[=<>~]' "$HARNESS_DIR/requirements.txt" || echo lizard)"
+  if [ -x "$IG_SRC/.venv/bin/pip" ]; then
+    echo "== pinning $LIZARD_PIN in the impact-gate venv ($IG_SRC/.venv) =="
+    "$IG_SRC/.venv/bin/pip" install --quiet "$LIZARD_PIN" && echo "   pinned"
+  fi
 else
   echo "== ImpactGate source not found at $IG_SRC (only needed for --strategy impact_gated) =="
   echo "   set config.yaml impact_gate.cmd to your impact-gate binary, or IMPACT_GATE_SRC=<path> ./setup.sh"
@@ -75,5 +85,6 @@ echo
 echo "Next:"
 echo "  cd $HARNESS_DIR"
 echo "  source .venv/bin/activate"
+echo "  python -m harness.parser_selftest --config config.yaml   # expect OVERALL: PASS"
 echo "  python -m harness.run_experiment --config config.yaml --test-mode blind --dry-run"
 echo "  python -m harness.run_experiment --config config.yaml --test-mode blind --arm spring --chain 0 --max-checkpoints 1"

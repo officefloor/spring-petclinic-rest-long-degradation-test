@@ -101,6 +101,16 @@ rationale (the "why", so it doesn't silently regress):
   weight leaves that loophole open); the rename guard (body Jaccard ≥ `IMPACT_RENAME_JACCARD`)
   stops edits hiding behind renames. Don't remove either without re-checking the
   fragmentation / rename gaming paths.
+- **It is a FUNCTION-BODY measure, so declarative work is free — by construction.** Only lines
+  inside a parsed function's line range are charged, and only files lizard treats as source.
+  A rule implemented as a MapStruct `@Mapping(expression = "java(...)")` on an interface
+  method, or in `openapi.yml` / `schema.sql` / OfficeFloor's wiring `.yml`, scores **0** even
+  though real logic was added (observed on `blind-202608312216` at cp05/cp06/cp14, where the
+  Spring agent put the whole rule in a mapper annotation). Both arms have such an escape
+  hatch, so it is not an arm bias, but a run with many 0-impact checkpoints should be read as
+  "the logic went somewhere the structural metrics cannot see", not as "the change was cheap".
+  Changing this would redefine the measure and invalidate `baselines/officefloor.json` — do
+  not do it mid-experiment.
 
 ## Module map (`harness/`)
 
@@ -114,6 +124,7 @@ rationale (the "why", so it doesn't silently regress):
 | `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the refactor prompt from the flagged files/drivers + spec (`refactor_prompt`), and shapes the capture entry per attempt (`attempt_summary`). No effect on the other strategies. |
 | `build_impact_baseline.py` | builds an ImpactGate baseline JSON from a completed run's OWN per-checkpoint `impact_composite` (reads `results/<run_id>/records.concat.csv`, else recomputes). Used to calibrate the gate to OfficeFloor's observed cohesion so Spring is graded against it. Standalone `python -m harness.build_impact_baseline`. |
 | `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
+| `parser_selftest.py` | fail-closed Java-parser check for BOTH measurement stacks (this venv's lizard, and the `impact-gate` CLI's own venv). Adds a method to an `@Entity`/`@Table` fixture class and asserts the parser sees it and the gate scores it > 0. `require()` is called by `run_experiment.main` (and the lizard half by `analyze.main`) before any work; standalone `python -m harness.parser_selftest --config config.yaml`. |
 | `__init__.py` | shared helpers: `git_out` (graceful, for derive/analyze), `expand_path`. |
 
 `acceptance/` holds the black-box test suite (see below). `checkpoints.yaml` is
@@ -246,6 +257,15 @@ p90→~61% of Spring changes fire, p95→~45%, p98→~30%. The `--curve-prior-we
 added to ImpactGate for exactly this (K in `w=n/(n+K)`). Leaving `baseline_file: null` reverts to
 the seed curve. The baseline file is passed as an ABSOLUTE path so `impact-gate` reads it from
 OUTSIDE the arm worktree — it is never committed to an evolve branch nor visible to the agent.
+
+**One parser, pinned, proven before the run.** The gate's lizard lives in the `impact-gate`
+CLI's OWN venv, not this harness's — two installs that drift independently. They must be the
+same version, because the gate is graded against a baseline built with the harness's lizard.
+`requirements.txt` pins `lizard==1.23.0`, `setup.sh` applies the same pin to the sibling
+ImpactGate venv, and `parser_selftest.require` proves both stacks can still see an annotated
+class before any agent runs (refusing to start otherwise); `provenance.impact_gate.parser_probe`
+records the result and the gate's lizard version alongside the harness's in `tool_versions`.
+See the 2026-09 gotcha for what a blind parser cost.
 
 **Do not regress.** The refactor turn reuses the *same* isolation as the implement turn
 (history-less sandbox, blind agent view, Landlock confine) — its prompt references only the
@@ -597,8 +617,24 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   formula appears in three places — both prompts and `impact_stats` in `metrics.py` — keep them
   in sync if the measure ever changes.
 
-## Gotchas / lessons (2026-08)
+## Gotchas / lessons (2026-08, 2026-09)
 
+- **A parser that cannot read a file measures it as perfect (2026-09-01).** lizard **1.24.0**
+  regressed its Java state machine: a bare annotation immediately followed by a parenthesised
+  one at class level (`@Entity` then `@Table(name = "owners")`) drops the second `@` in
+  `_state_post_decorator` and the class declaration is eaten as a method body — the file yields
+  **zero functions**, silently. Under it only 213 of Spring's 307 production functions existed:
+  `Owner.java`, `Pet.java` and all seven `Jpa*RepositoryImpl.java` vanished. ImpactGate's venv
+  had 1.24.0 while this harness had 1.23.0, so `blind-202608312216` scored cp04/cp07 (methods
+  accreted onto `Owner.java`) as **impact 0**. Replayed over 178 Spring checkpoints of
+  `blind-202608100006`: 11% of Spring's impact mass hidden and **6 of 78 changes that should
+  have failed the gate passed** — two of them ~2.5× the block line — while OfficeFloor lost no
+  verdicts at all (its changes sit far below the line either way). That asymmetry biases the
+  gated arm toward "the gate could not hold Spring", i.e. toward the very conclusion under
+  test. The run was killed and restarted. Fixed by the pin + `parser_selftest` above; the tell
+  in a capture is `impact_gate.attempts[].impact == 0` with a non-empty `.agent.diff` touching
+  a `@Entity` class. Never take "0" from a parser as "no complexity" without proving the parser
+  can see the file.
 - **A crashed gate used to read as a mass regression.** On `full-202608102319` a
   Surefire fork died (exit 134, `The forked VM terminated without properly saying
   goodbye`) at 3 OfficeFloor checkpoints and 1 Spring one. Each recorded

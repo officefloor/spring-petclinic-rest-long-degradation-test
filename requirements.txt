@@ -1,4 +1,12 @@
-lizard>=1.17
+# PINNED, not >=. lizard 1.24.0 regressed its Java state machine: a bare annotation
+# followed by a parenthesised one at class level (@Entity then @Table(...)) makes the
+# WHOLE file parse to zero functions, so @Entity/@Table classes (Owner.java, the
+# Jpa*RepositoryImpl.java set) silently measure as "no complexity, no change" — every
+# structural metric AND every impact-gate verdict on those files reads 0. The same pin
+# must hold in the impact-gate CLI's own venv (setup.sh applies it there too), because
+# the gate is graded against a baseline built with THIS lizard. Before bumping, run:
+#     python -m harness.parser_selftest --config config.yaml
+lizard==1.23.0
 PyYAML>=6.0
 numpy>=1.24
 matplotlib>=3.7

@@ -486,10 +486,13 @@ days):
 3. **Create ImpactGate's venv** (venvs are gitignored; the default `impact_gate.cmd` points at
    `~/ImpactGate/.venv/bin/impact-gate`):
    ```bash
-   cd ~/ImpactGate && python3 -m venv .venv && .venv/bin/pip install -e .
+   cd ~/ImpactGate && python3 -m venv .venv && .venv/bin/pip install -e . 'lizard==1.23.0'
    ```
    Alternatively set `impact_gate.cmd: ["impact-gate"]` and use setup.sh's editable install in
-   the harness venv (run with that venv activated).
+   the harness venv (run with that venv activated). **Pin the same lizard as
+   `requirements.txt`** — that venv's parser decides every gate verdict, and lizard 1.24.0
+   cannot parse `@Entity`/`@Table` classes at all, so changes to them score 0 and can never
+   fail the gate (`setup.sh` applies the pin for you when `~/ImpactGate/.venv` exists).
 4. **The baseline travels with the repo.** `baselines/officefloor.json` is committed and
    `config.yaml` points at it, so there is nothing to copy. (It is a run *input*. The source
    run's evolve branches are on GitHub, but rebuilding on a fresh clone means fetching those
@@ -511,9 +514,15 @@ days):
 **Pre-flight** (before leaving it for the week):
 ```bash
 python harness/landlock_selftest.py                                   # OVERALL: PASS
+python -m harness.parser_selftest --config config.yaml                # OVERALL: PASS
 python -m harness.run_experiment --config config.yaml --test-mode blind \
     --strategy impact_gated --dry-run    # line reads: block p95 vs baseline officefloor.json (K=0)
 ```
+
+The parser check proves both measurement stacks — this venv's lizard and the `impact-gate`
+CLI's own — can still see methods on an annotated (`@Entity`/`@Table`) class. It runs
+automatically at the start of every run and refuses to proceed if either is blind, because
+a file the parser cannot read scores as zero complexity rather than as an error.
 
 **Run and read it:**
 
@@ -715,6 +724,16 @@ So mutating a method inside a heavy god-class costs far more than the same edit 
 isolated unit; a brand-new class is floored to `1·CC·nloc·files` (small but non-zero,
 closing the fragmentation loophole). A within-commit **rename** (body Jaccard ≥ 0.6)
 is scored as a mutation, not a free addition.
+
+> **What it cannot see.** Only lines inside a parsed **function body**, in a file
+> `lizard` reads as source, are charged. Logic expressed declaratively — a MapStruct
+> `@Mapping(expression = "java(...)")` on an interface method, `openapi.yml`,
+> `schema.sql`, OfficeFloor's wiring `.yml` — scores **0**. Both arms have that escape
+> hatch, so it is not an arm bias, but read a 0 as "the logic went where this metric
+> cannot look", not as "the change was cheap". And because an unreadable file also
+> yields no functions, a **parser** that fails to parse a file makes it look perfect:
+> `python -m harness.parser_selftest --config config.yaml` must print `OVERALL: PASS`
+> before a run or an analysis is trustworthy (see AGENTS.md, 2026-09 gotcha).
 
 | field | definition |
 |---|---|
