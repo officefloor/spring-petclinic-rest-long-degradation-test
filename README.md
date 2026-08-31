@@ -491,8 +491,10 @@ days):
    Alternatively set `impact_gate.cmd: ["impact-gate"]` and use setup.sh's editable install in
    the harness venv (run with that venv activated).
 4. **The baseline travels with the repo.** `baselines/officefloor.json` is committed and
-   `config.yaml` points at it, so there is nothing to copy. (It is a run *input*, and cannot be
-   rebuilt on a fresh machine because the prior run's branches are not pushed — hence committed.)
+   `config.yaml` points at it, so there is nothing to copy. (It is a run *input*. The source
+   run's evolve branches are on GitHub, but rebuilding on a fresh clone means fetching those
+   heads into local `refs/heads/evolve` then a slow recompute, so the 4 KB file is committed to
+   keep the config self-contained.)
 5. **Landlock (Linux only).** The blind-agent confinement uses Landlock and **fails closed**: on
    macOS or a kernel without Landlock, every checkpoint is *refused*, not run. Verify first:
    `python harness/landlock_selftest.py` (expect `OVERALL: PASS`).

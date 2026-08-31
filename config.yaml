@@ -165,8 +165,10 @@ impact_gate:
   # higher = only Spring's worst concentrations are gated (lenient). SMOKE-RUN and tune via the
   # "impact-gate: implement grade pXX" log line.
   # Reference distribution, committed IN THIS REPO so it travels with a checkout (it is a run
-  # INPUT, like ImpactGate's seed, not derived output; and it cannot be rebuilt on a fresh
-  # machine because the prior run's branches are not pushed). Relative, so main() anchors it to
+  # INPUT, like ImpactGate's seed, not derived output. The source run's evolve branches ARE on
+  # GitHub, but a fresh clone leaves them as remote-tracking refs while analyze reads local
+  # refs/heads/evolve, so rebuilding means fetching those heads locally then a slow recompute;
+  # committing the 4KB file keeps the config self-contained. Relative, so main() anchors it to
   # this config's dir and passes an ABSOLUTE path to impact-gate (kept outside the arm worktree,
   # never seen by the agent). Rebuild with harness.build_impact_baseline. null -> generic seed.
   baseline_file: baselines/officefloor.json
