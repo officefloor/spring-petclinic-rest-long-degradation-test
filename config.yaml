@@ -105,14 +105,28 @@ prompt_strategies:
     and refactor if needed. Make all tests pass before finishing.
 
     {spec}
-  # The IMPLEMENT prompt for the impact_gated pipeline. Deliberately identical to
-  # just-solve so the ONLY difference from that control is the ImpactGate score+refactor
-  # loop (see the impact_gate: section), never the wording. Never mention the gate or
-  # "refactor" here — the refactor is a separate turn with its own prompt.
+  # The IMPLEMENT prompt for the impact_gated pipeline. Unlike just-solve, it gives the AI
+  # the EXACT structural-impact formula as its objective (a clear measurable target, not
+  # "write good code"). The contrast with just-solve is the whole point: does a precise,
+  # measurable objective plus the gate+refactor loop let good prompting keep the code clean,
+  # or does the eroding architecture concentrate complexity anyway. Keep this formula in sync
+  # with the refactor_prompt and the impact_stats measure.
   impact_gated: |
-    Implement the following change to the application so that it fully satisfies
-    the specification and all existing and new tests pass. Run the test suite and
-    make it green before finishing.
+    Implement the following change to the application so that it fully satisfies the
+    specification and all existing and new tests pass.
+
+    Write it to keep structural impact low. Structural impact is a measurable cost, not a
+    vague goal. For every function you change, the cost is:
+        cost = max(WMC_other, 1) * CC * max(1, changed_lines)
+    CC is that function's cyclomatic complexity. WMC_other is the summed cyclomatic
+    complexity of the OTHER methods in its class, which is the surrounding context you must
+    hold to edit it safely. changed_lines is how many of its lines you add or edit. The costs
+    are summed over every function you change, then multiplied by the number of files you
+    touch. So the biggest lever is WMC_other: a method inside a large class pays for the whole
+    class. Do not grow one method or one class. Add behaviour as small, cohesive units, each
+    with little surrounding complexity, and keep every function you change simple.
+
+    Run the test suite and make it green before finishing.
 
     {spec}
 
@@ -154,7 +168,7 @@ impact_gate:
   curve_prior_weight: 0       # 0 = grade PURELY vs baseline_file (ignore the seed); K in n/(n+K)
   # SHARED cutoff applied identically to BOTH arms (run --strategy impact_gated with no --arm
   # filter). p95 of OfficeFloor == composite ~5,922: each change must stay under that. OfficeFloor
-  # fires on ~5% of its own changes (its tail), Spring on ~45% — held to OfficeFloor's cohesion
+  # fires on ~5% of its own changes (its tail), Spring on ~45%, held to OfficeFloor's cohesion
   # without being impossible to pass. Raise toward p98 (~14,148) for more headroom, lower toward
   # p90 (~3,410) for OfficeFloor's typical cohesion (stricter, earlier stops likely).
   block_percentile: 95        # read against the reference distribution (see numbers above)
@@ -166,25 +180,40 @@ impact_gate:
   # The REFACTOR prompt. Placeholders: {spec} the upcoming change, {files} the flagged files,
   # {drivers} the specific methods/classes driving the cost, {grade}/{block} the percentiles.
   refactor_prompt: |
-    A change is about to be made to this codebase, but implementing it directly would
-    concentrate too much complexity. Before that change is made, refactor the code so the
+    A change is about to be made to this codebase. Implementing it directly would concentrate
+    too much structural complexity. Before that change is made, refactor the code so the
     change can land cleanly. Do NOT implement the change itself in this step.
 
     The upcoming change (do not implement it now, only prepare for it):
     {spec}
 
-    ImpactGate flagged these files as the highest structural-impact cost for that change
-    (grade p{grade}, must come under p{block}):
+    How structural impact is measured. This is the exact objective, and lower is better.
+    For every function the upcoming change touches, the cost is:
+        cost = max(WMC_other, 1) * CC * max(1, changed_lines)
+    where
+        CC            = the cyclomatic complexity of that function
+        WMC_other     = the summed cyclomatic complexity of the OTHER methods in that
+                        function's class, the surrounding context you must hold to edit it
+        changed_lines = how many of that function's lines the change adds or edits
+    The costs are summed over every changed function, then multiplied by the number of files
+    the change touches. A brand new class costs 1 * CC * size * files.
+
+    The dominant lever is WMC_other. A method inside a large class pays for the whole class.
+    Splitting one large class into several small, cohesive classes lowers WMC_other for every
+    method, which lowers the cost of the upcoming change.
+
+    ImpactGate scored the upcoming change over the line (grade p{grade}, it must come under
+    p{block}). These files carry the highest cost:
     {files}
 
-    The specific methods/classes driving the cost:
+    The specific methods and classes driving the cost:
     {drivers}
 
-    Refactor these to reduce complexity: break large methods and classes into smaller, more
-    cohesive units, extract collaborators, and remove duplication, so the upcoming change
-    touches small focused units instead of one growing god-method or god-class. Preserve all
-    existing behaviour exactly — every current test must still pass. Run the tests and make
-    them green before finishing.
+    Refactor to reduce that cost. Break large methods and classes into smaller, more cohesive
+    units. Extract collaborators. Remove duplication. The goal is that the upcoming change
+    touches small focused units, each with a small surrounding class, instead of one growing
+    god method or god class. Preserve all existing behaviour exactly. Every current test must
+    still pass. Run the tests and make them green before finishing.
 
 build:
   # Compile step used as the build gate (fast; tests run separately by tag).

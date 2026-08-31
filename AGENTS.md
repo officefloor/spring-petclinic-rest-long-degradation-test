@@ -587,8 +587,15 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   ABSOLUTE path so it stays outside the worktree; null → seed) + `curve_prior_weight` (0 → pure
   baseline percentile), `measure_config` (optional impact-gate ignore globs; resolved against
   the config dir), and the `refactor_prompt` template
-  (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`). The `impact_gated` prompt-strategy
-  (the *implement* prompt) must stay identical to `just-solve` so the loop is the only diff.
+  (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`). BOTH the `impact_gated` implement
+  prompt and the `refactor_prompt` state the EXACT impact formula
+  (`cost = max(WMC_other,1)·CC·max(1,Δlines)`, summed, × files; `WMC_other` the dominant lever)
+  as the AI's objective — a precise measurable target, deliberately NOT identical to
+  `just-solve` (which says only "implement it"). So the intervention under test is "clear
+  measurable objective + gate + refactor" vs `just-solve`'s vague baseline: it differentiates
+  whether good prompting keeps code clean, or the erosion is inherent to the architecture. The
+  formula appears in three places — both prompts and `impact_stats` in `metrics.py` — keep them
+  in sync if the measure ever changes.
 
 ## Gotchas / lessons (2026-08)
 

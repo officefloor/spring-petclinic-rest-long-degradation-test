@@ -398,8 +398,12 @@ growing handler?
 **The per-checkpoint loop** (only when `--strategy impact_gated`; every other strategy
 is an untouched control):
 
-1. **Implement.** The agent implements the checkpoint (same isolation, same blind view,
-   same prompt text as `just-solve` — the *only* difference from that control is this loop).
+1. **Implement.** The agent implements the checkpoint (same isolation, same blind view).
+   Unlike `just-solve`, the implement prompt states the **exact structural-impact formula**
+   as the objective (`cost = max(WMC_other,1)·CC·max(1,Δlines)`, summed, × files) rather than
+   vague "write clean code" — so the intervention under test is a *precise, measurable target*
+   plus this loop, versus `just-solve`'s "just implement it". This differentiates whether good
+   prompting can hold the code clean, or the erosion is inherent to the architecture.
 2. **Score.** The production diff is staged and scored by the standalone `impact-gate`
    CLI: `impact-gate score --mode staged --curve`. The change's structural-impact composite
    is graded against ImpactGate's Java seed distribution.
@@ -430,7 +434,9 @@ grade against; null → the seed) + `curve_prior_weight` (0 → grade purely aga
 `block_percentile` / `warn_percentile`, `max_refactors`, `stop_scope`,
 `record_refactor_correctness` (run the full gate on each refactor, recorded but never enforced),
 and the `refactor_prompt` template (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`
-placeholders).
+placeholders). **Both** the `impact_gated` implement prompt and the `refactor_prompt` state the
+exact impact formula (and that `WMC_other` is the dominant lever), so the AI optimises the same
+number the gate enforces and `analyze` reports — keep the three in sync if the measure changes.
 
 ### Calibrating the gate to OfficeFloor's cohesion (the experiment)
 
