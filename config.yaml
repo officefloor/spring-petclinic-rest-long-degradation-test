@@ -105,28 +105,27 @@ prompt_strategies:
     and refactor if needed. Make all tests pass before finishing.
 
     {spec}
-  # The IMPLEMENT prompt for the impact_gated pipeline. Unlike just-solve, it gives the AI
-  # the EXACT structural-impact formula as its objective (a clear measurable target, not
-  # "write good code"). The contrast with just-solve is the whole point: does a precise,
-  # measurable objective plus the gate+refactor loop let good prompting keep the code clean,
-  # or does the eroding architecture concentrate complexity anyway. Keep this formula in sync
-  # with the refactor_prompt and the impact_stats measure.
+  # The IMPLEMENT prompt for the impact_gated pipeline is NO LONGER this formula. An
+  # earlier design handed the AI the exact structural-impact cost function as its objective;
+  # a Spring run gamed it exactly as Goodhart predicts (dispersed code into a pipeline of
+  # tiny greenfield classes — WMC_other collapses to 1 — and DUPLICATED logic, since reuse
+  # means editing a large class the formula penalises). The formula never sees duplication
+  # and discounts new classes, so "minimise it" and "write good code" diverged.
+  #
+  # The redesign (design B): the AI implements each change with the NEUTRAL prompt below —
+  # spec only, no formula — so it optimises the real task, not the proxy. ImpactGate still
+  # gates the CHANGE (discard + refactor + re-attempt, up to max_refactors, then a chain
+  # stop = "impact"), but the REFACTOR is guided by a symptom-only prompt (impact_gate.
+  # refactor_prompt: names the concentrated classes, never the formula) and its OWN output
+  # is held to a deterministic code-quality gate (impact_gate.quality_gate: jscpd clones +
+  # ast-grep smells over the refactor's added lines) so the duplication exploit is closed.
+  # A refactor that cannot be made statically clean within max_review_turns stops the chain
+  # (= "quality"). Selected by impact_gate.implement_strategy; kept here only as the fallback
+  # body if that key is ever removed. Keep this identical to just-solve.
   impact_gated: |
-    Implement the following change to the application so that it fully satisfies the
-    specification and all existing and new tests pass.
-
-    Write it to keep structural impact low. Structural impact is a measurable cost, not a
-    vague goal. For every function you change, the cost is:
-        cost = max(WMC_other, 1) * CC * max(1, changed_lines)
-    CC is that function's cyclomatic complexity. WMC_other is the summed cyclomatic
-    complexity of the OTHER methods in its class, which is the surrounding context you must
-    hold to edit it safely. changed_lines is how many of its lines you add or edit. The costs
-    are summed over every function you change, then multiplied by the number of files you
-    touch. So the biggest lever is WMC_other: a method inside a large class pays for the whole
-    class. Do not grow one method or one class. Add behaviour as small, cohesive units, each
-    with little surrounding complexity, and keep every function you change simple.
-
-    Run the test suite and make it green before finishing.
+    Implement the following change to the application so that it fully satisfies
+    the specification and all existing and new tests pass. Run the test suite and
+    make it green before finishing.
 
     {spec}
 
@@ -184,47 +183,59 @@ impact_gate:
   # p90 (~3,410) for OfficeFloor's typical cohesion (stricter, earlier stops likely).
   block_percentile: 95        # read against the reference distribution (see numbers above)
   warn_percentile: 85         # reported only (the gate keys off block_percentile)
-  max_refactors: 3            # refactors allowed per checkpoint before the chain stops
+  # Which prompt_strategies entry the IMPLEMENT turn uses. Design B: neutral, spec only, NO
+  # structural-impact formula (the formula is what the Spring run gamed). ImpactGate still
+  # gates this change; the AI is simply never told the metric it is graded on.
+  implement_strategy: just-solve
+  max_refactors: 3            # IMPACT budget: refactor+re-attempt cycles for the change to come
+                              # under block_percentile. Exhausted while still over -> chain stops
+                              # (stop_reason "impact").
+  max_review_turns: 3         # QUALITY budget within ONE refactor: code-review turns to make the
+                              # refactor's own added lines statically clean. Exhausted while still
+                              # dirty -> chain stops (stop_reason "quality").
   stop_scope: chain           # chain = stop this chain, keep running other arms/chains; run = abort all
   record_refactor_correctness: true  # run the full gate on each refactor (record only; not enforced)
   measure_config: null        # optional Surveyor-style ignore-globs YAML for impact-gate
-  # The REFACTOR prompt. Placeholders: {spec} the upcoming change, {files} the flagged files,
-  # {drivers} the specific methods/classes driving the cost, {grade}/{block} the percentiles.
+  # Deterministic code-quality gate on each REFACTOR's own output (design B). Reuses the same
+  # jscpd (clone) + ast-grep (smell) stacks as the `verbosity` metric, scoped to the lines the
+  # refactor ADDS (git diff base..refactor). A finding = an added line that is part of a clone
+  # or matches a wasteful-pattern rule. Non-empty -> the findings are rendered as review comments
+  # and fed back for another turn (up to max_review_turns). This is what stops the refactor from
+  # buying a lower impact score with duplicated/greenfield slop. Versions are pinned + asserted
+  # by harness/quality_selftest.py, exactly like the lizard pin (fail-closed).
+  quality_gate:
+    enabled: true
+    jscpd_min_tokens: 50      # pinned jscpd clone thresholds (version defaults must NOT decide verdicts)
+    jscpd_min_lines: 5
+    review_prompt: |
+      A code reviewer flagged the following problems in the refactor you just made. Each is a
+      line you added that duplicates existing code or is a known bad pattern. Fix every item
+      without changing behaviour. Do NOT implement the upcoming feature change; this is still
+      the preparation step. Every existing test must still pass; run them and make them green.
+
+      {findings}
+  # The REFACTOR prompt (design B). Symptom, not formula: it names the classes where complexity
+  # concentrated and asks for a natural restructuring, but never states the cost function and
+  # never prescribes "split into small classes / extract collaborators" (those phrases are what
+  # drove the pipeline-dispersal + duplication). The quality_gate, not the prompt, forbids the
+  # cheap moves. Placeholders: {spec} the upcoming change; {drivers} the concentrated classes/
+  # methods (locations only, costs stripped).
   refactor_prompt: |
-    A change is about to be made to this codebase. Implementing it directly would concentrate
-    too much structural complexity. Before that change is made, refactor the code so the
-    change can land cleanly. Do NOT implement the change itself in this step.
+    A change is about to be made to this codebase. When that change was implemented directly,
+    these classes ended up carrying more complexity than they can hold comfortably:
 
-    The upcoming change (do not implement it now, only prepare for it):
-    {spec}
-
-    How structural impact is measured. This is the exact objective, and lower is better.
-    For every function the upcoming change touches, the cost is:
-        cost = max(WMC_other, 1) * CC * max(1, changed_lines)
-    where
-        CC            = the cyclomatic complexity of that function
-        WMC_other     = the summed cyclomatic complexity of the OTHER methods in that
-                        function's class, the surrounding context you must hold to edit it
-        changed_lines = how many of that function's lines the change adds or edits
-    The costs are summed over every changed function, then multiplied by the number of files
-    the change touches. A brand new class costs 1 * CC * size * files.
-
-    The dominant lever is WMC_other. A method inside a large class pays for the whole class.
-    Splitting one large class into several small, cohesive classes lowers WMC_other for every
-    method, which lowers the cost of the upcoming change.
-
-    ImpactGate scored the upcoming change over the line (grade p{grade}, it must come under
-    p{block}). These files carry the highest cost:
-    {files}
-
-    The specific methods and classes driving the cost:
     {drivers}
 
-    Refactor to reduce that cost. Break large methods and classes into smaller, more cohesive
-    units. Extract collaborators. Remove duplication. The goal is that the upcoming change
-    touches small focused units, each with a small surrounding class, instead of one growing
-    god method or god class. Preserve all existing behaviour exactly. Every current test must
-    still pass. Run the tests and make them green before finishing.
+    Before the change is made, prepare the existing code so the change can land as code a
+    maintainer of this codebase would recognise as natural, consistent with how this codebase
+    already structures similar work. Do NOT implement the change itself yet; only restructure
+    what is already here.
+
+    The upcoming change, for context only (do not implement it now):
+    {spec}
+
+    Restructure in whatever way is most natural here. Preserve all existing behaviour exactly,
+    and keep every current test passing. Run the tests and make them green before finishing.
 
 build:
   # Compile step used as the build gate (fast; tests run separately by tag).
@@ -241,8 +252,14 @@ build:
   test_retry_seconds: 30    # pause between those tries
 
 tools:
-  jscpd: "jscpd"     # npm i -g jscpd  (clone detection for Verbosity)
-  astgrep: "sg"      # ast-grep binary  (pattern flags for Verbosity)
+  # PINNED, committed clone/smell binaries. Installed by `npm ci` in tools/ from the committed
+  # tools/package-lock.json (jscpd + @ast-grep/cli at exact versions), so every machine and run
+  # scores identically. harness/quality_selftest.py asserts the versions AND golden fixtures and
+  # refuses to start on drift (fail-closed, like the lizard pin). Bare `jscpd`/`sg` on PATH are
+  # NOT used: `sg` also collides with shadow-utils' setgid tool. Fall back to bare names only if
+  # tools/node_modules is absent (ungated verbosity metric degrades gracefully; the gate does not).
+  jscpd: "tools/node_modules/.bin/jscpd"
+  astgrep: "tools/node_modules/.bin/ast-grep"
   astgrep_rules: "astgrep-rules"
 
 probe:

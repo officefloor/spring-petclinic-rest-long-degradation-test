@@ -121,7 +121,9 @@ rationale (the "why", so it doesn't silently regress):
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
-| `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the refactor prompt from the flagged files/drivers + spec (`refactor_prompt`), and shapes the capture entry per attempt (`attempt_summary`). No effect on the other strategies. |
+| `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the symptom-only refactor prompt from the flagged-class LOCATIONS + spec (`refactor_prompt`; `_format_drivers` strips cost figures — design B), and shapes the capture entry per attempt (`attempt_summary`, incl. `quality`/`quality_turns`). No effect on the other strategies. |
+| `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + ast-grep smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Reused by `_impact_gated_implement`'s quality sub-loop. |
+| `quality_selftest.py` | fail-closed check that the PINNED `jscpd`/`@ast-grep/cli` (tools/package.json) are at the locked versions AND a golden clone+smell fixture fails the gate. `require()` runs beside `parser_selftest.require` in `run_experiment.main` when the gate is active; standalone `python -m harness.quality_selftest --config config.yaml`. |
 | `build_impact_baseline.py` | builds an ImpactGate baseline JSON from a completed run's OWN per-checkpoint `impact_composite` (reads `results/<run_id>/records.concat.csv`, else recomputes). Used to calibrate the gate to OfficeFloor's observed cohesion so Spring is graded against it. Standalone `python -m harness.build_impact_baseline`. |
 | `analyze.py` | **always recomputes** from commits + capture (no derived data is read back). Materializes each checkpoint tree, re-runs `compute_all`, re-scores correctness, fits slopes with bootstrap CIs, writes `results/<run_id>/analysis/`. |
 | `parser_selftest.py` | fail-closed Java-parser check for BOTH measurement stacks (this venv's lizard, and the `impact-gate` CLI's own venv). Adds a method to an `@Entity`/`@Table` fixture class and asserts the parser sees it and the gate scores it > 0. `require()` is called by `run_experiment.main` (and the lizard half by `analyze.main`) before any work; standalone `python -m harness.parser_selftest --config config.yaml`. |
@@ -186,6 +188,23 @@ post-hoc metric. Activated only when the active strategy equals `impact_gate.str
 (`_gate_active` in `run_experiment.py`); all other strategies run the unchanged flow above,
 so it is a strict superset and a clean control comparison.
 
+**Design B (2026-09, current).** An earlier design also handed the AI the exact structural-
+impact cost function as its objective (in both the implement and refactor prompts). A Spring
+run gamed it exactly as Goodhart predicts: it dispersed logic into greenfield classes
+(`WMC_other` collapses to 1) and DUPLICATED code (reuse means editing a penalised large class),
+holding the score down while the code stopped being idiomatic Spring. The cost function is blind
+to duplication, so "minimise it" and "write clean code" came apart. Design B removes the formula
+from every prompt the agent sees and, instead, holds each refactor's OWN output to a
+deterministic code-quality gate:
+- the **implement** turn uses a NEUTRAL prompt (`impact_gate.implement_strategy`, default
+  `just-solve` — spec only, no formula), so the AI optimises the real task, not the proxy;
+- the **refactor** prompt is symptom-only (`refactor_prompt`: names the concentrated classes via
+  `{drivers}` locations, never the cost figures — `_format_drivers` strips CC/WMC/cost);
+- each refactor must pass `quality_gate` (jscpd clones + ast-grep smells over the refactor's
+  ADDED lines) — this is what forbids the run-1 slop exploit.
+ImpactGate still gates the CHANGE (discard → refactor → re-attempt) exactly as before; the AI is
+simply never told the metric it is graded on.
+
 **Where it hooks.** In `run_chain`, the single agent turn (lifecycle steps 2–3) is replaced
 by `_impact_gated_implement(...)` when the gate is active. Everything downstream (tamper →
 COMMIT 1 → measurement suite → correctness gate → COMMIT 2 → capture) is unchanged and runs
@@ -194,6 +213,7 @@ base_for_cp, stopped)` with the worktree already mirrored + `git add -A` staged.
 
 **The loop** (`base_for_cp` starts at the previous reset commit):
 1. Implement via the existing `_run_agent_turn` (fresh, blind sandbox rebuilt from the wt).
+   The prompt is the NEUTRAL `implement_strategy` (design B), selected in `run_chain`.
 2. `mirror_source(sandbox→wt)`, `git add -A`, then `impact_gate.score(cmd, wt, ...)` — the CLI
    runs `score --mode staged --curve` on the wt (a real git repo; the sandbox has no `.git`).
 3. `is_blocked` keys on `grade.percentile >= block_percentile` directly (NOT the CLI's
@@ -203,14 +223,22 @@ base_for_cp, stopped)` with the worktree already mirrored + `git add -A` staged.
 5. **Fail** → `git reset --hard base_for_cp` + `git clean -fd` (discard the change; ignored
    `target/` survives, tracked `evolve-results/` capture is untouched, the `-capture` sibling
    is outside the wt), then a **refactor turn** via `agent.run_agent` on the clean base with
-   the same Landlock `confine` as the implement turn, prompted from `refactor_prompt` (flagged
-   files + cost-driver units + the change spec). Mirror back, `impact_gate.score` again
-   (recorded, not enforced), optionally `_refactor_correctness` (full gate, record-only), then
-   commit **`cpNN refactorM <id>`** and set `base_for_cp = HEAD`.
-6. Up to `max_refactors` refactors; still blocked after the last → leave the failing change
-   staged, set `stopped=True`; `run_chain` records the full failing checkpoint then `break`s
-   the checkpoint loop. `stop_scope: run` additionally raises `ChainStopped` (caught in `main`,
-   exit 3) to abort every remaining arm/chain.
+   the same Landlock `confine` as the implement turn, prompted from the symptom-only
+   `refactor_prompt` (concentrated-class LOCATIONS + the change spec; no cost figures).
+   Mirror back, `git add -A`. Then the **quality sub-loop** (design B): `quality_gate.review`
+   scores the refactor's added lines; while dirty, up to `max_review_turns` code-review turns
+   run in the SAME sandbox, each fed the findings as review text, re-mirroring after each. Once
+   clean (or the budget is hit), `impact_gate.score` again (recorded, not enforced), optionally
+   `_refactor_correctness` (record-only), commit **`cpNN refactorM <id>`**, set
+   `base_for_cp = HEAD`.
+6. Two distinct stop conditions, both set `stopped=True` with an `ig_block.stop_reason`;
+   `run_chain` records the failing checkpoint then `break`s (and `stop_scope: run` raises
+   `ChainStopped`, exit 3):
+   - **`impact`** — up to `max_refactors` refactor+re-attempt cycles; still blocked after the
+     last → the change stayed too concentrated even after clean refactors.
+   - **`quality`** — a refactor could not be made statically clean within `max_review_turns`
+     (it could only lower impact with duplication/slop we refuse). The dirty refactor is
+     committed for inspection before the stop.
 
 **Commit shape & analyze.** A gated checkpoint is `0..N × cpNN refactorM` + `cpNN agent` +
 `cpNN reset`. `base_for_cp` advances past each refactor, so COMMIT 1's parent and the log-only
@@ -226,23 +254,29 @@ shifts complexity to a later node cannot fake a win); `entry_cc`/`wmc_handler` f
 and are corroborating, not decisive (see "What the experiment is").
 
 **Capture.** `checkpoint_record(..., impact_gate=ig_block)` adds an `impact_gate` block:
-`{enabled, block_percentile, warn_percentile, max_refactors, refactors, passed, stopped,
-pre_checkpoint_sha, attempts:[...]}`. Each attempt is `{kind: implement|refactor, grade,
-impact, blocked, files, drivers, sha}`; a refactor attempt also carries its `agent` envelope
-(irreproducible cost/tokens — MUST be captured) and, if enabled, `tests` (record-only). The
-refactor event streams land as `cpNN.refactorM.jsonl` (staged by the existing
-`startswith("cpNN.")` copy into `evolve-results/capture/`). The **manifest** commit's
-`provenance.json` additionally carries an `impact_gate` control block
-(`capture.impact_gate_provenance`): the impact-gate version + git SHA (resolved from the cmd
-path), the effective policy, and the reference baseline's `sha256` + `n` — so every gated run
-is reproducible and each verdict is traceable to a tool version and a distribution. Only
-present for the gated strategy.
+`{enabled, block_percentile, warn_percentile, max_refactors, max_review_turns, refactors,
+passed, stopped, stop_reason, pre_checkpoint_sha, attempts:[...]}`. Each attempt is
+`{kind: implement|refactor, grade, impact, blocked, files, drivers, sha}`; a refactor attempt
+also carries its `agent` envelope (irreproducible cost/tokens — MUST be captured), if enabled
+`tests` (record-only), and design B `quality` (`quality_gate.summary`: passed/ran, added-line +
+clone/smell finding counts, the findings) plus `quality_turns` (the review turns' envelopes).
+The refactor + review event streams land as `cpNN.refactorM.jsonl` and
+`cpNN.refactorM.reviewR.jsonl` (staged by the existing `startswith("cpNN.")` copy into
+`evolve-results/capture/`). The **manifest** commit's `provenance.json` additionally carries an
+`impact_gate` control block (`capture.impact_gate_provenance`): the impact-gate version + git
+SHA, the effective policy (incl. `implement_strategy`, `max_review_turns`, and the `quality_gate`
+policy + PINNED jscpd/ast-grep versions), and the reference baseline's `sha256` + `n` — so every
+gated run is reproducible and each verdict is traceable to a tool version and a distribution.
+Only present for the gated strategy.
 
 **analyze columns.** `recompute_rows` reads the block into `ig_refactors`, `ig_passed`,
-`ig_stopped`, `ig_grade` (last implement attempt), `ig_refactor_cost_usd`, `ig_refactor_tokens`
-(added to `CSV_FIELDS`, blank for ungated/old runs). `main` renders an **ImpactGate pipeline**
-summary table (reached-final rate, stops, refactor rate, mean refactors/cp, refactor $, mean
-accepted grade), shown only when a group has gate data.
+`ig_stopped`, `ig_stop_reason`, `ig_grade` (last implement attempt), `ig_refactor_cost_usd`,
+`ig_refactor_tokens`, and the design-B quality columns `ig_quality_review_turns`,
+`ig_quality_passed`, `ig_quality_clone_lines`, `ig_quality_smell_lines`, `ig_quality_cost_usd`
+(all in `CSV_FIELDS`, blank for ungated/old runs). `main` renders an **ImpactGate pipeline**
+summary table (reached-final rate, stops split as **impact/quality**, refactor rate, mean
+refactors/cp, review turns, refactor $, mean accepted grade), shown only when a group has gate
+data.
 
 **Calibration — grade against OfficeFloor, not the seed (the experiment).** The prior run
 ([blog](https://blog.officefloor.net/2026/08/the-same-complexity-one-unit-or-twenty.html))
@@ -266,6 +300,20 @@ ImpactGate venv, and `parser_selftest.require` proves both stacks can still see 
 class before any agent runs (refusing to start otherwise); `provenance.impact_gate.parser_probe`
 records the result and the gate's lizard version alongside the harness's in `tool_versions`.
 See the 2026-09 gotcha for what a blind parser cost.
+
+**Two more pinned tools, proven before the run (design B).** The quality gate's verdict is
+decided by two external binaries. They are pinned in `tools/package.json` + `package-lock.json`
+(`jscpd` and `@ast-grep/cli`, exact versions), installed with `cd tools && npm ci`, and invoked
+via `tools/node_modules/.bin/...` (config `tools.jscpd`/`tools.astgrep`, anchored to the config
+dir in `main`; bare `sg` also collides with shadow-utils). `quality_selftest.require` — called
+beside `parser_selftest.require` in `run_experiment.main`, fail-closed — asserts BOTH the pinned
+versions AND a golden fixture (a staged verbatim-duplicate method + a `b == true` in a second
+file must fail the gate with ≥1 clone and ≥1 smell finding). A version string alone is not
+enough: as with lizard, behaviour is the authoritative check. Note ast-grep 0.45.0 takes `-r` as
+a single rule FILE, so `quality_gate` loads the multi-document `astgrep-rules/` via a generated
+`sgconfig.yml` (`ruleDirs`) + `scan -c`; only single-AST-node patterns are legal (multi-statement
+seeds were dropped, see the rule file's own header). `record_refactor_correctness` and the
+recorded `verbosity` metric are unchanged.
 
 **Do not regress.** The refactor turn reuses the *same* isolation as the implement turn
 (history-less sandbox, blind agent view, Landlock confine) — its prompt references only the

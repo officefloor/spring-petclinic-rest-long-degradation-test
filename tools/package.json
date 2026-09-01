@@ -1,0 +1,10 @@
+{
+  "name": "petclinic-evolve-quality-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned clone/smell binaries for the impact_gated quality gate and the verbosity metric. Installed with `npm ci` (uses the committed package-lock.json). harness/quality_selftest.py asserts these exact versions plus golden fixtures and refuses to run on drift, exactly like the lizard==1.23.0 pin. Bump a version here ONLY together with a re-baseline: jscpd clone thresholds and ast-grep pattern matching both decide gate verdicts.",
+  "dependencies": {
+    "jscpd": "5.0.14",
+    "@ast-grep/cli": "0.45.0"
+  }
+}

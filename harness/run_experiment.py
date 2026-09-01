@@ -44,15 +44,17 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-from . import agent, capture, correctness, expand_path, impact_gate, metrics, parser_selftest
+from . import (agent, capture, correctness, expand_path, impact_gate, metrics,
+               parser_selftest, quality_gate, quality_selftest)
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class ChainStopped(Exception):
-    """Raised/flagged when the impact_gated pipeline gives up on a checkpoint: the
-    change still fails ImpactGate after `max_refactors` refactors. The chain ends and
-    is recorded as a clean-code failure (see run_chain / _impact_gated_implement)."""
+    """Raised/flagged when the impact_gated pipeline gives up on a checkpoint: either the
+    change still fails ImpactGate after `max_refactors` (stop_reason=impact) OR a refactor
+    could not be made statically clean within `max_review_turns` (stop_reason=quality). The
+    chain ends and is recorded as a clean-code failure (see run_chain / _impact_gated_implement)."""
 
 
 def _confine_config(cfg: dict) -> dict | None:
@@ -104,8 +106,12 @@ CSV_FIELDS = [
     "impact_files_changed", "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
     # impact_gated pipeline (blank for ungated strategies): refactor count, verdict, the
     # accepted change's grade, and the refactor turns' cost/tokens (irreproducible)
-    "ig_refactors", "ig_passed", "ig_stopped", "ig_grade",
+    "ig_refactors", "ig_passed", "ig_stopped", "ig_stop_reason", "ig_grade",
     "ig_refactor_cost_usd", "ig_refactor_tokens",
+    # design-B quality gate on the refactor: review turns taken, whether the LAST refactor
+    # ended clean, the clone/smell finding lines it stopped on, and the review turns' cost.
+    "ig_quality_review_turns", "ig_quality_passed",
+    "ig_quality_clone_lines", "ig_quality_smell_lines", "ig_quality_cost_usd",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
@@ -672,15 +678,19 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                             arm_cfg: dict, base_for_cp: str):
     """The impact_gated implement->score->refactor loop for one checkpoint.
 
-    Each iteration: the agent implements the change in the history-less sandbox, the
-    production result is mirrored + staged on the worktree, and ImpactGate scores that
-    staged delta (`--curve` vs the Java seed). If the grade clears the block percentile
-    the implementation is ACCEPTED. Otherwise the implementation is DISCARDED (worktree
-    reset to the clean base) and a refactor turn runs on that clean base, seeded with the
-    files/drivers ImpactGate flagged and the change spec, then committed as
-    `cpNN refactorM` for visibility; the next implement builds on it. Up to
-    `max_refactors` refactors; still blocked after the last leaves the failing change
-    staged and flags `stopped` so the caller ends the chain.
+    Each iteration: the agent implements the change (NEUTRAL prompt, no formula — design B) in
+    the history-less sandbox, the production result is mirrored + staged on the worktree, and
+    ImpactGate scores that staged delta (`--curve` vs the reference distribution). If the grade
+    clears the block percentile the implementation is ACCEPTED. Otherwise it is DISCARDED
+    (worktree reset to the clean base) and a refactor turn runs on that clean base, seeded with
+    the concentrated-class LOCATIONS + the change spec. The refactor's own added lines must then
+    pass the QUALITY gate (jscpd clones + ast-grep smells); while dirty, up to `max_review_turns`
+    code-review turns run before it is committed as `cpNN refactorM`; the next implement builds
+    on it.
+
+    Two stop conditions end the chain (both return stopped=True, with block()['stop_reason']):
+      impact  — still blocked after `max_refactors` refactors.
+      quality — a refactor could not be made statically clean within `max_review_turns`.
 
     Returns (ar, attempt_log, ig_block, base_for_cp, stopped). On return the worktree is
     mirrored + `git add -A` staged with the accepted (or, if stopped, the last failing)
@@ -694,6 +704,9 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
     baseline_file = igc.get("baseline_file")           # grade vs a reference arm's distribution
     K = igc.get("curve_prior_weight")                  # 0 => grade PURELY vs that distribution
     max_ref = int(igc.get("max_refactors", 3))
+    max_review = int(igc.get("max_review_turns", 3))
+    qcfg = igc.get("quality_gate") or {}
+    quality_dirs = arm_cfg.get("verbosity_dirs", ["src/main/java"])
     score_kw = dict(measure_config=mcfg, baseline_file=baseline_file, curve_prior_weight=K)
     acc_excl = (cfg["acceptance"]["dest_subpath"].rstrip("/") + "/",)
     k = cp["n"]
@@ -701,10 +714,14 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
     attempts: list[dict] = []
     refactors = 0
 
-    def block(passed: bool, stopped: bool) -> dict:
+    def block(passed: bool, stopped: bool, stop_reason: str | None = None) -> dict:
+        # stop_reason distinguishes the two ways a gated chain ends: "impact" (the change
+        # never came under block_percentile within max_refactors) vs "quality" (a refactor
+        # could not be made statically clean within max_review_turns). None while running/passed.
         return {"enabled": True, "block_percentile": block_p, "warn_percentile": warn_p,
-                "max_refactors": max_ref, "refactors": refactors, "passed": passed,
-                "stopped": stopped, "pre_checkpoint_sha": pre_checkpoint_sha,
+                "max_refactors": max_ref, "max_review_turns": max_review,
+                "refactors": refactors, "passed": passed, "stopped": stopped,
+                "stop_reason": stop_reason, "pre_checkpoint_sha": pre_checkpoint_sha,
                 "attempts": attempts}
 
     for attempt in range(max_ref + 1):   # 0 = first implement; then up to max_ref refactors
@@ -727,8 +744,9 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
             # Out of refactor budget and still blocked: keep the failing change staged for
             # inspection and end the chain. The caller records the full (failing) checkpoint.
             print(f"    impact-gate: STILL BLOCKED after {refactors} refactor(s) -> "
-                  f"stopping the chain at cp{k:02d}", flush=True)
-            return ar, attempt_log, block(passed=False, stopped=True), base_for_cp, True
+                  f"stopping the chain at cp{k:02d} (stop_reason=impact)", flush=True)
+            return ar, attempt_log, block(passed=False, stopped=True, stop_reason="impact"), \
+                base_for_cp, True
 
         # DISCARD the blocked implementation, then REFACTOR on the clean base.
         git(["-C", wt, "reset", "--hard", base_for_cp])
@@ -746,6 +764,46 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                               confine=_confine_config(cfg))
         mirror_source(sandbox, wt, extra_excludes=acc_excl)
         git(["-C", wt, "add", "-A"])
+
+        # QUALITY GATE (design B). The refactor's OWN added lines must be statically clean —
+        # no duplication, no wasteful patterns — so a refactor can never buy a lower impact
+        # score with slop (the run-1 exploit: dispersed greenfield classes + copy-paste). The
+        # review turns run in the SAME sandbox, which still holds the refactored code, and are
+        # fed the findings as a code review. Still dirty after max_review_turns -> the refactor
+        # is committed for inspection and the chain stops (stop_reason=quality). The re-attempt
+        # of the CHANGE itself is never quality-gated (it is graded by impact only).
+        quality = None
+        qturns: list = []
+        if qcfg.get("enabled", True):
+            for qt in range(max_review + 1):
+                quality = quality_gate.review(wt, quality_dirs, cfg["tools"], qcfg)
+                if not quality.ran:
+                    print(f"    quality-gate: tools did not run ({quality.reason}); not "
+                          f"enforced (preflight should have caught this)", flush=True)
+                    break
+                nclone, nsmell = quality.clone_finding_lines, quality.smell_finding_lines
+                if quality.passed:
+                    print(f"    quality-gate: refactor {refactors} clean"
+                          + (f" after {qt} review turn(s)" if qt else ""), flush=True)
+                    break
+                if qt == max_review:
+                    print(f"    quality-gate: refactor {refactors} STILL DIRTY after {qt} "
+                          f"review turn(s) ({nclone} clone + {nsmell} smell lines) -> stopping "
+                          f"the chain at cp{k:02d} (stop_reason=quality)", flush=True)
+                    break
+                print(f"    quality-gate: refactor {refactors} dirty ({nclone} clone + "
+                      f"{nsmell} smell lines) -> review turn {qt + 1}/{max_review}", flush=True)
+                qstream = f"cp{k:02d}.refactor{refactors}.review{qt + 1}.jsonl"
+                qprompt = qcfg["review_prompt"].replace("{findings}", quality.review_text)
+                qar = agent.run_agent(qprompt, cwd=sandbox, model=model,
+                                      timeout=cfg.get("agent_timeout", 3600),
+                                      label=f"refactor{refactors}.review{qt + 1}",
+                                      capture_path=os.path.join(cap_dir, qstream),
+                                      confine=_confine_config(cfg))
+                qturns.append(qar)
+                mirror_source(sandbox, wt, extra_excludes=acc_excl)
+                git(["-C", wt, "add", "-A"])
+
         ig_ref = impact_gate.score(cmd, wt, block_p, warn_p, **score_kw)
         rtests = None
         if igc.get("record_refactor_correctness", True):
@@ -754,14 +812,19 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                         "-m", f"cp{k:02d} refactor{refactors} {cp['id']}"],
                        capture_output=True, text=True)
         rsha = git(["-C", wt, "rev-parse", "HEAD"])
-        attempts.append(impact_gate.attempt_summary("refactor", ig_ref, block_p,
-                                                    sha=rsha, agent=rar, tests=rtests))
+        q_summary = quality_gate.summary(quality) if quality is not None else None
+        attempts.append(impact_gate.attempt_summary(
+            "refactor", ig_ref, block_p, sha=rsha, agent=rar, tests=rtests,
+            quality=q_summary, quality_turns=qturns))
         rpct = impact_gate.grade_percentile(ig_ref)
+        q_note = ("" if q_summary is None else
+                  f"  quality={'clean' if q_summary['passed'] else 'DIRTY'}"
+                  f"({len(qturns)} review turn(s))")
         print(f"    impact-gate: refactor {refactors} committed {rsha[:9]}  "
               f"grade p{rpct if rpct is None else round(rpct, 1)}  "
               f"cost=${rar.cost_usd:.4f}"
               + (f"  tests={rtests['passed']}/{rtests['total']} build_ok={rtests['build_ok']}"
-                 if rtests else ""), flush=True)
+                 if rtests else "") + q_note, flush=True)
         # Wipe the sandbox so the next implement turn rebuilds fresh from the refactored wt.
         # Critical for isolation: _refactor_correctness installs+builds the FULL cp01..cpK
         # suite, and rsync --delete PROTECTS target/, so its CpNN surefire reports + compiled
@@ -770,6 +833,14 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
         shutil.rmtree(sandbox, ignore_errors=True)
         base_for_cp = rsha   # the refactor is the base the next implement builds on
 
+        # A refactor that could not be made statically clean within the review budget ends the
+        # chain: the only way it lowered impact was slop we refuse to accept. Distinct from the
+        # impact stop above (which means the change stayed too concentrated even after clean
+        # refactors). The dirty refactor is committed (rsha) for inspection.
+        if quality is not None and quality.ran and not quality.passed:
+            return ar, attempt_log, block(passed=False, stopped=True, stop_reason="quality"), \
+                base_for_cp, True
+
 
 def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
               checkpoints: list[dict], dry_run: bool, max_cp: int | None) -> None:
@@ -777,6 +848,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     model = cfg["model"]
     n = len(checkpoints)
     template = cfg["prompt_strategies"][strategy]
+    if _gate_active(cfg, strategy):
+        # Design B: the IMPLEMENT turn uses a NEUTRAL prompt (spec only, no impact formula) so
+        # the AI optimises the real task, not the proxy it is graded on. The gate still runs.
+        impl = (cfg["impact_gate"].get("implement_strategy") or "just-solve")
+        template = cfg["prompt_strategies"][impl]
     branch_preview = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
 
     if dry_run:
@@ -1034,15 +1110,23 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # rebuilt copy (no leftover Cp01..cpK gate tests or agent build output).
         shutil.rmtree(sandbox, ignore_errors=True)
 
-        # impact_gated stop: the change never came under the block percentile within
-        # max_refactors. The failing checkpoint is fully recorded above; end the chain
-        # here (a clean-code failure — this architecture couldn't absorb the change
-        # cleanly in the refactor budget).
+        # impact_gated stop (design B): two distinct end conditions, recorded in ig_block.
+        #  impact  — the change stayed over block_percentile after max_refactors clean refactors
+        #            (the architecture could not absorb it).
+        #  quality — a refactor could not be made statically clean within max_review_turns (it
+        #            could only lower impact with duplication/slop we refuse).
+        # The failing checkpoint is fully recorded above; end the chain here.
         if stopped:
             igc = cfg.get("impact_gate", {})
-            print(f"\n!!! {where} | STOPPED at cp{k:02d} {cp['id']}: still over the "
-                  f"block percentile (p{igc.get('block_percentile')}) after "
-                  f"{igc.get('max_refactors')} refactors.", flush=True)
+            reason = (ig_block or {}).get("stop_reason")
+            if reason == "quality":
+                print(f"\n!!! {where} | STOPPED at cp{k:02d} {cp['id']} (stop_reason=quality): "
+                      f"a refactor stayed statically dirty (duplication/smells) after "
+                      f"{igc.get('max_review_turns')} review turns.", flush=True)
+            else:
+                print(f"\n!!! {where} | STOPPED at cp{k:02d} {cp['id']} (stop_reason=impact): "
+                      f"still over the block percentile (p{igc.get('block_percentile')}) after "
+                      f"{igc.get('max_refactors')} refactors.", flush=True)
             break
 
     # Terminal 'results:' commit: a completion marker. Provenance + config already
@@ -1125,6 +1209,13 @@ def main() -> int:
     cfg["paths"]["results_csv"] = resolve(cfg["paths"]["results_csv"])
     if cfg.get("tools", {}).get("astgrep_rules"):
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])
+    # Pinned clone/smell binaries: anchor to the config dir when given as a PATH (contains a
+    # separator, e.g. tools/node_modules/.bin/jscpd) so they resolve against the harness repo,
+    # not the arm worktree that metrics/quality_gate run them in. Bare names on PATH stay bare.
+    for _tk in ("jscpd", "astgrep"):
+        _tv = cfg.get("tools", {}).get(_tk)
+        if _tv and (os.sep in _tv or (os.altsep and os.altsep in _tv)):
+            cfg["tools"][_tk] = resolve(_tv)
     if cfg.get("acceptance", {}).get("src_dir"):
         cfg["acceptance"]["src_dir"] = resolve(cfg["acceptance"]["src_dir"])
     # impact_gated pipeline: expand the impact-gate command (each element may use ${HOME})
@@ -1178,6 +1269,20 @@ def main() -> int:
         cfg["impact_gate"]["_parser_probe"] = probe
         print(f"parser check = ok (gate lizard "
               f"{probe.get('lizard_version') or 'unknown'}, sees annotated classes)")
+
+    # Fail CLOSED on a blind QUALITY gate too (design B). The refactor's clean-code gate is
+    # decided by two pinned external binaries (jscpd, ast-grep); if either drifts or stops
+    # matching, a refactor could pass with slop and the gate silently weakens. Assert the
+    # pinned versions + a golden clone/smell fixture before any agent turn.
+    try:
+        qprobe = quality_selftest.require(cfg, gated)
+    except quality_selftest.QualityGateBlind as e:
+        print(f"\n=== REFUSING TO RUN: {e}")
+        return 2
+    if gated and qprobe:
+        cfg["impact_gate"]["_quality_probe"] = qprobe
+        print(f"quality gate check = ok (jscpd {qprobe['versions']['jscpd']}, ast-grep "
+              f"{qprobe['versions']['astgrep']}, golden clone+smell fixture fails as expected)")
 
     # The run persists NO derived CSV — only raw capture onto the evolve branches.
     # Interleave arms per chain: spring/chain0, officefloor/chain0, spring/chain1,

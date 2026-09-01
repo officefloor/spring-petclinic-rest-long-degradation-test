@@ -1,7 +1,16 @@
-# Starter ast-grep rules that flag "wasteful" Java patterns for the Verbosity
-# metric (SlopCodeBench uses 137 such rules; these are a seed set - extend them).
-# Each matched line range is unioned with clone lines and divided by Java LOC.
-# Run standalone to sanity-check:  sg scan --json -r astgrep-rules src/main/java
+# ast-grep rules that flag "wasteful" Java patterns for the Verbosity metric AND for the
+# impact_gated quality gate (harness/quality_gate.py). SlopCodeBench uses 137 such rules;
+# this is a seed set - EXTEND IT (each added rule must be a valid ast-grep pattern for the
+# PINNED version in tools/package-lock.json and be covered by a golden case in
+# harness/quality_selftest.py).
+#
+# Pattern rules must be a SINGLE AST node in the pinned ast-grep. Multi-statement patterns
+# (e.g. "local var then immediately return it") and partial constructs (a bare `catch {}`
+# without its `try`) do NOT parse as single-node patterns and need relational/kind rules;
+# they were dropped from the original seed until re-expressed and golden-tested. Sanity-check
+# the whole file with:
+#   printf 'ruleDirs:\n  - %s\n' "$PWD/astgrep-rules" > /tmp/sg.yml
+#   tools/node_modules/.bin/ast-grep scan --json -c /tmp/sg.yml src/main/java
 
 id: redundant-boolean-literal-compare
 language: java
@@ -14,35 +23,17 @@ rule:
 message: redundant comparison to boolean literal
 
 ---
-id: empty-catch-block
-language: java
-rule:
-  pattern: |
-    catch ($TYPE $E) { }
-message: empty catch block swallows the exception
-
----
 id: unnecessary-else-after-return
 language: java
 rule:
-  pattern: |
-    if ($C) { return $R; } else { $$$BODY }
+  pattern: if ($C) { return $R; } else { $$$BODY }
 message: else after a returning if is unnecessary
-
----
-id: redundant-local-then-return
-language: java
-rule:
-  pattern: |
-    $T $V = $E;
-    return $V;
-message: variable is assigned and immediately returned
 
 ---
 id: string-concat-empty
 language: java
 rule:
   any:
-    - pattern: "\"\" + $X"
-    - pattern: $X + "\"\""
+    - pattern: '"" + $X'
+    - pattern: '$X + ""'
 message: concatenation with empty string to coerce to String

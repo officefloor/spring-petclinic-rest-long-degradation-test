@@ -102,15 +102,16 @@ def _format_files(ig: dict, limit: int = 8) -> str:
 
 
 def _format_drivers(ig: dict, limit: int = 8) -> str:
+    # Design B: locations ONLY. The refactor prompt names WHERE complexity concentrated as a
+    # symptom, never the cost figures — exposing the numbers re-introduces the metric the AI is
+    # not supposed to optimise (that is what the neutral implement prompt is for). No CC / WMC /
+    # cost here.
     lines = []
     for u in (ig.get("top_units") or [])[:limit]:
         if (u.get("cost") or 0) <= 0:
             continue
         cls = u.get("container") or "(file scope)"
-        lines.append(
-            f"  - {u['path']} :: {u['name']}  (in class {cls}; "
-            f"cyclomatic complexity {u.get('cc')}, surrounding-class complexity "
-            f"{u.get('wmc_other', 0)}, impact cost {u.get('cost')})")
+        lines.append(f"  - {u['path']} :: {u['name']}  (in class {cls})")
     return "\n".join(lines) or "  (none)"
 
 
@@ -131,12 +132,27 @@ def refactor_prompt(template: str, cp: dict, ig: dict, block_percentile: float) 
             .replace("{block}", f"{block_percentile:g}"))
 
 
+def _agent_envelope(agent) -> dict:
+    return {
+        "ok": agent.ok, "cost_usd": agent.cost_usd,
+        "input_tokens": agent.input_tokens, "output_tokens": agent.output_tokens,
+        "cache_read_tokens": agent.cache_read_tokens,
+        "cache_creation_tokens": agent.cache_creation_tokens,
+        "num_turns": agent.num_turns, "duration_ms": agent.duration_ms,
+        "duration_api_ms": agent.duration_api_ms, "model": agent.model,
+        "stop_reason": agent.stop_reason, "error": agent.error,
+    }
+
+
 def attempt_summary(kind: str, ig: dict, block_percentile: float, sha: str = "",
-                    agent=None, tests: dict | None = None) -> dict:
+                    agent=None, tests: dict | None = None,
+                    quality: dict | None = None, quality_turns=None) -> dict:
     """One entry in the capture record's `impact_gate.attempts` list. `kind` is
     'implement' or 'refactor'. Records the grade/verdict, the flagged files/drivers
     (so a refactor's guidance is reproducible from capture), the commit sha, and —
-    for a refactor — the irreproducible agent envelope + optional correctness."""
+    for a refactor — the irreproducible agent envelope + optional correctness. Design B
+    adds, for a refactor, the code-quality verdict (`quality`, see quality_gate.summary)
+    and the envelopes of any code-review turns it took to get clean (`quality_turns`)."""
     entry = {
         "kind": kind,
         "grade": grade_percentile(ig),
@@ -147,15 +163,11 @@ def attempt_summary(kind: str, ig: dict, block_percentile: float, sha: str = "",
         "sha": sha,
     }
     if agent is not None:
-        entry["agent"] = {
-            "ok": agent.ok, "cost_usd": agent.cost_usd,
-            "input_tokens": agent.input_tokens, "output_tokens": agent.output_tokens,
-            "cache_read_tokens": agent.cache_read_tokens,
-            "cache_creation_tokens": agent.cache_creation_tokens,
-            "num_turns": agent.num_turns, "duration_ms": agent.duration_ms,
-            "duration_api_ms": agent.duration_api_ms, "model": agent.model,
-            "stop_reason": agent.stop_reason, "error": agent.error,
-        }
+        entry["agent"] = _agent_envelope(agent)
     if tests is not None:
         entry["tests"] = tests
+    if quality is not None:
+        entry["quality"] = quality
+    if quality_turns:
+        entry["quality_turns"] = [_agent_envelope(a) for a in quality_turns]
     return entry

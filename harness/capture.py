@@ -174,12 +174,22 @@ def impact_gate_provenance(cfg: dict) -> dict | None:
         "version": _cmd([*cmd, "--version"]),
         "git_sha": git_sha,
         "strategy": igc.get("strategy"),
+        "implement_strategy": igc.get("implement_strategy"),   # design B: neutral implement prompt
         "block_percentile": igc.get("block_percentile"),
         "warn_percentile": igc.get("warn_percentile"),
         "curve_prior_weight": igc.get("curve_prior_weight"),
         "max_refactors": igc.get("max_refactors"),
+        "max_review_turns": igc.get("max_review_turns"),       # design B: quality-review budget
         "stop_scope": igc.get("stop_scope"),
         "record_refactor_correctness": igc.get("record_refactor_correctness"),
+        # design-B quality gate policy + the pinned clone/smell tool versions that decide it.
+        "quality_gate": {
+            "enabled": (igc.get("quality_gate") or {}).get("enabled"),
+            "jscpd_min_tokens": (igc.get("quality_gate") or {}).get("jscpd_min_tokens"),
+            "jscpd_min_lines": (igc.get("quality_gate") or {}).get("jscpd_min_lines"),
+            "jscpd_version": _cmd([cfg.get("tools", {}).get("jscpd", "jscpd"), "--version"]),
+            "astgrep_version": _cmd([cfg.get("tools", {}).get("astgrep", "sg"), "--version"]),
+        } if (igc.get("quality_gate") or {}).get("enabled") else None,
         "baseline": baseline,     # basename + sha256 + n (never the distribution itself)
         # {lizard_version, impact, units_seen, ok} for a method added to an @Entity class
         "parser_probe": igc.get("_parser_probe") or None,

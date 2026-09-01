@@ -353,13 +353,24 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 r_cost = sum((a.get("agent") or {}).get("cost_usd") or 0 for a in refs)
                 r_tok = sum(((a.get("agent") or {}).get("input_tokens") or 0)
                             + ((a.get("agent") or {}).get("output_tokens") or 0) for a in refs)
+                # design-B quality gate: review turns + cost across ALL refactors; the pass/
+                # finding counts are the LAST refactor's (the one that decided the checkpoint).
+                q_turns = [t for a in refs for t in (a.get("quality_turns") or [])]
+                q_cost = sum((t.get("cost_usd") or 0) for t in q_turns)
+                last_q = (refs[-1].get("quality") if refs else None) or {}
                 row.update({
                     "ig_refactors": ig.get("refactors", len(refs)),
                     "ig_passed": ig.get("passed"),
                     "ig_stopped": ig.get("stopped"),
+                    "ig_stop_reason": ig.get("stop_reason"),
                     "ig_grade": (impls[-1].get("grade") if impls else None),
                     "ig_refactor_cost_usd": round(r_cost, 4),
                     "ig_refactor_tokens": r_tok,
+                    "ig_quality_review_turns": len(q_turns),
+                    "ig_quality_passed": last_q.get("passed"),
+                    "ig_quality_clone_lines": last_q.get("clone_finding_lines"),
+                    "ig_quality_smell_lines": last_q.get("smell_finding_lines"),
+                    "ig_quality_cost_usd": round(q_cost, 4),
                 })
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
@@ -789,27 +800,34 @@ def main() -> int:
         lines.append("Per (arm, chain-pooled): whether the gated chains reached the final "
                      f"checkpoint (cp{n_cp:02d}), how often a checkpoint needed a refactor, the "
                      "mean refactors/checkpoint, the refactor cost, and the accepted change's mean "
-                     "seed grade. A STOP (still over the block percentile after max_refactors) is "
-                     "the clean-code failure signal.\n")
-        lines.append("| arm/strategy | chains reached final | stops | checkpoints w/ refactor | "
-                     "mean refactors/cp | refactor $ (sum) | accepted grade (mean) |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+                     "seed grade. Design B splits the STOP signal in two: `impact` = the change "
+                     "stayed over the block percentile even after clean refactors (the "
+                     "architecture could not absorb it); `quality` = a refactor could not be made "
+                     "statically clean within max_review_turns (it could only lower impact with "
+                     "slop). `review turns` counts the code-review turns the quality gate forced.\n")
+        lines.append("| arm/strategy | chains reached final | stops (impact/quality) | "
+                     "checkpoints w/ refactor | mean refactors/cp | review turns (sum) | "
+                     "refactor $ (sum) | accepted grade (mean) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for gk, grp in sorted(gate_groups.items()):
             gated = [r for r in grp if str(r.get("ig_refactors", "")) != ""]
             chains = sorted({int(r["chain"]) for r in gated})
             reached = sum(1 for ch in chains
                           if max(int(r["checkpoint"]) for r in gated if int(r["chain"]) == ch) >= n_cp)
-            stops = sum(1 for r in gated if _b(r.get("ig_stopped")))
+            stop_impact = sum(1 for r in gated if str(r.get("ig_stop_reason", "")) == "impact")
+            stop_quality = sum(1 for r in gated if str(r.get("ig_stop_reason", "")) == "quality")
             nref = [int(_f(r.get("ig_refactors", "")) or 0) for r in gated]
             with_ref = sum(1 for v in nref if v > 0)
+            qturns = sum(int(_f(r.get("ig_quality_review_turns", "")) or 0) for r in gated)
             grades = [_f(r.get("ig_grade", "")) for r in gated]
             grades = [g for g in grades if not math.isnan(g)]
             rcost = sum(_f(r.get("ig_refactor_cost_usd", "")) or 0 for r in gated
                         if not math.isnan(_f(r.get("ig_refactor_cost_usd", ""))))
             mean_ref = (sum(nref) / len(nref)) if nref else 0.0
             mean_grade = (sum(grades) / len(grades)) if grades else float("nan")
-            lines.append(f"| {gk[0]}/{gk[1]} | {reached}/{len(chains)} | {stops} | "
-                         f"{with_ref}/{len(gated)} | {mean_ref:.2f} | ${rcost:.2f} | "
+            lines.append(f"| {gk[0]}/{gk[1]} | {reached}/{len(chains)} | "
+                         f"{stop_impact}/{stop_quality} | {with_ref}/{len(gated)} | "
+                         f"{mean_ref:.2f} | {qturns} | ${rcost:.2f} | "
                          f"{'—' if math.isnan(mean_grade) else f'p{mean_grade:.1f}'} |")
         lines.append("")
 
