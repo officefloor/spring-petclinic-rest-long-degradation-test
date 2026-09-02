@@ -54,10 +54,31 @@ class QualityReview:
 # --------------------------------------------------------------------------- #
 # Added lines of the staged refactor (HEAD == the clean base, index == refactor)
 # --------------------------------------------------------------------------- #
+def _is_noncode(text: str) -> bool:
+    """A line that must NOT be treated as duplicated CODE: blank, a comment (incl. the Apache
+    license header every file in this repo carries verbatim), or a package/import declaration.
+    WHY: jscpd tokenizes these, and the identical license header at the top of every file makes
+    any NEW file's header a "clone" of every existing file's header — so a clean extract-a-class
+    refactor (the move we WANT) would fail the gate on boilerplate it MUST include, not on any
+    logic it duplicated. Observed at cp08 of blind-202609020135: 20/20 flagged lines were the
+    license header + package/import, 0 real code. The gate is about duplicated logic, and
+    duplicated headers/imports are neither slop nor the run-1 exploit, so they are excluded."""
+    s = text.strip()
+    if not s:
+        return True
+    if s.startswith(("//", "/*", "*")):   # line comment, block start /**, block body/end * ... */
+        return True
+    if s.startswith(("package ", "import ")):
+        return True
+    return False
+
+
 def _added_lines(root: str, src_dirs: list[str]) -> set[tuple[str, int]]:
-    """(relpath, new-line-number) for every line the staged tree ADDS over HEAD, inside
-    src_dirs. HEAD is the clean base the refactor was made on, so `git diff --cached`
-    is exactly the refactor's delta. --unified=0 so hunk headers give exact new-line spans."""
+    """(relpath, new-line-number) for every CODE line the staged tree ADDS over HEAD, inside
+    src_dirs. HEAD is the clean base the refactor was made on, so `git diff --cached` is exactly
+    the refactor's delta. --unified=0 so hunk headers give exact new-line spans. Non-code lines
+    (blank / comment / package / import — see `_is_noncode`) are excluded so the license header
+    of a newly-created file cannot register as duplication."""
     argv = ["git", "-C", root, "diff", "--cached", "--unified=0", "--no-color", "--",
             *src_dirs]
     out = subprocess.run(argv, capture_output=True, text=True).stdout
@@ -79,7 +100,7 @@ def _added_lines(root: str, src_dirs: list[str]) -> set[tuple[str, int]]:
                 new_ln = 0
             continue
         if line.startswith("+") and not line.startswith("+++"):
-            if path is not None and new_ln:
+            if path is not None and new_ln and not _is_noncode(line[1:]):
                 added.add((path, new_ln))
             new_ln += 1
     return added

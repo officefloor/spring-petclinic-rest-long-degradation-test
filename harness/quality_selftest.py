@@ -83,6 +83,49 @@ public class Extra {
 """
 _FIXTURE_PATH = "src/main/java/fixture/Fixture.java"
 
+# The Apache license header every file in the real repo carries verbatim. jscpd tokenizes it,
+# so any NEW file's header is a "clone" of every existing file's header (observed at cp08 of
+# blind-202609020135: a clean TelephoneNormalizer extraction failed with 20/20 flagged lines
+# being the header + package/import, 0 real code). The header-pass fixture guards the
+# `_is_noncode` filter that fixes it: a new file with this header + package/import + a genuinely
+# UNIQUE body must PASS the gate. Kept in sync with the shape of the repo's real header.
+_LICENSE = """/*
+ * Copyright 2016-2017 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+"""
+# Base already contains a headered file, so the header has something to "clone" against.
+_HDR_BASE = _LICENSE + """package fixture;
+public class Existing {
+    public int base(int a) { return a + 1; }
+}
+"""
+_HDR_NEW_FILE = "src/main/java/fixture/NewHelper.java"
+# A NEW file: same header (would clone), package + import (excluded), and a UNIQUE body that
+# duplicates nothing. A healthy gate passes this with ZERO findings.
+_HDR_NEW = _LICENSE + """package fixture;
+import java.util.Optional;
+public class NewHelper {
+    Optional<String> firstNonBlank(String left, String right) {
+        if (left != null && !left.isBlank()) { return Optional.of(left); }
+        if (right != null && !right.isBlank()) { return Optional.of(right); }
+        return Optional.empty();
+    }
+}
+"""
+_HDR_BASE_FILE = "src/main/java/fixture/Existing.java"
+
 
 def _ver(bin_: str) -> str:
     """The version token from `<bin> --version` (e.g. 'cpd 5.0.14' -> '5.0.14')."""
@@ -157,6 +200,36 @@ def check_gate(tools: dict, rules_dir: str, qcfg: dict, src_dirs: list[str]) -> 
             "reason": qr.reason}
 
 
+def check_header_pass(tools: dict, rules_dir: str, qcfg: dict, src_dirs: list[str]) -> dict:
+    """Regression fixture for the license-header false positive: a NEW file whose only 'clone'
+    is the Apache header (+ package/import) and whose body is unique must PASS. A healthy gate
+    (with the `_is_noncode` filter) returns ran=True, passed=True, zero clone findings."""
+    tmp = tempfile.mkdtemp(prefix="pe-quality-hdr-selftest-")
+    try:
+        base = os.path.join(tmp, _HDR_BASE_FILE)
+        os.makedirs(os.path.dirname(base), exist_ok=True)
+        subprocess.run(["git", "-C", tmp, "init", "-q"], check=True,
+                       capture_output=True, text=True)
+        with open(base, "w") as fh:
+            fh.write(_HDR_BASE)
+        subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", tmp, "-c", "user.email=selftest@petclinic-evolve",
+                        "-c", "user.name=selftest", "commit", "-q", "-m", "base"],
+                       check=True, capture_output=True, text=True)
+        with open(os.path.join(tmp, _HDR_NEW_FILE), "w") as fh:
+            fh.write(_HDR_NEW)
+        subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True, text=True)
+        qr = quality_gate.review(tmp, src_dirs, tools, qcfg)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    return {"ran": qr.ran, "passed": qr.passed,
+            "clone_lines": qr.clone_finding_lines, "smell_lines": qr.smell_finding_lines,
+            "added_lines": qr.added_lines,
+            "ok": (qr.ran and qr.passed and qr.clone_finding_lines == 0),
+            "reason": qr.reason}
+
+
 _ADVICE = (
     "The design-B quality gate is blind or a pinned tool drifted. Install the PINNED clone/\n"
     "smell binaries and re-run the check:\n"
@@ -191,8 +264,16 @@ def require(cfg: dict, gated: bool) -> dict:
             f"(ran={gate['ran']}, passed={gate['passed']}, clone_lines={gate['clone_lines']}, "
             f"smell_lines={gate['smell_lines']}, reason={gate['reason']}). It cannot enforce "
             f"clean refactors, so a refactor could pass with slop.\n{_ADVICE}")
+    header = check_header_pass(tools, rules_dir, qcfg, src_dirs)
+    if not header["ok"]:
+        raise QualityGateBlind(
+            f"the quality gate FAILED a clean new file whose only overlap is the license header "
+            f"(ran={header['ran']}, passed={header['passed']}, clone_lines={header['clone_lines']}, "
+            f"added_lines={header['added_lines']}, reason={header['reason']}). The license-header "
+            f"false positive is back — a clean extract-a-class refactor would be wrongly stopped "
+            f"(see _is_noncode).\n{_ADVICE}")
     return {"versions": {"jscpd": ver["jscpd"], "astgrep": ver["astgrep"]},
-            "version_pinned": ver["checked"], "golden": gate}
+            "version_pinned": ver["checked"], "golden": gate, "header_pass": header}
 
 
 def _src_dirs(cfg: dict) -> list[str]:
@@ -232,9 +313,14 @@ def main() -> int:
     qcfg = (cfg.get("impact_gate") or {}).get("quality_gate") or {}
     gate = check_gate(tools, tools.get("astgrep_rules", ""), qcfg, _src_dirs(cfg))
     gtag = "PASS" if gate["ok"] else "FAIL"
-    print(f"  [{gtag}] golden fixture: ran={gate['ran']} passed={gate['passed']} "
-          f"clone_lines={gate['clone_lines']} smell_lines={gate['smell_lines']}")
-    ok = (not ver["checked"] or ver["ok"]) and gate["ok"]
+    print(f"  [{gtag}] golden fixture (dup+smell must FAIL gate): ran={gate['ran']} "
+          f"passed={gate['passed']} clone_lines={gate['clone_lines']} smell_lines={gate['smell_lines']}")
+    header = check_header_pass(tools, tools.get("astgrep_rules", ""), qcfg, _src_dirs(cfg))
+    htag = "PASS" if header["ok"] else "FAIL"
+    print(f"  [{htag}] license-header fixture (new file must PASS gate): ran={header['ran']} "
+          f"passed={header['passed']} clone_lines={header['clone_lines']} "
+          f"added_lines={header['added_lines']}")
+    ok = (not ver["checked"] or ver["ok"]) and gate["ok"] and header["ok"]
     print("\nOVERALL:", "PASS  (gate sees clones and smells)" if ok
           else f"FAIL  (gate is blind — do NOT run)\n\n{_ADVICE}")
     return 0 if ok else 1
