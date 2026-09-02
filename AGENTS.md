@@ -181,12 +181,45 @@ table on the branch. `analyze` recomputes every metric, and derives the checkpoi
 map from the per-checkpoint capture records' `commit_sha` (which encodes a no-op turn as `""`),
 **not** from provenance.
 
+## The four-condition intervention study (2026-09)
+
+The experiment compares FOUR conditions, each a full (arm × chain) sweep, each changing exactly
+ONE lever so the per-checkpoint impact trajectory vs the control isolates what reduces decay:
+
+1. **`just-solve`** — CONTROL. Plain "implement it" prompt, ungated. Baseline decay. **Unchanged.**
+2. **`cohesion-prompt`** — the **PROMPT** lever. Same single ungated turn as just-solve; only the
+   wording adds a plain-language request for good structure (no metric, no experiment mention).
+   Its delta vs just-solve is the effect of better prompting *alone*.
+3. **`impact_gated`** (enforcement `advisory`) — the **TOOL** lever. Neutral implement prompt, but a
+   flagged change gets ONE quality-gated refactor guided by ImpactGate's flagged LOCATIONS, then is
+   re-attempted and **accepted regardless of grade** (record-and-continue → always reaches cp60).
+   Delta vs just-solve = the effect of a tool-guided refactor; delta vs cohesion-prompt = what the
+   tool adds beyond good prompting.
+4. **`metric-in-prompt`** — the design-A prompt that hands the AI the cost FORMULA as its objective.
+   **Retained for reproducibility only** — it was Goodhart-gamed (dispersal + duplication). Run it
+   from the archived design-A code or `--strategy metric-in-prompt`; it is not this repo's default.
+
+Conditions 3 and 4 differ deliberately: 4 tells the AI the metric (and it games it); 3 never does —
+the AI only ever sees the spec and, on a refactor, the symptom locations. The prompts live in
+`config.yaml: prompt_strategies`; the header there is the canonical statement of the four conditions.
+
 ## The impact-gated pipeline (`impact_gated` strategy)
 
 Added 2026-08. Makes ImpactGate an **active gate** in the checkpoint loop instead of a
 post-hoc metric. Activated only when the active strategy equals `impact_gate.strategy`
 (`_gate_active` in `run_experiment.py`); all other strategies run the unchanged flow above,
 so it is a strict superset and a clean control comparison.
+
+**Enforcement mode (`impact_gate.enforcement`, 2026-09).** Decides what a flagged change does:
+- **`advisory`** (default; condition 3 above) — record-and-continue. `max_refactors: 1`. A flagged
+  change gets one quality-gated refactor and is re-attempted; the re-attempt is **accepted whatever
+  its grade** and the chain never stops. Both the FIRST-attempt (direct) and second-attempt
+  (post-refactor) impacts are captured, so analyze exposes `ig_impact_first` vs `ig_impact` — the
+  measured one-refactor cohesion effect, comparable to the ungated arms. No `stop_reason` ever fires.
+- **`block`** — the design-B HARD gate (below). A flagged change is discarded and refactored up to
+  `max_refactors` times; still over → `stop_reason=impact`; a refactor that will not come clean →
+  `stop_reason=quality`. The stress-test condition; retained, not default. `enforcement` is recorded
+  in the `impact_gate` capture block and defaults to `block` when absent (old runs reproduce).
 
 **Design B (2026-09, current).** An earlier design also handed the AI the exact structural-
 impact cost function as its objective (in both the implement and refactor prompts). A Spring
@@ -231,14 +264,17 @@ base_for_cp, stopped)` with the worktree already mirrored + `git add -A` staged.
    clean (or the budget is hit), `impact_gate.score` again (recorded, not enforced), optionally
    `_refactor_correctness` (record-only), commit **`cpNN refactorM <id>`**, set
    `base_for_cp = HEAD`.
-6. Two distinct stop conditions, both set `stopped=True` with an `ig_block.stop_reason`;
-   `run_chain` records the failing checkpoint then `break`s (and `stop_scope: run` raises
-   `ChainStopped`, exit 3):
+6. Stop conditions — **only under `enforcement: block`**. Both set `stopped=True` with an
+   `ig_block.stop_reason`; `run_chain` records the failing checkpoint then `break`s (and
+   `stop_scope: run` raises `ChainStopped`, exit 3):
    - **`impact`** — up to `max_refactors` refactor+re-attempt cycles; still blocked after the
      last → the change stayed too concentrated even after clean refactors.
    - **`quality`** — a refactor could not be made statically clean within `max_review_turns`
      (it could only lower impact with duplication/slop we refuse). The dirty refactor is
      committed for inspection before the stop.
+   Under **`enforcement: advisory`** (default) NEITHER fires: the out-of-budget-and-still-blocked
+   branch returns `stopped=False` and the dirty-refactor branch is skipped, so the re-attempt is
+   accepted and the chain continues. `stopped` is always False; both attempts stay recorded.
 
 **Commit shape & analyze.** A gated checkpoint is `0..N × cpNN refactorM` + `cpNN agent` +
 `cpNN reset`. `base_for_cp` advances past each refactor, so COMMIT 1's parent and the log-only
@@ -254,8 +290,8 @@ shifts complexity to a later node cannot fake a win); `entry_cc`/`wmc_handler` f
 and are corroborating, not decisive (see "What the experiment is").
 
 **Capture.** `checkpoint_record(..., impact_gate=ig_block)` adds an `impact_gate` block:
-`{enabled, block_percentile, warn_percentile, max_refactors, max_review_turns, refactors,
-passed, stopped, stop_reason, pre_checkpoint_sha, attempts:[...]}`. Each attempt is
+`{enabled, enforcement, block_percentile, warn_percentile, max_refactors, max_review_turns,
+refactors, passed, stopped, stop_reason, pre_checkpoint_sha, attempts:[...]}`. Each attempt is
 `{kind: implement|refactor, grade, impact, blocked, files, drivers, sha}`; a refactor attempt
 also carries its `agent` envelope (irreproducible cost/tokens — MUST be captured), if enabled
 `tests` (record-only), and design B `quality` (`quality_gate.summary`: passed/ran, added-line +
@@ -269,14 +305,17 @@ policy + PINNED jscpd/ast-grep versions), and the reference baseline's `sha256` 
 gated run is reproducible and each verdict is traceable to a tool version and a distribution.
 Only present for the gated strategy.
 
-**analyze columns.** `recompute_rows` reads the block into `ig_refactors`, `ig_passed`,
-`ig_stopped`, `ig_stop_reason`, `ig_grade` (last implement attempt), `ig_refactor_cost_usd`,
-`ig_refactor_tokens`, and the design-B quality columns `ig_quality_review_turns`,
-`ig_quality_passed`, `ig_quality_clone_lines`, `ig_quality_smell_lines`, `ig_quality_cost_usd`
-(all in `CSV_FIELDS`, blank for ungated/old runs). `main` renders an **ImpactGate pipeline**
-summary table (reached-final rate, stops split as **impact/quality**, refactor rate, mean
-refactors/cp, review turns, refactor $, mean accepted grade), shown only when a group has gate
-data.
+**analyze columns.** `recompute_rows` reads the block into `ig_enforcement`, `ig_refactors`,
+`ig_passed`, `ig_stopped`, `ig_stop_reason`, `ig_grade`/`ig_impact` (last, i.e. ACCEPTED implement
+attempt), `ig_grade_first`/`ig_impact_first` (first, i.e. DIRECT attempt before any refactor —
+their gap is the one-refactor cohesion effect the advisory condition measures),
+`ig_refactor_cost_usd`, `ig_refactor_tokens`, and the design-B quality columns
+`ig_quality_review_turns`, `ig_quality_passed`, `ig_quality_clone_lines`, `ig_quality_smell_lines`,
+`ig_quality_cost_usd` (all in `CSV_FIELDS`, blank for ungated/old runs). `main` renders an
+**ImpactGate pipeline** summary table (enforcement mode, reached-final rate, stops split as
+**impact/quality** — always 0/0 under advisory, refactor rate, mean refactors/cp, the median
+`direct→accepted impact` over refactored checkpoints, review turns, refactor $, mean accepted
+grade), shown only when a group has gate data.
 
 **Calibration — grade against OfficeFloor, not the seed (the experiment).** The prior run
 ([blog](https://blog.officefloor.net/2026/08/the-same-complexity-one-unit-or-twenty.html))
@@ -647,23 +686,24 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
 - `isolation.pin_files`: `["CLAUDE.md"]`.
 - `impact_gate.*` (the `impact_gated` strategy only): `cmd` (how to invoke the
   `impact-gate` CLI; each element `${HOME}`/`~`/`$VAR`-expanded in `main`), `strategy`
-  (the activating strategy name), `block_percentile` / `warn_percentile` (fail line
-  vs the Java seed; **calibrate** — default 70, see the pipeline section), `max_refactors`
-  (default 3), `stop_scope` (`chain` default / `run`), `record_refactor_correctness`
-  (record-only full gate on each refactor), `baseline_file` (ImpactGate baseline JSON to grade
-  against — a reference arm's distribution, from `build_impact_baseline`; resolved to an
-  ABSOLUTE path so it stays outside the worktree; null → seed) + `curve_prior_weight` (0 → pure
-  baseline percentile), `measure_config` (optional impact-gate ignore globs; resolved against
-  the config dir), and the `refactor_prompt` template
-  (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`). BOTH the `impact_gated` implement
-  prompt and the `refactor_prompt` state the EXACT impact formula
-  (`cost = max(WMC_other,1)·CC·max(1,Δlines)`, summed, × files; `WMC_other` the dominant lever)
-  as the AI's objective — a precise measurable target, deliberately NOT identical to
-  `just-solve` (which says only "implement it"). So the intervention under test is "clear
-  measurable objective + gate + refactor" vs `just-solve`'s vague baseline: it differentiates
-  whether good prompting keeps code clean, or the erosion is inherent to the architecture. The
-  formula appears in three places — both prompts and `impact_stats` in `metrics.py` — keep them
-  in sync if the measure ever changes.
+  (the activating strategy name), `enforcement` (`advisory` default / `block` — see the pipeline
+  section; advisory records and never stops, block is the hard gate), `block_percentile` /
+  `warn_percentile` (fail line vs the reference distribution; **calibrate** — default 95, see the
+  pipeline section), `max_refactors` (default **1** — advisory is one clean-up refactor then
+  re-attempt), `stop_scope` (`chain` default / `run`; only meaningful under `enforcement: block`),
+  `record_refactor_correctness` (record-only full gate on each refactor), `implement_strategy`
+  (which `prompt_strategies` entry the implement turn uses — design B: `just-solve`, NEUTRAL, no
+  formula), `baseline_file` (ImpactGate baseline JSON to grade against — a reference arm's
+  distribution, from `build_impact_baseline`; resolved to an ABSOLUTE path so it stays outside the
+  worktree; null → seed) + `curve_prior_weight` (0 → pure baseline percentile), `measure_config`
+  (optional impact-gate ignore globs; resolved against the config dir), and the `refactor_prompt`
+  template (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`).
+  **The impact formula (`cost = max(WMC_other,1)·CC·max(1,Δlines)`, summed, × files) is NOT in the
+  `impact_gated` prompts** (design B): the implement turn is neutral and the `refactor_prompt` is
+  symptom-only (locations, no cost figures). The formula appears verbatim as the AI's objective ONLY
+  in the separate `metric-in-prompt` strategy (condition 4, kept for reproducibility). It lives in
+  three places — the `metric-in-prompt` prompt, the design-A archived prompt, and `impact_stats` in
+  `metrics.py` — keep them in sync if the measure ever changes.
 
 ## Gotchas / lessons (2026-08, 2026-09)
 

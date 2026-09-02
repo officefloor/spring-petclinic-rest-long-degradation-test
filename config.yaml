@@ -84,8 +84,26 @@ arms:
       node_method: "service"
 
 # Prompt strategies mirror SlopCodeBench's intervention study. {spec} is replaced
-# with the checkpoint specification. Keep them neutral: never mention the
-# experiment, the architecture, or "refactor" in just-solve.
+# with the checkpoint specification. Keep just-solve neutral: never mention the
+# experiment, the architecture, or "refactor" in it.
+#
+# THE FOUR-CONDITION STUDY. Each condition holds the coding agent fixed and changes ONE lever, so
+# the per-checkpoint impact trajectory (vs the control) isolates what actually reduces structural
+# decay. Run each as a full (arm x chain) sweep; compare slopes/medians in analyze.
+#   1. just-solve      — CONTROL. Plain "implement it" prompt, ungated. Baseline decay. UNCHANGED.
+#   2. cohesion-prompt — PROMPT lever. Same single ungated turn as just-solve; only the wording
+#                        adds a plain request for good structure. Delta vs just-solve = the effect
+#                        of better prompting alone.
+#   3. impact_gated    — TOOL lever (enforcement: advisory). Neutral prompt, but a flagged change
+#                        gets ONE quality-gated refactor guided by ImpactGate's flagged LOCATIONS,
+#                        then is re-attempted and accepted (record-and-continue, reaches cp60).
+#                        Delta vs just-solve = the effect of a tool-guided refactor; delta vs
+#                        cohesion-prompt = what the tool adds beyond good prompting.
+#   4. metric-in-prompt— design-A prompt that hands the AI the cost FORMULA as its objective.
+#                        RETAINED FOR REPRODUCIBILITY ONLY (it was Goodhart-gamed); run from the
+#                        archived design-A code or `--strategy metric-in-prompt`.
+# Conditions 3 and 4 differ deliberately: 4 tells the AI the metric (and it games it); 3 never
+# does — the AI is only ever given the spec and, on a refactor, the symptom locations.
 prompt_strategies:
   just-solve: |
     Implement the following change to the application so that it fully satisfies
@@ -103,6 +121,45 @@ prompt_strategies:
     First outline your approach in a few bullet points. Then implement the
     simplest solution that satisfies the specification, verify the edge cases,
     and refactor if needed. Make all tests pass before finishing.
+
+    {spec}
+  # CONDITION 2 of the four-condition study (see the header below). Prompt-ONLY intervention:
+  # a single implement turn, no gate and no refactor loop (any strategy != impact_gate.strategy
+  # runs the ungated flow). The ONLY thing that differs from just-solve is the wording, so its
+  # per-checkpoint impact vs just-solve isolates whether better PROMPTING alone keeps structure
+  # cohesive. Deliberately says nothing about the metric or the experiment (that is condition 4,
+  # metric-in-prompt, which was gamed); it asks for ordinary good structure in plain terms.
+  cohesion-prompt: |
+    Implement the following change to the application so that it fully satisfies the
+    specification and all existing and new tests pass.
+
+    As you do, keep the code well structured: put each piece of logic where it belongs, in a
+    small unit with a single responsibility, and reuse existing code instead of copying it. Do
+    not let any one class or method grow into a catch-all that accumulates unrelated logic. Run
+    the test suite and make it green before finishing.
+
+    {spec}
+  # CONDITION 4 of the four-condition study: metric-in-prompt (the ORIGINAL design-A prompt).
+  # It hands the AI the exact structural-impact cost function as its objective. RETAINED FOR
+  # REPRODUCIBILITY ONLY — a Spring run gamed it exactly as Goodhart predicts (dispersed logic
+  # into tiny greenfield classes so WMC_other collapses to 1, and DUPLICATED code because reuse
+  # means editing a penalised large class), so it is NOT this repo's default.
+  #   * `--strategy metric-in-prompt` here runs it UNGATED (formula prompt, no discard/refactor
+  #     loop) — the clean "metric-as-objective" prompt lever, isolated from the tool.
+  #   * The original design-A also GATED it (formula prompt + hard impact gate); that exact variant
+  #     is reproduced from the archived design-A code (the Goodhart run was that gated version).
+  # The formula here MUST match impact_stats in metrics.py (and the refactor_prompt) if ever changed.
+  metric-in-prompt: |
+    Implement the following change to the application so that it fully satisfies the
+    specification and all existing and new tests pass.
+
+    Your work is scored by a structural-impact cost. For every function you add lines to, the
+    cost is max(WMC_other, 1) · CC · max(1, added_or_changed_lines), where WMC_other is the total
+    cyclomatic complexity of the OTHER methods in the same class before your change and CC is the
+    changed method's own complexity; the per-function costs are summed and multiplied by the
+    number of files you touched. Lower is better. Keep your structural-impact cost as low as you
+    can while fully satisfying the specification. Run the test suite and make it green before
+    finishing.
 
     {spec}
   # The IMPLEMENT prompt for the impact_gated pipeline is NO LONGER this formula. An
@@ -187,9 +244,23 @@ impact_gate:
   # structural-impact formula (the formula is what the Spring run gamed). ImpactGate still
   # gates this change; the AI is simply never told the metric it is graded on.
   implement_strategy: just-solve
-  max_refactors: 3            # IMPACT budget: refactor+re-attempt cycles for the change to come
-                              # under block_percentile. Exhausted while still over -> chain stops
-                              # (stop_reason "impact").
+  # ENFORCEMENT mode — what a flagged (grade >= block_percentile) change does:
+  #   advisory (default, CONDITION 3 of the four-condition study): record-and-continue. The change
+  #     is scored but NEVER enforced. If flagged, ONE quality-gated refactor runs and the change is
+  #     re-attempted, then the re-attempt is ACCEPTED regardless of grade and the chain continues to
+  #     cp60. Both the FIRST-attempt (direct) and second-attempt (post-refactor) impacts are recorded
+  #     (analyze: ig_impact_first vs ig_impact), so the one-refactor cohesion effect is measurable and
+  #     comparable to just-solve / cohesion-prompt. No chain ever stops on impact or quality.
+  #   block: the design-B HARD gate. A flagged change is discarded and refactored up to max_refactors
+  #     times; still over the line -> chain stops (stop_reason "impact"); a refactor that cannot be
+  #     made statically clean within max_review_turns -> chain stops (stop_reason "quality"). This is
+  #     the stress-test condition; retained but not the default. The formula is never in the prompt in
+  #     either mode (that is condition 4, metric-in-prompt).
+  enforcement: advisory
+  max_refactors: 1            # IMPACT budget: refactor+re-attempt cycles for a flagged change. The
+                              # advisory condition is defined as ONE clean-up refactor then re-attempt,
+                              # so this is 1. Under enforcement=block, exhausting it while still over the
+                              # line stops the chain (stop_reason "impact").
   max_review_turns: 3         # QUALITY budget within ONE refactor: code-review turns to make the
                               # refactor's own added lines statically clean. Exhausted while still
                               # dirty -> chain stops (stop_reason "quality").

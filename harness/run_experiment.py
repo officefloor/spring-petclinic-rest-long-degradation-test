@@ -104,9 +104,12 @@ CSV_FIELDS = [
     # structural-impact score: context-weighted blast (max(WMC_other,1)·CC·max(1,Δlines)·files)
     "impact_mutation", "impact_godclass", "impact_composite",
     "impact_files_changed", "impact_new_files", "impact_new_fns", "impact_mut_fns", "impact_renames",
-    # impact_gated pipeline (blank for ungated strategies): refactor count, verdict, the
-    # accepted change's grade, and the refactor turns' cost/tokens (irreproducible)
-    "ig_refactors", "ig_passed", "ig_stopped", "ig_stop_reason", "ig_grade",
+    # impact_gated pipeline (blank for ungated strategies): enforcement mode, refactor count,
+    # verdict, and the refactor turns' cost/tokens (irreproducible). `ig_grade`/`ig_impact` are
+    # the ACCEPTED (last implement) attempt; `ig_grade_first`/`ig_impact_first` the DIRECT (first)
+    # attempt before any refactor — their gap is the one-refactor cohesion effect (advisory runs).
+    "ig_enforcement", "ig_refactors", "ig_passed", "ig_stopped", "ig_stop_reason",
+    "ig_grade", "ig_impact", "ig_grade_first", "ig_impact_first",
     "ig_refactor_cost_usd", "ig_refactor_tokens",
     # design-B quality gate on the refactor: review turns taken, whether the LAST refactor
     # ended clean, the clone/smell finding lines it stopped on, and the review turns' cost.
@@ -688,9 +691,20 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
     code-review turns run before it is committed as `cpNN refactorM`; the next implement builds
     on it.
 
-    Two stop conditions end the chain (both return stopped=True, with block()['stop_reason']):
+    Enforcement (`impact_gate.enforcement`) decides what a blocked change does:
+      block    — the design-B HARD gate. Still blocked after `max_refactors` clean refactors,
+                 or a refactor that never came clean, STOPS the chain (stop_reason impact/quality).
+      advisory — the record-and-continue condition (default). The change is scored and RECORDED
+                 but never enforced: if flagged, ONE quality-gated refactor runs and the change is
+                 re-attempted, then the re-attempt is ACCEPTED regardless of its grade and the
+                 chain continues. Nothing stops the chain, so every checkpoint's FIRST-attempt and
+                 (when a refactor fired) second-attempt impact are both recorded — the "best the AI
+                 does after one cohesion refactor" trajectory, comparable to just-solve/cohesion.
+
+    Two stop conditions end the chain UNDER `block` (both return stopped=True, stop_reason set):
       impact  — still blocked after `max_refactors` refactors.
       quality — a refactor could not be made statically clean within `max_review_turns`.
+    Under `advisory` neither stops; stopped is always False.
 
     Returns (ar, attempt_log, ig_block, base_for_cp, stopped). On return the worktree is
     mirrored + `git add -A` staged with the accepted (or, if stopped, the last failing)
@@ -703,6 +717,7 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
     mcfg = igc.get("measure_config")
     baseline_file = igc.get("baseline_file")           # grade vs a reference arm's distribution
     K = igc.get("curve_prior_weight")                  # 0 => grade PURELY vs that distribution
+    enforcement = (igc.get("enforcement") or "block").lower()  # block (hard gate) | advisory (record)
     max_ref = int(igc.get("max_refactors", 3))
     max_review = int(igc.get("max_review_turns", 3))
     qcfg = igc.get("quality_gate") or {}
@@ -718,7 +733,8 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
         # stop_reason distinguishes the two ways a gated chain ends: "impact" (the change
         # never came under block_percentile within max_refactors) vs "quality" (a refactor
         # could not be made statically clean within max_review_turns). None while running/passed.
-        return {"enabled": True, "block_percentile": block_p, "warn_percentile": warn_p,
+        return {"enabled": True, "enforcement": enforcement,
+                "block_percentile": block_p, "warn_percentile": warn_p,
                 "max_refactors": max_ref, "max_review_turns": max_review,
                 "refactors": refactors, "passed": passed, "stopped": stopped,
                 "stop_reason": stop_reason, "pre_checkpoint_sha": pre_checkpoint_sha,
@@ -741,8 +757,16 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
         if not blocked:
             return ar, attempt_log, block(passed=True, stopped=False), base_for_cp, False
         if attempt == max_ref:
-            # Out of refactor budget and still blocked: keep the failing change staged for
-            # inspection and end the chain. The caller records the full (failing) checkpoint.
+            # Out of refactor budget and still blocked.
+            if enforcement == "advisory":
+                # RECORD-and-continue: accept the (still-over-the-line) change and keep the chain
+                # going. Its first-attempt and (post-refactor) re-attempt impacts are both in
+                # `attempts`; the metric is measured, never enforced.
+                print(f"    impact-gate: over p{block_p:g} after {refactors} refactor(s) "
+                      f"(advisory — accepted, not enforced)", flush=True)
+                return ar, attempt_log, block(passed=False, stopped=False), base_for_cp, False
+            # HARD gate: keep the failing change staged for inspection and end the chain. The
+            # caller records the full (failing) checkpoint.
             print(f"    impact-gate: STILL BLOCKED after {refactors} refactor(s) -> "
                   f"stopping the chain at cp{k:02d} (stop_reason=impact)", flush=True)
             return ar, attempt_log, block(passed=False, stopped=True, stop_reason="impact"), \
@@ -833,11 +857,13 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
         shutil.rmtree(sandbox, ignore_errors=True)
         base_for_cp = rsha   # the refactor is the base the next implement builds on
 
-        # A refactor that could not be made statically clean within the review budget ends the
-        # chain: the only way it lowered impact was slop we refuse to accept. Distinct from the
-        # impact stop above (which means the change stayed too concentrated even after clean
-        # refactors). The dirty refactor is committed (rsha) for inspection.
-        if quality is not None and quality.ran and not quality.passed:
+        # A refactor that could not be made statically clean within the review budget.
+        # Under the HARD gate this ends the chain: the only way it lowered impact was slop we
+        # refuse to accept (distinct from the impact stop above). The dirty refactor is committed
+        # (rsha) for inspection. Under `advisory` there is no slop incentive (impact is never
+        # enforced) and nothing stops the chain: the refactor's quality outcome is RECORDED (it is
+        # already in `attempts`) and the change is re-attempted on it like any other.
+        if quality is not None and quality.ran and not quality.passed and enforcement != "advisory":
             return ar, attempt_log, block(passed=False, stopped=True, stop_reason="quality"), \
                 base_for_cp, True
 
@@ -861,7 +887,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             igc = cfg["impact_gate"]
             ref = (f"vs baseline {os.path.basename(igc['baseline_file'])} (K={igc.get('curve_prior_weight')})"
                    if igc.get("baseline_file") else "vs seed")
-            gate = (f" [impact-gate ON: block p{igc.get('block_percentile')} {ref}, "
+            mode = (igc.get("enforcement") or "block").lower()
+            gate = (f" [impact-gate ON ({mode}): p{igc.get('block_percentile')} {ref}, "
                     f"max_refactors={igc.get('max_refactors')}, cmd={' '.join(igc.get('cmd', []))}]")
         print(f"[dry-run] {arm}/{strategy}/chain{chain} [test-mode={cfg['test_mode']}]{gate}: "
               f"{n} checkpoints from {arm_cfg['repo']}@{arm_cfg['base_ref']} -> branch {branch_preview}")

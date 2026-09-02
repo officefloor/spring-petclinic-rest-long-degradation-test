@@ -24,7 +24,9 @@ methods from two benchmarks:
 
 - **SlopCodeBench** (arXiv:2603.24755): no-context iterative extension;
   the **Erosion** and **Verbosity** metrics; degradation **slope**; the
-  prompt-intervention arms (`just-solve` / `anti_slop` / `plan_first`).
+  prompt-intervention arms. The study runs four conditions — `just-solve` (control),
+  `cohesion-prompt` (prompt lever), `impact_gated` (tool lever), `metric-in-prompt`
+  (design-A, reproducibility) — plus the legacy `anti_slop` / `plan_first` prompts.
 - **SWE-CI** (arXiv:2603.03823): the CI gate; **Normalized Change**,
   **EvoScore**, **Zero-Regression Rate**.
 
@@ -368,8 +370,12 @@ python -m harness.run_experiment --config config.yaml --test-mode blind --arm sp
 python -m harness.run_experiment --config config.yaml --test-mode blind
 python -m harness.run_experiment --config config.yaml --test-mode full
 
-# a named run and the other prompt-intervention arms:
+# a named run and the four study conditions (impact_gated has its own section below):
 python -m harness.run_experiment --config config.yaml --test-mode blind --run-id sprint7-baseline
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy just-solve       # 1. control
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy cohesion-prompt   # 2. prompt lever
+python -m harness.run_experiment --config config.yaml --test-mode blind --strategy metric-in-prompt  # 4. reproducibility (design-A prompt)
+# legacy prompt arms:
 python -m harness.run_experiment --config config.yaml --test-mode blind --strategy anti_slop
 python -m harness.run_experiment --config config.yaml --test-mode blind --strategy plan_first
 
@@ -395,31 +401,36 @@ cp60, and can prompting flatten the **`node_cc_median`** (comprehension-load) sl
 the concentration the fixed prompt could not, in the prior run, keep out of Spring's one
 growing handler?
 
-**The per-checkpoint loop** (only when `--strategy impact_gated`; every other strategy
-is an untouched control):
+This is **condition 3 of the four-condition study** (see `config.yaml: prompt_strategies` for the
+canonical statement): `just-solve` (control), `cohesion-prompt` (prompt lever), `impact_gated`
+(tool lever, below), and `metric-in-prompt` (design-A formula prompt, kept for reproducibility).
 
-1. **Implement.** The agent implements the checkpoint (same isolation, same blind view).
-   Unlike `just-solve`, the implement prompt states the **exact structural-impact formula**
-   as the objective (`cost = max(WMC_other,1)·CC·max(1,Δlines)`, summed, × files) rather than
-   vague "write clean code" — so the intervention under test is a *precise, measurable target*
-   plus this loop, versus `just-solve`'s "just implement it". This differentiates whether good
-   prompting can hold the code clean, or the erosion is inherent to the architecture.
+**The per-checkpoint loop** (only when `--strategy impact_gated`; every other strategy
+is an untouched control). Default `enforcement: advisory`:
+
+1. **Implement.** The agent implements the checkpoint (same isolation, same blind view) with the
+   **NEUTRAL** prompt (spec only, no formula — design B). The AI is never told the metric it is
+   scored on; telling it (the `metric-in-prompt` condition) got Goodhart-gamed.
 2. **Score.** The production diff is staged and scored by the standalone `impact-gate`
-   CLI: `impact-gate score --mode staged --curve`. The change's structural-impact composite
-   is graded against ImpactGate's Java seed distribution.
-3. **Pass?** Grade **below** `block_percentile` → **accept**; continue to the normal
-   correctness gate exactly as the other strategies do.
-4. **Fail?** Grade **at/above** `block_percentile` → **discard the change** (worktree reset
-   to the clean pre-checkpoint state) and run a **refactor turn** on that clean base. The
-   refactor is told which files/classes ImpactGate flagged **and the change that is coming**,
-   and asked to break those classes into smaller, cohesive units so the change lands cleanly
-   *without* implementing it. It is committed as **`cpNN refactorM <id>`** (visible in the
-   log) — ImpactGate is *measured* on it but never gates it.
-5. **Re-attempt.** The change is re-implemented on top of the refactor and re-scored. Up to
-   `max_refactors` (default 3) refactors per checkpoint.
-6. **Stop.** Still failing after the last refactor → the failing checkpoint is fully recorded
-   and the **chain stops** — a "the AI could not keep the code clean" outcome. `stop_scope`
-   (`chain`, default, vs `run`) decides whether the other arms/chains still run.
+   CLI: `impact-gate score --mode staged --curve`, graded against the reference distribution.
+3. **Below `block_percentile`?** **Accept**; continue to the normal correctness gate, **and record
+   the impact** (`ig_impact_first == ig_impact`, no refactor needed).
+4. **At/above?** **Discard the change** (worktree reset to the clean pre-checkpoint state) and run
+   **one** refactor turn on that clean base, told which classes ImpactGate flagged (**locations
+   only, no cost figures**) and the change that is coming. Its own added lines must pass the
+   deterministic **quality gate** (jscpd clones + ast-grep smells); it is committed as
+   **`cpNN refactorM <id>`**.
+5. **Re-attempt & record.** The change is re-implemented on the refactored base and re-scored
+   (`ig_impact`). `max_refactors` defaults to **1** — one clean-up refactor, then re-attempt.
+6. **Accept & continue (advisory).** The re-attempt is **accepted whatever its grade**; the chain
+   never stops and reaches cp60. Both the direct (`ig_impact_first`) and post-refactor (`ig_impact`)
+   impacts are recorded, so `analyze` reports the one-refactor cohesion effect per checkpoint,
+   comparable to `just-solve` / `cohesion-prompt`.
+   - Set **`enforcement: block`** to run the design-B HARD gate instead: still over the line after
+     `max_refactors` → chain stops (`stop_reason=impact`); a refactor that will not come statically
+     clean within `max_review_turns` → chain stops (`stop_reason=quality`). `stop_scope` (`chain`,
+     default, vs `run`) then decides whether the other arms/chains still run. Retained as the
+     stress-test condition; not the default.
 
 So a gated checkpoint's commits are `0..N × cpNN refactorM` + `cpNN agent` + `cpNN reset`.
 The refactor commits are ancestors of the agent commit, so `analyze` (which enumerates from
@@ -429,14 +440,17 @@ the **same before-context-WMC** signal `analyze` reports as `impact_composite`, 
 gates exactly the erosion metric the run analyses.
 
 **Configure** it under `impact_gate:` in `config.yaml` — `cmd` (how to invoke `impact-gate`),
-`strategy` (the activating strategy name), `baseline_file` (a reference-arm distribution to
-grade against; null → the seed) + `curve_prior_weight` (0 → grade purely against it),
-`block_percentile` / `warn_percentile`, `max_refactors`, `stop_scope`,
-`record_refactor_correctness` (run the full gate on each refactor, recorded but never enforced),
-and the `refactor_prompt` template (`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}`
-placeholders). **Both** the `impact_gated` implement prompt and the `refactor_prompt` state the
-exact impact formula (and that `WMC_other` is the dominant lever), so the AI optimises the same
-number the gate enforces and `analyze` reports — keep the three in sync if the measure changes.
+`strategy` (the activating strategy name), `enforcement` (`advisory` default / `block`),
+`baseline_file` (a reference-arm distribution to grade against; null → the seed) +
+`curve_prior_weight` (0 → grade purely against it), `block_percentile` / `warn_percentile`,
+`max_refactors` (default 1), `max_review_turns`, `stop_scope` (only under `block`),
+`implement_strategy` (the neutral implement prompt, design B), `record_refactor_correctness` (run
+the full gate on each refactor, recorded but never enforced), and the `refactor_prompt` template
+(`{spec}`/`{files}`/`{drivers}`/`{grade}`/`{block}` placeholders). **Neither** `impact_gated` prompt
+states the impact formula (design B): the implement turn is neutral and the `refactor_prompt` is
+symptom-only. The formula is handed to the AI **only** in the separate `metric-in-prompt` strategy
+(condition 4, reproducibility) and in `impact_stats` in `metrics.py` — keep those in sync if the
+measure changes.
 
 ### Calibrating the gate to OfficeFloor's cohesion (the experiment)
 
