@@ -26,7 +26,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import yaml
 
-from . import correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
+from . import class_shape, correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
 from .run_experiment import CSV_FIELDS, phase_for
 
 try:
@@ -211,6 +211,24 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
             run_cfg["tools"]["astgrep_rules"] = os.path.join(tmp_dir, rel)
     else:
         run_cfg["tools"]["astgrep_rules"] = live_cfg.get("tools", {}).get("astgrep_rules", "")
+
+    # Tool BINARIES are filesystem locations, like the arm repos above — where a
+    # machine keeps jscpd/ast-grep says nothing about how the run was measured, and a
+    # snapshot naming a binary this machine does not have makes the metric vanish
+    # rather than fail: metrics.verbosity() falls back to whichever stack produced
+    # output, so a missing ast-grep silently turns Verbosity into a clones-only
+    # number. That is exactly what blind-202608100006 and blind-202609010045 did —
+    # both snapshots pin `astgrep: "sg"`, absent here, so `verbosity_pattern_lines`
+    # is empty for all 2400 rows. Take the LOCATIONS from live config; everything
+    # that decides a verdict (astgrep_rules above, the jscpd_min_* thresholds) still
+    # comes from the snapshot.
+    for key in ("jscpd", "astgrep"):
+        live_val = live_cfg.get("tools", {}).get(key)
+        if live_val and run_cfg["tools"].get(key) != live_val:
+            print(f"  tools.{key}: snapshot {run_cfg['tools'].get(key)!r} -> "
+                  f"live {live_val!r} (binary location, not measurement config)")
+            run_cfg["tools"][key] = live_val
+
     print(f"  using per-run config snapshot from {branch}")
     return run_cfg
 
@@ -413,10 +431,19 @@ def group_key(r: dict) -> tuple[str, str]:
 
 
 def series_by_chain(rows: list[dict], field: str) -> dict[int, list[tuple[int, float]]]:
-    """chain -> [(checkpoint, value)] sorted, dropping NaNs."""
+    """chain -> [(checkpoint, value)] sorted, dropping NaNs.
+
+    Uses .get, not [], on purpose. A checkpoint whose `git worktree add` failed keeps
+    its correctness fields but carries NO structural columns at all, and indexing died
+    on the first such row — throwing away the whole recompute (~15 min) over one bad
+    checkpoint in 1200, at the very end, after all the expensive work. A missing column
+    is the same thing as an unmeasurable one: drop that point and fit the slope on the
+    rest, exactly as a NaN is dropped. `metrics_missing` in the summary counts them, so
+    a run that lost many checkpoints this way cannot look like a clean one.
+    """
     out: dict[int, list[tuple[int, float]]] = defaultdict(list)
     for r in rows:
-        v = _f(r[field])
+        v = _f(r.get(field))
         if not math.isnan(v):
             out[int(r["chain"])].append((int(r["checkpoint"]), v))
     for c in out:
@@ -589,7 +616,8 @@ def phase_means(rows: list[dict], field: str):
     order = ["Start", "Early", "Mid", "Late", "Final"]
     acc = defaultdict(list)
     for r in rows:
-        v = _f(r[field])
+        v = _f(r.get(field))   # .get: see series_by_chain — a checkpoint whose
+                               # worktree failed has no structural columns at all
         if not math.isnan(v):
             acc[r["phase"]].append(v)
     return order, [float(np.mean(acc[p])) if acc[p] else math.nan for p in order]
@@ -738,6 +766,20 @@ def main() -> int:
     for name, arm_cfg in cfg["arms"].items():
         arm_cfg["repo"] = expand_path(arm_cfg["repo"], f"arms.{name}.repo")
 
+    # Anchor tool paths exactly as run_experiment.main does. metrics/quality_gate run
+    # these binaries with cwd=<arm worktree>, so a config-relative path like
+    # tools/node_modules/.bin/ast-grep resolves against the WORKTREE and vanishes —
+    # and verbosity() answers a missing binary with a silent fallback, not an error.
+    # Bare names (jscpd, sg) are left alone so PATH still works.
+    _cfg_dir = os.path.dirname(os.path.abspath(args.config))
+    def _anchor(value: str) -> str:
+        v = expand_path(value, "tools")
+        return v if os.path.isabs(v) else os.path.join(_cfg_dir, v)
+    for _tk in ("jscpd", "astgrep", "astgrep_rules"):
+        _tv = cfg.get("tools", {}).get(_tk)
+        if _tv and (os.sep in _tv or (os.altsep and os.altsep in _tv)):
+            cfg["tools"][_tk] = _anchor(_tv)
+
     work_root = expand_path(cfg["paths"]["work_root"], "paths.work_root")
     if not os.path.isabs(work_root):
         work_root = os.path.join(os.path.dirname(os.path.abspath(args.config)), work_root)
@@ -766,7 +808,8 @@ def main() -> int:
     out_dir = os.path.join(out_root, "analysis")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_root, "records.concat.csv"), "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+        fieldnames = list(dict.fromkeys(k for r in rows for k in r))  # union, order-preserving
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -988,6 +1031,104 @@ def main() -> int:
         lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
                      f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | {rs['invalid_gates']} |")
     lines.append("")
+    # Checkpoints whose structural metrics are MISSING (the worktree could not be
+    # created, so compute_all never ran). Their correctness fields are still valid, so
+    # they stay in the correctness aggregates; every structural slope/mean simply has
+    # one fewer point. Counted here because the alternative — the old behaviour — was
+    # a KeyError that discarded the entire recompute, and the alternative to THAT is a
+    # silent hole in the data.
+    missing = [r for r in rows if "wmc_max" not in r]
+    if missing:
+        lines.append("## Checkpoints missing structural metrics\n")
+        lines.append(f"`git worktree add` failed for **{len(missing)} of {len(rows)}** "
+                     f"checkpoints, so `metrics.compute_all` never ran there. Correctness "
+                     f"for those checkpoints is unaffected and still counted; every "
+                     f"structural curve below is fitted on the remaining points.\n")
+        by_grp = Counter(f"{r['arm']}/{r['strategy']} chain{r['chain']}" for r in missing)
+        lines.append("| arm/strategy chain | checkpoints |")
+        lines.append("|---|---:|")
+        for k, v in sorted(by_grp.items()):
+            lines.append(f"| {k} | {v} |")
+        lines.append("")
+        print(f"  ! {len(missing)} checkpoint(s) have no structural metrics "
+              f"(worktree add failed); slopes fitted on the rest")
+
+    # Test-family pass rates. `strict_pass` is all-or-nothing and CONFLATES the two
+    # failure modes: not implementing the checkpoint's new rule, and breaking a rule
+    # that already worked. They mean opposite things — the first is capability, the
+    # second is retention — and only the split says which one a prompt/architecture
+    # cost you. Pooled over every checkpoint's raw test counts (not a mean of per-
+    # checkpoint rates), so a checkpoint with more tests weighs more.
+    #   core  - the app's own untouched behaviour
+    #   error - error/validation surface
+    #   func  - THIS checkpoint's new rule (capability)
+    #   regr  - previously-passing rules (retention)
+    lines.append("## Pass rate by test family (pooled over checkpoints)\n")
+    lines.append("`strict_pass` conflates two different failures. `func` is whether the "
+                 "checkpoint's OWN new rule was implemented; `regr` is whether previously "
+                 "passing rules still pass. A run can hold `func` at 1.000 — every rule "
+                 "delivered — while `regr` erodes, which is degradation in the precise "
+                 "sense this experiment is about, and is invisible in `strict_pass` alone.\n")
+    FAMILIES = [("core", "core"), ("error", "error"), ("func", "func"), ("regr", "regr")]
+    lines.append("| arm/strategy | " + " | ".join(f"{lbl}" for _, lbl in FAMILIES) + " |")
+    lines.append("|---|" + "---:|" * len(FAMILIES))
+    for gk, grp in sorted(groups.items()):
+        cells = []
+        for fam, _lbl in FAMILIES:
+            num = den = 0.0
+            for r in grp:
+                p_, t_ = _f(r.get(f"{fam}_p")), _f(r.get(f"{fam}_t"))
+                if math.isnan(p_) or math.isnan(t_):
+                    continue
+                num += p_
+                den += t_
+            cells.append("" if den <= 0 else f"{num / den:.3f}")
+        lines.append(f"| {gk[0]}/{gk[1]} | " + " | ".join(cells) + " |")
+    lines.append("")
+
+    # "final" columns are the last checkpoint's value averaged across chains; the
+    # slope table above shows whether each climbs over the chain.
+    def _final_mean(grp, field):
+        by_chain = {}
+        for r in grp:
+            by_chain[int(r["chain"])] = r  # rows arrive in checkpoint order; keep last
+        vals = [_f(r.get(field)) for r in by_chain.values()]
+        vals = [v for v in vals if not math.isnan(v)]
+        return float(np.mean(vals)) if vals else math.nan
+
+    # Verbosity decomposition. `verbosity` is (clone ∪ smell lines) / LOC, so it moves
+    # when EITHER end moves and the ratio alone cannot say which. Both readings occur in
+    # practice: on blind-202609010045 OfficeFloor's ratio rose with clone lines FLAT and
+    # LOC falling (same duplication, less code), while Spring's rose with clone lines
+    # genuinely up. Opposite meanings, same direction on the headline number — so the
+    # numerator and denominator are reported beside it.
+    lines.append("## Verbosity decomposition (final phase)\n")
+    lines.append("`verbosity` = (clone ∪ smell lines) / LOC. The ratio rises either because "
+                 "duplication grew or because the codebase shrank around it — opposite "
+                 "findings. Numerator and denominator are shown so the ratio is never read "
+                 "on its own.\n")
+    lines.append("| arm/strategy | verbosity | clone lines | smell lines | java LOC |")
+    lines.append("|---|---:|---:|---:|---:|")
+    cell = lambda v: "—" if math.isnan(v) else f"{v:.3g}"
+    for gk, grp in sorted(groups.items()):
+        lines.append(f"| {gk[0]}/{gk[1]} | {cell(_final_mean(grp, 'verbosity'))} | "
+                     f"{cell(_final_mean(grp, 'verbosity_clone_lines'))} | "
+                     f"{cell(_final_mean(grp, 'verbosity_pattern_lines'))} | "
+                     f"{cell(_final_mean(grp, 'java_loc'))} |")
+    lines.append("")
+    # metrics.verbosity() degrades gracefully: if ONE of the two stacks produces no
+    # output it silently uses the other, so a missing ast-grep binary turns verbosity
+    # into a clones-only measure with no error anywhere. That is the same silent-zero
+    # failure the lizard pin exists to prevent, so say it out loud here.
+    if all(math.isnan(_final_mean(grp, "verbosity_pattern_lines"))
+           for grp in groups.values()):
+        lines.append("> **The smell half did not run.** `verbosity_pattern_lines` is empty for "
+                     "every checkpoint, so `verbosity` above is CLONE DETECTION ONLY and the "
+                     "`astgrep-rules/` patterns contributed nothing. `metrics.verbosity()` falls "
+                     "back to whichever stack produced output, so this fails silently — check "
+                     "that `tools.astgrep` in the run's config snapshot names a binary that "
+                     "exists on this machine.\n")
+
     # Invalid gates are MISSING correctness, not failed correctness (a Surefire fork
     # crash, not the agent's code). They are excluded from every correctness aggregate
     # above and listed here so the exclusion is never silent — a run with many of them
@@ -1055,16 +1196,6 @@ def main() -> int:
     lines.append("")
 
     # God-class, entry-handler bloat, package reach, and temporal coupling. The
-    # "final" columns are the last checkpoint's value averaged across chains; the
-    # slope table above shows whether each climbs over the chain.
-    def _final_mean(grp, field):
-        by_chain = {}
-        for r in grp:
-            by_chain[int(r["chain"])] = r  # rows arrive in checkpoint order; keep last
-        vals = [_f(r.get(field)) for r in by_chain.values()]
-        vals = [v for v in vals if not math.isnan(v)]
-        return float(np.mean(vals)) if vals else math.nan
-
     lines.append("## God-class, entry-handler, spread, temporal coupling\n")
     lines.append("`WMC_max` is the heaviest class whatever its role, so the arms can answer with "
                  "different KINDS of class (an entity of accessors vs a controller of decisions). "
@@ -1107,6 +1238,24 @@ def main() -> int:
     except Exception as exc:                       # noqa: BLE001 - reported, not raised
         print(f"  (cumulative change audit failed: {exc})")
         lines.append("## Cumulative change audit (base_ref -> chain tip)\n")
+        lines.append(f"NOT AVAILABLE — the audit failed with: `{exc}`\n")
+
+    # Class shape. The impact formula rewards small classes with little surrounding
+    # complexity, and a `static` method in a tiny class is the cheapest way to satisfy
+    # it — so a run can lower its score by trading container-managed beans for
+    # procedural utilities without the code getting better. Nothing above would show
+    # that; this counts what KIND of class each new rule landed in. Best-effort for
+    # the same reason as the cumulative audit.
+    try:
+        shape = class_shape.run_audit(eff_cfg, run_id)
+        lines += class_shape.markdown_section(shape)
+        shape_json = os.path.join(out_dir, "class_shape.json")
+        with open(shape_json, "w") as fh:
+            json.dump({"run_id": run_id, "arms": shape}, fh, indent=2)
+        print(f"Wrote {shape_json}")
+    except Exception as exc:                       # noqa: BLE001 - reported, not raised
+        print(f"  (class-shape audit failed: {exc})")
+        lines.append("## Class shape (what kind of class holds a new rule)\n")
         lines.append(f"NOT AVAILABLE — the audit failed with: `{exc}`\n")
 
     # Plots

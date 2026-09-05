@@ -194,29 +194,22 @@ def _clone_lines_jscpd(root: str, src_dirs: list[str], jscpd_bin: str) -> Option
 
 def _pattern_lines_astgrep(root: str, src_dirs: list[str], sg_bin: str,
                            rules_dir: str) -> Optional[set[tuple[str, int]]]:
-    if not rules_dir or not os.path.isdir(rules_dir):
-        return None
-    cmd = [sg_bin, "scan", "--json", "-r", rules_dir] + \
-          [os.path.join(root, d) for d in src_dirs]
-    try:
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=600)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    try:
-        matches = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
-        return None
-    lines: set[tuple[str, int]] = set()
-    for m in matches:
-        f = m.get("file")
-        rng = m.get("range", {})
-        start = (rng.get("start") or {}).get("line")
-        end = (rng.get("end") or {}).get("line")
-        if f and start is not None and end is not None:
-            rel = os.path.relpath(f, root) if os.path.isabs(f) else f
-            for ln in range(int(start), int(end) + 1):
-                lines.add((rel, ln))
-    return lines
+    """{(repo-relative path, 1-based line)} for every ast-grep rule match, or None if
+    ast-grep did not run.
+
+    Delegates to quality_gate._smell_lines rather than re-implementing the call. This
+    used to invoke `scan -r <rules_dir>`, but the pinned ast-grep takes `-r` as a single
+    rule FILE: given a directory it wrote "Is a directory" to stderr, left stdout empty,
+    and this parsed that as zero matches. Combined with verbosity()'s fallback to
+    whichever stack DID produce output, the smell half of Verbosity silently contributed
+    nothing while looking like a clean scan. A directory of rules needs a generated
+    project config (`ruleDirs:`) and `scan -c`, which is what the gate already does
+    correctly -- and it also fixes the 0-based -> 1-based line conversion missing here,
+    which would have shifted every smell line by one even once the call worked.
+    """
+    from .quality_gate import _smell_lines
+    smells = _smell_lines(root, src_dirs, sg_bin, rules_dir)
+    return None if smells is None else set(smells)
 
 
 def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict) -> tuple[float, dict]:
