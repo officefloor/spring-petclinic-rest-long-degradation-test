@@ -433,6 +433,67 @@ def print_report(results: dict[str, list[dict]], top: int = 15) -> None:
         print()
 
 
+def run_audit(cfg: dict, run_id: str, verbose: bool = True) -> dict[str, list[dict]]:
+    """Audit every chain of `run_id`. Returns arm -> [per-chain result].
+
+    Callable from analyze.py (which passes the run's OWN config snapshot, so the
+    `source_globs`/`base_ref` used here are the ones the run was configured with)
+    as well as from this module's CLI."""
+    branches = evolve_branches(cfg, run_id)
+    if not branches:
+        raise SystemExit(f"no branches for run {run_id!r}")
+    if verbose:
+        print(f"cumulative audit: base_ref .. chain tip over {len(branches)} chains")
+
+    results: dict[str, list[dict]] = defaultdict(list)
+    for repo, branch, arm, strategy, chain in branches:
+        base = cfg["arms"][arm]["base_ref"]
+        globs = cfg["arms"][arm].get("source_globs") or []
+        r = audit_branch(repo, base, branch, globs)
+        r.update(arm=arm, strategy=strategy, chain=chain, branch=branch)
+        results[arm].append(r)
+        if verbose:
+            print(f"  {arm:12s} chain{chain:<2d} "
+                  f"CC(all)={r['cc_sum_full']:6d}  CC(in-scope)={r['cc_sum_scoped']:6d}  "
+                  f"fns={r['fns_touched_full']:4d}  "
+                  f"orphan={r['orphan_lines']:5d}  opaque={r['opaque_lines']:5d}")
+    return dict(results)
+
+
+def markdown_section(results: dict[str, list[dict]]) -> list[str]:
+    """The audit as summary.md lines, for analyze.py to append."""
+    arms = sorted(results)
+    out = [
+        "## Cumulative change audit (base_ref -> chain tip)\n",
+        "The per-checkpoint metrics are scoped (`source_globs`, a hotspot subsystem, a",
+        "wired-node closure), which is what makes them comparable but also means an agent",
+        "could hold them down by working where the scope does not reach. This section is",
+        "the unscoped cross-check: ONE diff per chain from the branch start to its final",
+        "commit, over EVERY changed file, with each changed line attributed to the function",
+        "that contains it at the tip. `CC sum` adds the cyclomatic complexity of the",
+        "DISTINCT functions touched — a function counts once however many checkpoints",
+        "edited it, because the question is the complexity of the code that now exists.\n",
+        "Lines that reach no function are reported, never dropped. `orphan` is inside a",
+        "parsed file but outside every function body; `BRANCH TOKENS` counts the control",
+        "flow among those lines (field initialisers, static blocks) and is the direct test",
+        "for logic hidden where CC cannot see it — near zero means no such hiding.",
+        "`opaque` is a file lizard cannot parse at all, where `YAML wiring edges` counts",
+        "OfficeFloor's declared `next:`/`outputs:` control flow. That is a real branch count",
+        "in a file no CC tool reads, but it is NOT a cyclomatic complexity and is never",
+        "summed into one.\n",
+        "| metric | " + " | ".join(arms) + " |",
+        "|---|" + "---:|" * len(arms),
+    ]
+    for label, key in _REPORT_ROWS:
+        cells = []
+        for a in arms:
+            m, sd = _agg(results[a], key)
+            cells.append(f"{m:.1f} ± {sd:.1f}")
+        out.append(f"| {label.replace('  ', '&nbsp;&nbsp;')} | " + " | ".join(cells) + " |")
+    out.append("")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", required=True)
@@ -448,32 +509,15 @@ def main() -> int:
     run_id = args.run_id or latest_run_id(cfg)
     if not run_id:
         raise SystemExit("no evolve/ branches found in the arm repos")
-    branches = evolve_branches(cfg, run_id)
-    if not branches:
-        raise SystemExit(f"no branches for run {run_id!r}")
 
-    print(f"# Cumulative change audit -- run {run_id}")
-    print(f"# base_ref .. chain tip, every changed file, {len(branches)} chains\n")
-
-    results: dict[str, list[dict]] = defaultdict(list)
-    for repo, branch, arm, strategy, chain in branches:
-        base = cfg["arms"][arm]["base_ref"]
-        globs = cfg["arms"][arm].get("source_globs") or []
-        r = audit_branch(repo, base, branch, globs)
-        r.update(arm=arm, strategy=strategy, chain=chain, branch=branch)
-        results[arm].append(r)
-        print(f"  {arm:12s} chain{chain:<2d} "
-              f"CC(all)={r['cc_sum_full']:6d}  CC(in-scope)={r['cc_sum_scoped']:6d}  "
-              f"fns={r['fns_touched_full']:4d}  "
-              f"orphan={r['orphan_lines']:5d}  opaque={r['opaque_lines']:5d}")
-
+    print(f"# Cumulative change audit -- run {run_id}\n")
+    results = run_audit(cfg, run_id)
     print_report(results, args.top)
 
-    out = {"run_id": run_id, "arms": dict(results)}
     if args.json:
         os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
         with open(args.json, "w") as fh:
-            json.dump(out, fh, indent=2)
+            json.dump({"run_id": run_id, "arms": results}, fh, indent=2)
         print(f"\nwrote {args.json}")
     return 0
 

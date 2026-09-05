@@ -26,7 +26,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import yaml
 
-from . import correctness, expand_path, git_out, metrics, parser_selftest
+from . import correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
 from .run_experiment import CSV_FIELDS, phase_for
 
 try:
@@ -1068,6 +1068,25 @@ def main() -> int:
         lines.append(f"| {gk[0]}/{gk[1]} | {cell(wmc_f)} | {cell(wmch_f)} | {hcls_s} | "
                      f"{cell(ecc_f)} | {pk_m} | {rr_m} |")
     lines.append("")
+
+    # Cumulative change audit. Every metric above is SCOPED (source_globs, hotspot
+    # subsystem, node closure) — necessary for arm-to-arm comparability, but it means
+    # none of them can see work placed outside that scope. This recomputes the whole
+    # run unscoped, base_ref -> tip over every changed file, and reports the two
+    # buckets a CC sum structurally cannot contain (orphan / opaque). Failing it must
+    # not lose the analysis that already succeeded, so it is best-effort: the summary
+    # says the audit is missing rather than silently omitting the section.
+    try:
+        audit = cumulative_impact.run_audit(eff_cfg, run_id)
+        lines += cumulative_impact.markdown_section(audit)
+        audit_json = os.path.join(out_dir, "cumulative_impact.json")
+        with open(audit_json, "w") as fh:
+            json.dump({"run_id": run_id, "arms": audit}, fh, indent=2)
+        print(f"Wrote {audit_json}")
+    except Exception as exc:                       # noqa: BLE001 - reported, not raised
+        print(f"  (cumulative change audit failed: {exc})")
+        lines.append("## Cumulative change audit (base_ref -> chain tip)\n")
+        lines.append(f"NOT AVAILABLE — the audit failed with: `{exc}`\n")
 
     # Plots
     for field, title in METRICS_TO_PLOT:
