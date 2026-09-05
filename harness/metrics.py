@@ -212,12 +212,23 @@ def _pattern_lines_astgrep(root: str, src_dirs: list[str], sg_bin: str,
     return None if smells is None else set(smells)
 
 
+def _pattern_lines(root: str, src_dirs: list[str], tools: dict) -> Optional[set[tuple[str, int]]]:
+    """Smell lines from whichever detector this run configures: PMD (Java rules that can
+    fire on these arms) or the legacy ast-grep. Same selection rule as quality_gate.review,
+    so the metric and the gate always see the same findings."""
+    if tools.get("pmd"):
+        from .quality_gate import _pmd_lines
+        found = _pmd_lines(root, src_dirs, tools["pmd"], tools.get("pmd_rules", ""))
+        return None if found is None else set(found)
+    return _pattern_lines_astgrep(root, src_dirs, tools.get("astgrep", "sg"),
+                                  tools.get("astgrep_rules", ""))
+
+
 def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict) -> tuple[float, dict]:
     if loc <= 0:
         return float("nan"), {"reason": "no LOC"}
     clones = _clone_lines_jscpd(root, src_dirs, tools.get("jscpd", "jscpd"))
-    patterns = _pattern_lines_astgrep(root, src_dirs, tools.get("astgrep", "sg"),
-                                      tools.get("astgrep_rules", ""))
+    patterns = _pattern_lines(root, src_dirs, tools)
     if clones is None and patterns is None:
         return float("nan"), {"reason": "neither jscpd nor ast-grep produced output"}
     union: set[tuple[str, int]] = set()

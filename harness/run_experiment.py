@@ -1236,10 +1236,12 @@ def main() -> int:
     cfg["paths"]["results_csv"] = resolve(cfg["paths"]["results_csv"])
     if cfg.get("tools", {}).get("astgrep_rules"):
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])
+    if cfg.get("tools", {}).get("pmd_rules"):
+        cfg["tools"]["pmd_rules"] = resolve(cfg["tools"]["pmd_rules"])
     # Pinned clone/smell binaries: anchor to the config dir when given as a PATH (contains a
     # separator, e.g. tools/node_modules/.bin/jscpd) so they resolve against the harness repo,
     # not the arm worktree that metrics/quality_gate run them in. Bare names on PATH stay bare.
-    for _tk in ("jscpd", "astgrep"):
+    for _tk in ("jscpd", "astgrep", "pmd"):
         _tv = cfg.get("tools", {}).get(_tk)
         if _tv and (os.sep in _tv or (os.altsep and os.altsep in _tv)):
             cfg["tools"][_tk] = resolve(_tv)

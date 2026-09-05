@@ -1,0 +1,129 @@
+<?xml version="1.0"?>
+<ruleset name="java-wasteful"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+  <description>
+    Wasteful-Java rules for the Verbosity metric (metrics.verbosity) and the impact_gated
+    quality gate (harness/quality_gate.py).
+
+    SELECTION CRITERION: a rule belongs here only if it flags code that could be
+    SEMANTICALLY CONDENSED with no behaviour change -- redundant, unnecessary, useless,
+    duplicated, or dead. That is SlopCodeBench's Verbosity construct (arXiv:2603.24755
+    Eq. 4), whose own 137 ast-grep rules are `language: python` and so cannot be used
+    against these Java arms; PMD's Java rules are the equivalent for this codebase.
+    Several map one-to-one onto SlopCodeBench rule ids, noted inline.
+
+    DELIBERATELY EXCLUDED, and why:
+      * naming/formatting (ClassNamingConventions, LongVariable, ControlStatementBraces)
+        -- style, not waste. Would swamp a LINE-COUNTED metric with noise.
+      * LocalVariableCouldBeFinal / MethodArgumentCouldBeFinal / UseExplicitTypes
+        -- fire on nearly every method; they would dominate the score and measure
+        house style rather than degradation.
+      * complexity thresholds (CyclomaticComplexity, NPathComplexity, CognitiveComplexity,
+        GodClass, TooManyMethods, ExcessiveImports, DataClass) -- this harness ALREADY
+        measures those directly (erosion, wmc_*, node_cc_*, impact_*). Counting them here
+        too would double-count the same signal into a metric that is meant to be
+        independent of it.
+      * correctness/security/threading bug detectors -- real defects, but not verbosity.
+      * class-level rules generally -- Verbosity counts LINES, and a rule whose violation
+        spans a whole class would contribute hundreds of lines for one finding.
+      * test-only rules -- verbosity_dirs is src/main/java; they can never fire.
+  </description>
+
+  <!-- ============================ redundant syntax ============================ -->
+  <rule ref="category/java/codestyle.xml/UnnecessaryAnnotationValueElement"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryBlock"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryBoxing"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryCast"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryConstructor"/>
+  <!-- The smell observed by hand in the impact_gated Spring code: business logic calling
+       org.springframework.samples.petclinic.util.MemberIds.of(owner) inline. -->
+  <rule ref="category/java/codestyle.xml/UnnecessaryFullyQualifiedName"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryImport"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryInterfaceDeclaration"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryModifier"/>
+  <rule ref="category/java/codestyle.xml/UnnecessaryReturn"/>
+  <rule ref="category/java/codestyle.xml/UnnecessarySemicolon"/>
+  <rule ref="category/java/codestyle.xml/UselessParentheses"/>
+  <rule ref="category/java/codestyle.xml/UselessQualifiedThis"/>
+  <rule ref="category/java/codestyle.xml/UseDiamondOperator"/>
+  <rule ref="category/java/codestyle.xml/UseShortArrayInitializer"/>
+  <rule ref="category/java/bestpractices.xml/UnnecessaryVarargsArrayCreation"/>
+  <rule ref="category/java/bestpractices.xml/DoubleBraceInitialization"/>
+
+  <!-- ===================== condensable control flow / logic ==================== -->
+  <!-- SlopCodeBench: redundant-local-then-return. VariableCanBeInlined is PMD 7's
+       replacement for UnnecessaryLocalBeforeReturn, which warns it is scheduled for
+       removal in PMD 8. -->
+  <rule ref="category/java/codestyle.xml/VariableCanBeInlined"/>
+  <!-- SlopCodeBench: nested-if-no-else -->
+  <rule ref="category/java/design.xml/CollapsibleIfStatements"/>
+  <!-- SlopCodeBench: boolean-return-if-else -->
+  <rule ref="category/java/design.xml/SimplifyBooleanReturns"/>
+  <!-- SlopCodeBench: redundant-bool-in-condition, bool-comparison -->
+  <rule ref="category/java/design.xml/SimplifyBooleanExpressions"/>
+  <!-- SlopCodeBench: redundant-bool-ternary, ternary-same-value -->
+  <rule ref="category/java/design.xml/SimplifiedTernary"/>
+  <rule ref="category/java/design.xml/SimplifyConditional"/>
+  <rule ref="category/java/design.xml/LogicInversion"/>
+  <!-- SlopCodeBench: duplicate-wrapper-return-branches, defensive-if-return-same -->
+  <rule ref="category/java/errorprone.xml/IdenticalConditionalBranches"/>
+  <rule ref="category/java/codestyle.xml/IdenticalCatchBranches"/>
+  <rule ref="category/java/errorprone.xml/UnconditionalIfStatement"/>
+  <rule ref="category/java/bestpractices.xml/WhileLoopWithLiteralBoolean"/>
+  <!-- SlopCodeBench: empty-init / empty control bodies (incl. empty catch) -->
+  <rule ref="category/java/codestyle.xml/EmptyControlStatement"/>
+  <rule ref="category/java/errorprone.xml/EmptyCatchBlock"/>
+
+  <!-- ======================== trivial wrappers / dead code ===================== -->
+  <!-- SlopCodeBench: trivial wrapper functions -->
+  <rule ref="category/java/design.xml/UselessOverridingMethod"/>
+  <rule ref="category/java/bestpractices.xml/UnusedLocalVariable"/>
+  <rule ref="category/java/bestpractices.xml/UnusedPrivateField"/>
+  <rule ref="category/java/bestpractices.xml/UnusedPrivateMethod"/>
+  <rule ref="category/java/bestpractices.xml/UnusedAssignment"/>
+  <rule ref="category/java/bestpractices.xml/UnusedFormalParameter"/>
+  <rule ref="category/java/bestpractices.xml/UnusedLabel"/>
+  <rule ref="category/java/errorprone.xml/UnusedReturnValue"/>
+  <rule ref="category/java/errorprone.xml/IdempotentOperations"/>
+  <!-- UselessOperationOnImmutable and UselessPureMethodCall are BOTH deprecated in
+       PMD 7 and removed in 8, with no successor, so neither is referenced here. The
+       waste they described (calling a pure method and discarding the result) is partly
+       covered by UnusedReturnValue above. -->
+  <rule ref="category/java/errorprone.xml/UnusedNullCheckInEquals"/>
+  <rule ref="category/java/design.xml/SingularField"/>
+  <rule ref="category/java/design.xml/FinalFieldCouldBeStatic"/>
+  <rule ref="category/java/performance.xml/RedundantFieldInitializer"/>
+
+  <!-- ================== verbose idioms with a condensed form =================== -->
+  <!-- SlopCodeBench: string-concat-empty -->
+  <rule ref="category/java/performance.xml/AddEmptyString"/>
+  <!-- SlopCodeBench: unnecessary-cast-str -->
+  <rule ref="category/java/performance.xml/StringToString"/>
+  <rule ref="category/java/performance.xml/UselessStringValueOf"/>
+  <rule ref="category/java/performance.xml/StringInstantiation"/>
+  <rule ref="category/java/errorprone.xml/UnnecessaryConversionTemporary"/>
+  <rule ref="category/java/errorprone.xml/UnnecessaryCaseChange"/>
+  <rule ref="category/java/errorprone.xml/InstantiationToGetClass"/>
+  <rule ref="category/java/bestpractices.xml/PrimitiveWrapperInstantiation"/>
+  <!-- SlopCodeBench: consecutive-append-calls, verbose-string-concat-str -->
+  <rule ref="category/java/performance.xml/ConsecutiveAppendsShouldReuse"/>
+  <rule ref="category/java/performance.xml/ConsecutiveLiteralAppends"/>
+  <rule ref="category/java/performance.xml/InefficientStringBuffering"/>
+  <rule ref="category/java/performance.xml/UseStringBufferLength"/>
+  <rule ref="category/java/performance.xml/AppendCharacterWithChar"/>
+  <!-- SlopCodeBench: len-as-condition -->
+  <rule ref="category/java/bestpractices.xml/UseCollectionIsEmpty"/>
+  <rule ref="category/java/performance.xml/InefficientEmptyStringCheck"/>
+  <!-- SlopCodeBench: range-len-antipattern, for-range-len -->
+  <rule ref="category/java/bestpractices.xml/ForLoopCanBeForeach"/>
+  <rule ref="category/java/performance.xml/AvoidArrayLoops"/>
+  <rule ref="category/java/performance.xml/UseArraysAsList"/>
+  <rule ref="category/java/performance.xml/UseIndexOfChar"/>
+  <rule ref="category/java/performance.xml/OptimizableToArrayCall"/>
+  <!-- SlopCodeBench: unnecessary-lambda, pointless-lambda-call -->
+  <rule ref="category/java/codestyle.xml/LambdaCanBeMethodReference"/>
+
+</ruleset>

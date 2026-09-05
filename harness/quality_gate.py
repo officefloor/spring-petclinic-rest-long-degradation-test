@@ -228,6 +228,62 @@ def _smell_lines(root: str, src_dirs: list[str], sg_bin: str,
     return out
 
 
+def _pmd_lines(root: str, src_dirs: list[str], pmd_bin: str,
+               ruleset: str) -> dict[tuple[str, int], str] | None:
+    """{(repo-relative path, 1-based line): message} for every PMD violation, or None if
+    PMD did not run.
+
+    PMD replaces ast-grep as the smell detector: SlopCodeBench's 137 Verbosity rules are
+    `language: python` and cannot match these Java arms, while PMD ships a mature Java
+    ruleset whose "unnecessary/useless/redundant" rules are the same construct. The
+    curated subset lives in `pmd-rules/java-wasteful.xml` (committed; it decides verdicts,
+    so it travels with the run like the ast-grep rules did).
+
+    Two traps, both of the "did not run reads as found nothing" family that already bit
+    this metric twice:
+      * PMD exits 4 when it finds violations. Without --no-fail-on-violation a returncode
+        check would treat every DIRTY scan as a failed one and report zero smells.
+      * a ruleset naming an unknown rule still runs, reporting only the rules it resolved.
+        `processingErrors` and the parse below are checked so a broken ruleset surfaces.
+    Analysis is source-only (no --aux-classpath): checkpoint trees are materialised but
+    never compiled, and type resolution is not needed by these rules.
+    """
+    if not ruleset or not os.path.isfile(ruleset):
+        return None
+    cmd = [pmd_bin, "check", "-f", "json", "-R", ruleset,
+           "--no-fail-on-violation", "--no-progress"]
+    for d in src_dirs:
+        cmd += ["-d", d]
+    try:
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=900)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        first = ((proc.stderr or "").strip().splitlines() or [""])[0]
+        print(f"    ! pmd exited {proc.returncode}; smell detection DID NOT RUN "
+              f"({first[:160]})", flush=True)
+        return None
+    try:
+        report = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    out: dict[tuple[str, int], str] = {}
+    for f in report.get("files", []):
+        path = f.get("filename") or ""
+        rel = os.path.relpath(path, root) if os.path.isabs(path) else path
+        for v in f.get("violations", []):
+            begin, end = v.get("beginline"), v.get("endline")
+            if begin is None:
+                continue
+            msg = v.get("rule") or "wasteful pattern"
+            # PMD lines are already 1-based. The curated ruleset deliberately excludes
+            # class-level rules, so spans stay small (max 3 lines observed) and a single
+            # finding cannot flood a LINE-counted metric.
+            for ln in range(int(begin), int(end or begin) + 1):
+                out.setdefault((rel, ln), msg)
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # The gate
 # --------------------------------------------------------------------------- #
@@ -250,8 +306,15 @@ def review(root: str, src_dirs: list[str], tools: dict, qcfg: dict) -> QualityRe
     clones = _clone_lines(root, src_dirs, tools.get("jscpd", "jscpd"),
                           int(qcfg.get("jscpd_min_tokens", 50)),
                           int(qcfg.get("jscpd_min_lines", 5)))
-    smells = _smell_lines(root, src_dirs, tools.get("astgrep", "sg"),
-                          tools.get("astgrep_rules", ""))
+    # Smell detector: PMD when configured (Java rules that can actually fire on these
+    # arms), else the legacy ast-grep path. Selecting on tools.pmd rather than a flag
+    # keeps a run's config snapshot self-describing — an old run replays with ast-grep,
+    # a new one with PMD, and neither silently changes meaning.
+    if tools.get("pmd"):
+        smells = _pmd_lines(root, src_dirs, tools["pmd"], tools.get("pmd_rules", ""))
+    else:
+        smells = _smell_lines(root, src_dirs, tools.get("astgrep", "sg"),
+                              tools.get("astgrep_rules", ""))
     # Clean scratch so it can never leak into a commit.
     import shutil
     shutil.rmtree(os.path.join(root, ".jscpd-quality"), ignore_errors=True)

@@ -222,7 +222,7 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     # is empty for all 2400 rows. Take the LOCATIONS from live config; everything
     # that decides a verdict (astgrep_rules above, the jscpd_min_* thresholds) still
     # comes from the snapshot.
-    for key in ("jscpd", "astgrep"):
+    for key in ("jscpd", "astgrep", "pmd"):
         live_val = live_cfg.get("tools", {}).get(key)
         if live_val and run_cfg["tools"].get(key) != live_val:
             print(f"  tools.{key}: snapshot {run_cfg['tools'].get(key)!r} -> "
@@ -775,7 +775,7 @@ def main() -> int:
     def _anchor(value: str) -> str:
         v = expand_path(value, "tools")
         return v if os.path.isabs(v) else os.path.join(_cfg_dir, v)
-    for _tk in ("jscpd", "astgrep", "astgrep_rules"):
+    for _tk in ("jscpd", "astgrep", "astgrep_rules", "pmd", "pmd_rules"):
         _tv = cfg.get("tools", {}).get(_tk)
         if _tv and (os.sep in _tv or (os.altsep and os.altsep in _tv)):
             cfg["tools"][_tk] = _anchor(_tv)

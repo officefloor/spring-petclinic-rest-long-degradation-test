@@ -50,6 +50,41 @@ fi
 ./.venv/bin/pip install --quiet -r requirements.txt
 echo "   venv ready at $HARNESS_DIR/.venv"
 
+# Pinned clone/smell binaries for the Verbosity metric and the impact_gated quality gate.
+# Neither was installed here before, which is how both runs measured Verbosity with the
+# smell half silently switched off (see AGENTS.md gotchas). harness/quality_selftest.py
+# asserts these exact versions and refuses to start a gated run on drift.
+echo
+echo "== quality tooling (jscpd + PMD) =="
+if command -v npm >/dev/null 2>&1; then
+  (cd "$HARNESS_DIR/tools" && npm ci --silent) && echo "   jscpd + ast-grep installed (tools/node_modules)"
+else
+  echo "   ! npm not found — jscpd will be unavailable and Verbosity's clone half will not run"
+fi
+
+# PMD supplies the Java smell rules (pmd-rules/java-wasteful.xml). SlopCodeBench's own 137
+# Verbosity rules are language: python and cannot match these Java arms, so PMD replaced
+# ast-grep as the smell detector. ~140MB unpacked, gitignored; the RULESET is committed.
+PMD_VERSION="$(cat "$HARNESS_DIR/tools/pmd-version.txt" 2>/dev/null || echo '')"
+if [ -z "$PMD_VERSION" ]; then
+  echo "   ! tools/pmd-version.txt missing — skipping PMD"
+elif [ -x "$HARNESS_DIR/tools/pmd/bin/pmd" ] \
+     && "$HARNESS_DIR/tools/pmd/bin/pmd" --version 2>/dev/null | grep -q "PMD $PMD_VERSION"; then
+  echo "   PMD $PMD_VERSION already installed (tools/pmd)"
+else
+  PMD_ZIP="$HARNESS_DIR/tools/pmd-dist.zip"
+  PMD_URL="https://github.com/pmd/pmd/releases/download/pmd_releases/${PMD_VERSION}/pmd-dist-${PMD_VERSION}-bin.zip"
+  echo "   downloading PMD $PMD_VERSION ..."
+  if curl -sfL -o "$PMD_ZIP" "$PMD_URL"; then
+    rm -rf "$HARNESS_DIR/tools/pmd"
+    (cd "$HARNESS_DIR/tools" && unzip -q pmd-dist.zip && mv "pmd-bin-$PMD_VERSION" pmd)
+    rm -f "$PMD_ZIP"
+    echo "   PMD $PMD_VERSION installed (tools/pmd)"
+  else
+    echo "   ! PMD download failed — the smell half of Verbosity will not run"
+  fi
+fi
+
 # ImpactGate (the impact_gated strategy's structural-impact gate). Optional: only the
 # impact_gated strategy needs it. Installed editable from a sibling checkout if present,
 # so `impact-gate` is on PATH inside this venv; otherwise the run uses config.yaml's

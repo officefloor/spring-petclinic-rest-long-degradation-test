@@ -122,8 +122,8 @@ rationale (the "why", so it doesn't silently regress):
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
 | `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the symptom-only refactor prompt from the flagged-class LOCATIONS + spec (`refactor_prompt`; `_format_drivers` strips cost figures — design B), and shapes the capture entry per attempt (`attempt_summary`, incl. `quality`/`quality_turns`). No effect on the other strategies. |
-| `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + ast-grep smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Reused by `_impact_gated_implement`'s quality sub-loop. |
-| `quality_selftest.py` | fail-closed check that the PINNED `jscpd`/`@ast-grep/cli` (tools/package.json) are at the locked versions AND a golden clone+smell fixture fails the gate. `require()` runs beside `parser_selftest.require` in `run_experiment.main` when the gate is active; standalone `python -m harness.quality_selftest --config config.yaml`. |
+| `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + **PMD** smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Smell detector is PMD when `tools.pmd` is set (`_pmd_lines`, ruleset `pmd-rules/java-wasteful.xml`), else the legacy ast-grep path (`_smell_lines`) — selected from the run's own config snapshot, so an old run replays with the detector it used. `metrics._pattern_lines` routes Verbosity through the SAME choice, so gate and metric never disagree. If one detector cannot run the gate enforces on the other and records `clones_ran`/`smells_ran`; it never stops a run. Reused by `_impact_gated_implement`'s quality sub-loop. |
+| `quality_selftest.py` | fail-closed check that the PINNED `jscpd` (tools/package.json) and the configured smell tool — PMD at `tools/pmd-version.txt`, else `@ast-grep/cli` — are at the locked versions AND a golden clone+smell fixture fails the gate. `require()` runs beside `parser_selftest.require` in `run_experiment.main` when the gate is active; standalone `python -m harness.quality_selftest --config config.yaml`. |
 | `build_impact_baseline.py` | builds an ImpactGate baseline JSON from a completed run's OWN per-checkpoint `impact_composite` (reads `results/<run_id>/records.concat.csv`, else recomputes). Used to calibrate the gate to OfficeFloor's observed cohesion so Spring is graded against it. Standalone `python -m harness.build_impact_baseline`. |
 | `cumulative_impact.py` | audit answering "what did the WHOLE run add, everywhere": one diff from `base_ref` to the chain TIP, every changed file (not just `source_globs`), changed lines mapped to their function at the tip, CC summed over the DISTINCT functions touched. Reports the two buckets a CC sum cannot contain — `orphan` (inside a parsed file, outside every function body) split into boilerplate vs content vs **branch tokens**, and `opaque` (no lizard parser at all: `.yml`, `.xml`, `.json`) with OfficeFloor's wiring edges counted by a real YAML parse. Cross-check for the scoped per-checkpoint metrics, not a replacement. Run automatically at the end of `analyze`; also standalone via `python -m harness.cumulative_impact --config config.yaml` (adds `--top N`, the heaviest-touched-function listing that the summary section omits). |
 | `class_shape.py` | class-shape audit: for the classes a run CREATED (tip minus `base_ref`, generated `rest/dto`+`rest/api` excluded), what KIND each is — `spring-bean` / `static-util` / `instance-class` / `exception` / `entity` / `annotation`. Categorises from lizard's function list, NEVER a regex (a `static final` field initialiser reads like a static method to a grep). Exists because the impact formula is cheapest to satisfy with `static` methods in tiny classes, so a run can lower its score by trading container-managed beans for procedural utilities with no improvement to the code — nothing else in the harness would show that. Reports per-chain RANGE as well as mean: one prompt yielding ten different mechanism choices is itself a finding. Runs at the end of `analyze`; standalone `python -m harness.class_shape --config config.yaml`. |
@@ -753,6 +753,23 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `ownerNode()` helper stays valid at every later gate in both arms; a strict
   rename would spray false regressions (this is why cp60 avoids renaming request
   fields, see its note in `checkpoints.yaml`).
+- **SlopCodeBench's 137 Verbosity rules are `language: python` and cannot be used here.**
+  They are not in the paper, not on the project site, and not on the repo's `main` — they
+  live in `configs/slop_rules.yaml` on the `release/v0.3` branch of
+  SprocketLab/slop-code-bench, and every one of the 137 is Python. Most encode Python
+  idioms with no Java form (`dict-get-empty-list-default`, `isinstance-return-ladder`,
+  `range-len-antipattern`), and the rule bodies use Python-only tree-sitter node kinds.
+  Adding them verbatim would have parsed cleanly and matched nothing, forever — the exact
+  silent-zero failure above, self-inflicted. The Java equivalent is PMD: 2026-09-06 the
+  smell detector became PMD 7.27.0 with a curated 64-rule set (`pmd-rules/java-wasteful.xml`)
+  chosen for "code that could be semantically condensed", excluding naming/style noise and
+  anything this harness already measures (complexity, god-class) to avoid double-counting a
+  signal Verbosity is meant to be independent of. Note SlopCodeBench comparability on
+  Verbosity is gone regardless: their `main` now scores it by LLM rubric
+  (`rubric_verbosity_flags`), not rules. **PMD exits 4 when it finds violations**, so the
+  invocation must pass `--no-fail-on-violation` or the returncode check reads every dirty
+  scan as a failed one.
+
 - **"The tool did not run" must never render as "the tool found nothing."** Three
   instances of this shape were found on 2026-09-05, all silent: `metrics.verbosity()`
   falls back to whichever of jscpd/ast-grep produced output, so a missing binary turned

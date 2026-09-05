@@ -157,15 +157,62 @@ def _pinned_versions(tools: dict) -> dict:
     return {"jscpd": deps.get("jscpd", ""), "astgrep": deps.get("@ast-grep/cli", "")}
 
 
+def _pinned_pmd(tools: dict) -> str:
+    """Expected PMD version from the committed tools/pmd-version.txt, located from the pmd
+    bin path (.../tools/pmd/bin/pmd -> .../tools/pmd-version.txt). "" if not locatable.
+    Same file setup.sh downloads from, so the pin has ONE source of truth."""
+    pbin = tools.get("pmd", "")
+    if not pbin or os.sep not in pbin:
+        return ""
+    tools_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(pbin))))
+    vf = os.path.join(tools_dir, "pmd-version.txt")
+    try:
+        with open(vf) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _pmd_ver(bin_: str) -> str:
+    """PMD prints an ASCII-art banner before the version line, so take the line that
+    starts with 'PMD ' rather than the first line of output."""
+    try:
+        out = subprocess.run([bin_, "--version"], capture_output=True, text=True,
+                             timeout=120)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("PMD "):
+            return line.split()[1]
+    return ""
+
+
 def check_versions(tools: dict) -> dict:
+    """Assert the PINNED versions of whichever detectors this config actually uses.
+
+    The smell half is PMD when tools.pmd is set, else ast-grep — checking the unused one
+    would fail a perfectly good config, and skipping the used one is how a drifted tool
+    gets to decide verdicts unnoticed."""
     pinned = _pinned_versions(tools)
-    jver, sver = _ver(tools.get("jscpd", "jscpd")), _ver(tools.get("astgrep", "sg"))
+    jver = _ver(tools.get("jscpd", "jscpd"))
     ok = True
-    detail = {"jscpd": jver, "astgrep": sver, "pinned": pinned}
+    detail = {"jscpd": jver, "pinned": pinned}
     if pinned:
-        ok = (jver == pinned.get("jscpd")) and (sver == pinned.get("astgrep"))
+        ok = jver == pinned.get("jscpd")
+    if tools.get("pmd"):
+        pver, ppin = _pmd_ver(tools["pmd"]), _pinned_pmd(tools)
+        detail.update({"smell_tool": "pmd", "pmd": pver, "pmd_pinned": ppin})
+        if ppin:
+            ok = ok and (pver == ppin)
+        detail["checked"] = bool(pinned) or bool(ppin)
+    else:
+        sver = _ver(tools.get("astgrep", "sg"))
+        detail.update({"smell_tool": "ast-grep", "astgrep": sver})
+        if pinned:
+            ok = ok and (sver == pinned.get("astgrep"))
+        detail["checked"] = bool(pinned)
     detail["ok"] = ok
-    detail["checked"] = bool(pinned)
     return detail
 
 
@@ -234,6 +281,7 @@ _ADVICE = (
     "The design-B quality gate is blind or a pinned tool drifted. Install the PINNED clone/\n"
     "smell binaries and re-run the check:\n"
     "    (cd tools && npm ci)        # jscpd + @ast-grep/cli at the locked versions\n"
+    "    ./setup.sh                  # also installs PMD at tools/pmd-version.txt\n"
     "    python -m harness.quality_selftest --config config.yaml\n"
     "If you intend a version bump, update tools/package.json + package-lock.json AND the\n"
     "golden expectations, and re-baseline: clone thresholds and rule matching decide verdicts."
@@ -249,14 +297,20 @@ def require(cfg: dict, gated: bool) -> dict:
     if not (gated and qcfg.get("enabled", False)):
         return {}
     tools = cfg.get("tools", {})
+    # Only used by the legacy ast-grep path; quality_gate.review selects its detector and
+    # ruleset from `tools` itself (PMD when tools.pmd is set), so this is inert under PMD.
     rules_dir = tools.get("astgrep_rules", "")
     src_dirs = _src_dirs(cfg)
 
     ver = check_versions(tools)
     if ver["checked"] and not ver["ok"]:
+        smell = ver["smell_tool"]
+        got = ver.get("pmd") or ver.get("astgrep") or "missing"
+        want = ver.get("pmd_pinned") or ver["pinned"].get("astgrep", "?")
         raise QualityGateBlind(
-            f"pinned clone/smell tool drift: jscpd {ver['jscpd'] or 'missing'} / ast-grep "
-            f"{ver['astgrep'] or 'missing'} != pinned {ver['pinned']}.\n{_ADVICE}")
+            f"pinned clone/smell tool drift: jscpd {ver['jscpd'] or 'missing'} "
+            f"(pinned {ver['pinned'].get('jscpd', '?')}) / {smell} {got} "
+            f"(pinned {want}).\n{_ADVICE}")
     gate = check_gate(tools, rules_dir, qcfg, src_dirs)
     if not gate["ok"]:
         raise QualityGateBlind(
@@ -272,7 +326,9 @@ def require(cfg: dict, gated: bool) -> dict:
             f"added_lines={header['added_lines']}, reason={header['reason']}). The license-header "
             f"false positive is back — a clean extract-a-class refactor would be wrongly stopped "
             f"(see _is_noncode).\n{_ADVICE}")
-    return {"versions": {"jscpd": ver["jscpd"], "astgrep": ver["astgrep"]},
+    versions = {"jscpd": ver["jscpd"], "smell_tool": ver["smell_tool"]}
+    versions[ver["smell_tool"]] = ver.get("pmd") or ver.get("astgrep", "")
+    return {"versions": versions,
             "version_pinned": ver["checked"], "golden": gate, "header_pass": header}
 
 
@@ -299,17 +355,20 @@ def main() -> int:
             return p
         p = expand_path(p)
         return p if os.path.isabs(p) else os.path.join(cfg_dir, p)
-    for tk in ("jscpd", "astgrep", "astgrep_rules"):
+    for tk in ("jscpd", "astgrep", "astgrep_rules", "pmd", "pmd_rules"):
         if cfg.get("tools", {}).get(tk) and (os.sep in cfg["tools"][tk]):
             cfg["tools"][tk] = resolve(cfg["tools"][tk])
 
-    print("Code-quality gate self-test (jscpd clones + ast-grep smells)\n")
     tools = cfg.get("tools", {})
     ver = check_versions(tools)
+    smell = ver["smell_tool"]
+    print(f"Code-quality gate self-test (jscpd clones + {smell} smells)\n")
     vtag = "PASS" if (not ver["checked"] or ver["ok"]) else "FAIL"
-    print(f"  [{vtag}] versions: jscpd {ver['jscpd'] or 'missing'}, ast-grep "
-          f"{ver['astgrep'] or 'missing'}"
-          + (f"  (pinned {ver['pinned']})" if ver["checked"] else "  (no pin located)"))
+    got = ver.get("pmd") or ver.get("astgrep") or "missing"
+    want = ver.get("pmd_pinned") or ver["pinned"].get("astgrep", "?")
+    print(f"  [{vtag}] versions: jscpd {ver['jscpd'] or 'missing'} "
+          f"(pinned {ver['pinned'].get('jscpd', '?')}), {smell} {got} (pinned {want})"
+          + ("" if ver["checked"] else "  (no pin located)"))
     qcfg = (cfg.get("impact_gate") or {}).get("quality_gate") or {}
     gate = check_gate(tools, tools.get("astgrep_rules", ""), qcfg, _src_dirs(cfg))
     gtag = "PASS" if gate["ok"] else "FAIL"

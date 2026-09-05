@@ -330,6 +330,16 @@ tools:
   # NOT used: `sg` also collides with shadow-utils' setgid tool. Fall back to bare names only if
   # tools/node_modules is absent (ungated verbosity metric degrades gracefully; the gate does not).
   jscpd: "tools/node_modules/.bin/jscpd"
+  # SMELL DETECTOR. PMD when `pmd` is set, else the legacy ast-grep path below.
+  # Why PMD: the Verbosity metric's pattern half comes from SlopCodeBench, whose 137
+  # ast-grep rules are `language: python` and can never match these Java arms — the
+  # ast-grep seed set was 3 hand-written Java rules and found 5 lines, all in unchanged
+  # upstream code. PMD ships mature Java rules; pmd-rules/java-wasteful.xml curates the
+  # 64 that flag CONDENSABLE code (see that file for what is excluded and why).
+  # Installed by setup.sh into tools/pmd (gitignored, 140MB); the RULESET is committed
+  # because it decides verdicts. Unset `pmd` to fall back to ast-grep.
+  pmd: "tools/pmd/bin/pmd"
+  pmd_rules: "pmd-rules/java-wasteful.xml"
   astgrep: "tools/node_modules/.bin/ast-grep"
   astgrep_rules: "astgrep-rules"
 
