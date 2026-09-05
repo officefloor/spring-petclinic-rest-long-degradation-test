@@ -753,6 +753,20 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `ownerNode()` helper stays valid at every later gate in both arms; a strict
   rename would spray false regressions (this is why cp60 avoids renaming request
   fields, see its note in `checkpoints.yaml`).
+- **"The tool did not run" must never render as "the tool found nothing."** Three
+  instances of this shape were found on 2026-09-05, all silent: `metrics.verbosity()`
+  falls back to whichever of jscpd/ast-grep produced output, so a missing binary turned
+  Verbosity into a clones-only number with no error (both blind runs measured it that
+  way); `metrics._pattern_lines_astgrep` passed a rules DIRECTORY to `scan -r`, which
+  takes a rule FILE, so ast-grep errored to stderr, left stdout empty, and that parsed
+  as zero matches; and `quality_gate._smell_lines` ignored the exit code, so ONE
+  unparseable rule (exit 8 aborts the whole directory) switched the smell half of the
+  gate off while it kept reporting passes. Fixed by checking `returncode`, delegating
+  metrics to the gate's correct invocation, and recording `clones_ran`/`smells_ran` in
+  capture. The general rule when adding a tool-backed metric: distinguish
+  ran-and-found-nothing from could-not-run, and make the second one visible in the
+  summary — a zero is indistinguishable from a clean result to every reader downstream.
+
 - **A manually fetched branch can silently DOUBLE an arm's sample.** Both arm repos
   share one upstream, and `refs/heads/evolve/<run>/*` is not arm-scoped, so a
   convenience fetch (e.g. restoring a cleaned run's branches to re-analyze it) drops

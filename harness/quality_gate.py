@@ -47,8 +47,15 @@ class QualityReview:
     clone_finding_lines: int = 0
     smell_finding_lines: int = 0
     review_text: str = ""
-    ran: bool = True          # False when a tool could not run at all
+    ran: bool = True          # False when NEITHER tool could run at all
     reason: str = ""          # why it could not run (ran is False)
+    # Which halves actually ran. A PARTIAL gate still enforces on the half that worked
+    # and never stops the run — but "clean" then means "clean as far as we could see",
+    # and only these flags distinguish that from a genuinely clean change. They ride
+    # into capture so a later analyze over the run branches can tell the difference
+    # without re-running anything.
+    clones_ran: bool = True
+    smells_ran: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -190,6 +197,17 @@ def _smell_lines(root: str, src_dirs: list[str], sg_bin: str,
             return None
     finally:
         shutil.rmtree(cfg_dir, ignore_errors=True)
+    # A non-zero exit is ast-grep REFUSING to scan, not a clean scan with no hits: it
+    # writes the reason to stderr and leaves stdout empty, which parses as zero matches
+    # and is indistinguishable from "this code is clean". One unparseable rule aborts
+    # the WHOLE directory (exit 8), so a single bad pattern would silently switch the
+    # smell half off — for the metric AND for this gate. None means "did not run"; the
+    # caller must not read it as a pass.
+    if proc.returncode != 0:
+        first = ((proc.stderr or "").strip().splitlines() or [""])[0]
+        print(f"    ! ast-grep exited {proc.returncode}; smell detection DID NOT RUN "
+              f"({first[:160]})", flush=True)
+        return None
     try:
         matches = json.loads(proc.stdout or "[]")
     except json.JSONDecodeError:
@@ -215,8 +233,18 @@ def _smell_lines(root: str, src_dirs: list[str], sg_bin: str,
 # --------------------------------------------------------------------------- #
 def review(root: str, src_dirs: list[str], tools: dict, qcfg: dict) -> QualityReview:
     """Run the quality gate over the staged refactor in `root`. Findings = added lines that
-    are clones or smells. If NEITHER tool can run, `ran=False` (the caller decides: the gate
-    cannot enforce, so it must not silently pass — the run is fail-closed on this)."""
+    are clones or smells.
+
+    If NEITHER tool can run, `ran=False` — the gate cannot enforce at all, so it must not
+    silently pass; the caller decides (run_experiment logs it and moves on rather than
+    killing the chain).
+
+    If ONE tool can run, the gate enforces on that half and sets `clones_ran`/`smells_ran`
+    accordingly. This is deliberately NOT fail-closed: a run must never die because a
+    detector broke, and every checkpoint is committed to the run branch, so a later
+    `analyze` can recompute the missing half from the branches once the tooling is fixed.
+    The flags are what make that recoverable — without them a partial pass is
+    indistinguishable from a clean one."""
     added = _added_lines(root, src_dirs)
 
     clones = _clone_lines(root, src_dirs, tools.get("jscpd", "jscpd"),
@@ -231,7 +259,16 @@ def review(root: str, src_dirs: list[str], tools: dict, qcfg: dict) -> QualityRe
     if clones is None and smells is None:
         return QualityReview(passed=False, ran=False,
                              reason="neither jscpd nor ast-grep produced output "
-                                    "(gate cannot enforce)")
+                                    "(gate cannot enforce)",
+                             clones_ran=False, smells_ran=False)
+
+    if clones is None or smells is None:
+        # Deliberately NOT fail-closed: a half-working gate must never stop a run that
+        # is otherwise fine. Enforce on the half that works, record that the other did
+        # not, and let post-hoc analysis over the branches decide what to trust.
+        half = "ast-grep/smells" if smells is None else "jscpd/clones"
+        print(f"    quality-gate: {half} did not run; enforcing on the other half only "
+              f"(recorded in capture)", flush=True)
 
     clone_lines = clones[0] if clones else set()
     clone_pairs = clones[1] if clones else []
@@ -253,6 +290,8 @@ def review(root: str, src_dirs: list[str], tools: dict, qcfg: dict) -> QualityRe
         clone_finding_lines=clone_n,
         smell_finding_lines=smell_n,
         review_text=render(findings, clone_pairs),
+        clones_ran=clones is not None,
+        smells_ran=smells is not None,
     )
 
 
@@ -313,4 +352,8 @@ def summary(qr: QualityReview) -> dict:
         "findings": [{"path": f.path, "line": f.line, "kind": f.kind, "message": f.message}
                      for f in qr.findings],
         "reason": qr.reason or None,
+        # Which halves actually ran, so a later analyze over the run branches can tell a
+        # genuinely clean refactor from one the gate could only half-check.
+        "clones_ran": qr.clones_ran,
+        "smells_ran": qr.smells_ran,
     }
