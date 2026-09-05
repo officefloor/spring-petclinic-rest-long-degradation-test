@@ -66,9 +66,24 @@ MIN_EVENTS = 5
 
 
 def _evolve_branches(cfg: dict, run_id: str | None = None):
-    """Yield (repo, branch, arm, strategy, chain) across the arm repos."""
-    out = []
-    for repo in sorted({ac["repo"] for ac in cfg["arms"].values()}):
+    """Yield (repo, branch, arm, strategy, chain) across the arm repos.
+
+    A branch is only accepted from a repo that `config.yaml` actually assigns to
+    that branch's arm. The runner always writes an arm's chains into its own repo,
+    so this changes nothing for a normal run — it guards the case where the arm
+    repos share an upstream and a manual `git fetch` lands BOTH arms' branches in
+    one of them (easy to do: `refs/heads/evolve/<run>/*` is not arm-scoped). Without
+    the check every metric for the duplicated arm is computed twice, once per repo,
+    and the extra rows are indistinguishable from real chains — the chain-cluster
+    bootstrap then reports CIs on ~2x the true sample. Skips are announced, because
+    a silently ignored branch and a silently duplicated one are both wrong.
+    """
+    arms_by_repo: dict[str, set[str]] = defaultdict(set)
+    for arm_name, arm_cfg in cfg["arms"].items():
+        arms_by_repo[arm_cfg["repo"]].add(arm_name)
+
+    out, skipped = [], []
+    for repo in sorted(arms_by_repo):
         refs = git_out(repo, ["for-each-ref", "--format=%(refname:short)",
                               "refs/heads/evolve"]).splitlines()
         for br in (r.strip() for r in refs if r.strip()):
@@ -78,7 +93,13 @@ def _evolve_branches(cfg: dict, run_id: str | None = None):
             rid, strat, arm, chain = m.groups()
             if run_id and rid != run_id:
                 continue
+            if arm not in arms_by_repo[repo]:
+                skipped.append((repo, br))
+                continue
             out.append((repo, br, arm, strat, int(chain)))
+    if skipped:
+        print(f"  ({len(skipped)} evolve branch(es) skipped: arm does not match the "
+              f"repo config.yaml assigns it — e.g. {skipped[0][1]} in {skipped[0][0]})")
     return out
 
 

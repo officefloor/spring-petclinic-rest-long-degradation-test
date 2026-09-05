@@ -752,6 +752,18 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `ownerNode()` helper stays valid at every later gate in both arms; a strict
   rename would spray false regressions (this is why cp60 avoids renaming request
   fields, see its note in `checkpoints.yaml`).
+- **A manually fetched branch can silently DOUBLE an arm's sample.** Both arm repos
+  share one upstream, and `refs/heads/evolve/<run>/*` is not arm-scoped, so a
+  convenience fetch (e.g. restoring a cleaned run's branches to re-analyze it) drops
+  BOTH arms' chains into whichever repo you ran it in. `analyze._evolve_branches`
+  walks repos, not arms, so the duplicated arm was then measured twice — 11 "spring"
+  chains where 10 exist — and the extra rows look exactly like real chains, so the
+  chain-cluster bootstrap reports CIs on ~2x the true n. Fixed 2026-09-05: a branch is
+  only accepted from a repo `config.yaml` assigns to that branch's arm, and skips are
+  printed. When restoring branches by hand, fetch each arm's refspec into its OWN repo
+  (`refs/heads/evolve/<run>/<strategy>/<arm>/*`), then check
+  `git for-each-ref refs/heads/evolve` in both repos shows only that arm.
+
 - **`work/`, `results/`, `.venv/` are gitignored;** the base branches stay
   pristine. Clearing `work/` deletes capture files, so analyze then needs the pushed
   evolve branches instead.
