@@ -288,6 +288,16 @@ It prompts first (skip with `-y`), keeps `.venv` and `results/` unless you pass
 `--venv` / `--results`, and honours the same `COMPARE_DIR=` / `WORK_ROOT=` /
 `SANDBOX_ROOT=` overrides. Run `./clean.sh -y && ./setup.sh` for a full clean rebuild.
 
+**Publish.** `./push.sh [run_id]` pushes each arm repo's `evolve/<run_id>/…` chain
+branches to the fork, so every chain's record survives outside the local clone. It
+pushes only what is missing or stale on the remote, never force-pushes a diverged
+branch, and refuses to run while an arm worktree is dirty (`--allow-dirty` overrides;
+`--dry-run` lists without pushing). `setup.sh` clones over https, which has no
+credentials in a non-interactive shell, so the push target defaults to the ssh form of
+`origin` (`PUSH_HTTPS=1` or `PUSH_URL=<url>` to override). **Push before you clean** —
+`clean.sh` deletes the arm repos and every unpushed `evolve/…` branch with them. The
+aggregate `results/<run_id>/` CSV + analysis stay local and gitignored either way.
+
 The base branch is only ever **read** as a start point. It is never modified.
 
 1. **Do NOT pre-commit the acceptance suite to the base branch.** The tests stay
