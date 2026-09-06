@@ -85,15 +85,26 @@ difference collapsed from **+1.769 [1.597, 1.929]** to **−0.018 [−0.054, 0.0
 touched was unchanged (282.3 → 267.9 CC over touched functions). It had simply moved into new
 files. Two measurements survived that optimiser and are the ones to lead with whenever an arm has
 been prompted or tooled toward a structural target:
+- **the cumulative change audit** (`analyze`'s base→tip CC-attribution table) — the **only**
+  fully scope-free view, and the one that actually exposed the move (Spring's CC in NEW files
+  46.3 → 218.2 while CC in PRE-EXISTING files fell 236.0 → 49.7). Trust this one.
 - **`node_cc_median`** — slope difference +2.935 [2.76, 3.12] → +1.035 [0.62, 1.45], still
-  excluding 0. It is relocation-proof *within* a call path, which is why it degraded to a third
-  of its size instead of vanishing.
-- **the cumulative change audit** (`analyze`'s base→tip CC-attribution table) — the only view
-  that is scope-free, and the one that actually exposed the move (Spring's CC in NEW files
-  46.3 → 218.2 while CC in PRE-EXISTING files fell 236.0 → 49.7).
+  excluding 0, and relocation-proof for anything the handler *calls*. But it has a hole, and
+  2 of 10 Spring chains fell straight into it: **code the FRAMEWORK dispatches is not code the
+  handler calls**, so a rule moved into `@RestControllerAdvice` / `@Aspect` / a `Filter` /
+  `@PrePersist` / a `ConstraintValidator` leaves the walk entirely. On `blind-202609010045`
+  chain1 ends with 18 advice classes and a create handler that is the **stock upstream body**
+  (map → save → Location → 201); `node_path_cc` reports **3** for a codebase implementing all
+  60 rules. Chain3 reports 7. The 7 chains that did not take the container route report 40–136.
+  So the pooled +1.035 residual is an **understatement**, not a floor — and `node_cc_median`
+  is only a survivor in the aggregate, not per chain.
 
 `wmc_handler` / `entry_cc` / `erosion_handler` stay valid for the **ungated control** comparison,
 where nothing is optimising them. Never publish them as the headline for an intervention arm.
+**Before quoting any call-graph statistic for an intervention arm, count the container-dispatched
+classes** (`@ControllerAdvice`, `@Aspect`, `Filter`/`HandlerInterceptor`, `@EntityListeners`/
+`@PrePersist`, `ConstraintValidator`) at the chain tip; if that count moved off its baseline, the
+call-graph numbers for that chain are measuring a shrinking fraction of the code.
 
 ### The structural-impact metric (`impact_stats` in `metrics.py`)
 
@@ -266,9 +277,23 @@ went 135 → 22.5, final `entry_cc` 11 → 3.3, `erosion_handler` slope 0.00326 
 slope 3.028 → 1.101. Blast radius moved the same way: existing-fns-modified 178.5 → 101.3 per chain,
 zero-blast checkpoints **44/600 → 183/600**, new files 10.2 → 32.8 per chain. On the difference-of-
 slopes test, `wmc_handler` and `erosion_handler` stop discriminating entirely and `impact_composite`
-shrinks ~90× (+358.7 → +3.97 [0.78, 7.79], still just excluding 0). `node_path_cc` even **inverts**
-(−0.224 [−0.57, 0.14] → −0.901 [−1.43, −0.36]): the dispersed Spring create path is now *shorter*
-than OfficeFloor's. Under this prompt Spring behaves structurally much as OfficeFloor did ungated.
+shrinks ~90× (+358.7 → +3.97 [0.78, 7.79], still just excluding 0). The single cleanest number is
+the controller file itself, base→tip: **+604 to +962 lines across the 10 control chains, +2 to +44
+across the 10 formula chains** (~37× less growth). `node_path_cc` even **inverts** (−0.224
+[−0.57, 0.14] → −0.901 [−1.43, −0.36]) — but read that one with the container caveat below, not as
+a clean win. Under this prompt Spring behaves structurally much as OfficeFloor did ungated.
+
+**2b. The escape route is per-chain, and 2 chains left the measurement entirely.** There is no
+single mechanism: counting container-dispatched classes at each tip, 7 of 10 Spring chains sit at
+or near the baseline (advice 1–2, aspect 1) and dispersed into ordinary static helpers, while
+chains 1, 3 and 6 went to the container (18, 6+14, 13 advice/aspect classes). In **chain1** the
+create handler is the **stock upstream body** — map → save → Location header → 201 — and all 60
+rules are `RequestBodyAdvice` classes; `node_path_cc` reports **3**. Chain3 reports 7. The other
+seven chains report 40–136. So the "Spring's path is now shorter than OfficeFloor's" inversion is
+substantially an artifact of two chains leaving the call graph (see the framework-dispatch gotcha),
+and the *variance itself* is a finding: one prompt, ten chains, several genuinely different
+architectures, all scoring well. A number that a rerun can satisfy this many different ways is not
+measuring the property it names.
 
 **3. It relocated complexity; it did not remove it.** The cumulative base→tip audit, which no
 prompt-side scoping can hide from:
@@ -854,6 +879,18 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   in a capture is `impact_gate.attempts[].impact == 0` with a non-empty `.agent.diff` touching
   a `@Entity` class. Never take "0" from a parser as "no complexity" without proving the parser
   can see the file.
+- **Framework dispatch is a hole in every call-graph metric (2026-09-06).** `node_closure_stats`
+  walks *calls* from the entry node, which is the right fix for logic pushed downstream and no fix
+  at all for logic pushed **sideways into the container**. Nothing calls a `RequestBodyAdvice`, an
+  `@Aspect`, a servlet `Filter`, an `@EntityListeners` callback or a `ConstraintValidator` — Spring
+  invokes them — so a rule that becomes one vanishes from `node_cc_median` / `node_cc_max` /
+  `node_path_cc` completely. On `blind-202609010045` chain1 this is total: 18 advice classes, an
+  `addOwner` that is the untouched upstream body, and `node_path_cc` = **3** with all 60 rules
+  implemented (chain3: 7; the 7 chains that stayed out of the container: 40–136). The tell is a
+  call-graph number that *falls* while `java_loc` and the cumulative CC audit hold steady. There is
+  no in-metric fix — a wiring-aware walk would have to model Spring's dispatch order, which is the
+  point the experiment is making — so the guard is procedural: count container-dispatched classes
+  at the tip before quoting any call-graph statistic, and cross-check against the cumulative audit.
 - **A condition is what the agent was PROMPTED with, not what the strategy key is named
   (2026-09-06).** `blind-202609010045` is recorded under `strategy: impact_gated`, but its
   implement prompt was the design-A cost formula and its gate fired on **3 of 1200** checkpoints.
