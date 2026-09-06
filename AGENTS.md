@@ -35,7 +35,7 @@ a new small wired function). Methods borrow from SlopCodeBench (arXiv:2603.24755
 for Erosion, Verbosity, degradation slope and prompt arms, and SWE-CI
 (arXiv:2603.03823) for Normalized Change, EvoScore and Zero-Regression Rate.
 
-**Decisive statistics (updated after run `blind-202608100006`).** The hypothesis
+**Decisive statistics (updated after runs `blind-202608100006` and `blind-202609010045`).** The hypothesis
 is about *where* complexity lands (concentration vs. distribution), so the decisive
 statistics are the ones that measure placement and blast radius:
 
@@ -75,7 +75,25 @@ dominated by architecture-neutral leaf algorithms (soundex, phone/E.164, dedup) 
 both arms implement — so on `blind-202608100006` its slope ordering came out *backwards*
 (OfficeFloor > Spring). It stays reported for SlopCodeBench comparability, but read it
 as leaf-algorithm-dominated, not as a thesis test; use `erosion_handler` and the impact
-metrics for the concentration signal.
+metrics for the concentration signal — subject to the prompt-robustness caveat immediately below.
+
+**Not every concentration statistic is prompt-robust: `wmc_handler` and `erosion_handler` can
+be ZEROED by telling the agent the formula.** On `blind-202609010045` (the cost function in the
+implement prompt; see "Condition 4 measured" below) the Spring−OfficeFloor `wmc_handler` slope
+difference collapsed from **+1.769 [1.597, 1.929]** to **−0.018 [−0.054, 0.018]** and Spring's
+`erosion_handler` slope from **0.00326 to exactly 0** — while the *total* complexity the run
+touched was unchanged (282.3 → 267.9 CC over touched functions). It had simply moved into new
+files. Two measurements survived that optimiser and are the ones to lead with whenever an arm has
+been prompted or tooled toward a structural target:
+- **`node_cc_median`** — slope difference +2.935 [2.76, 3.12] → +1.035 [0.62, 1.45], still
+  excluding 0. It is relocation-proof *within* a call path, which is why it degraded to a third
+  of its size instead of vanishing.
+- **the cumulative change audit** (`analyze`'s base→tip CC-attribution table) — the only view
+  that is scope-free, and the one that actually exposed the move (Spring's CC in NEW files
+  46.3 → 218.2 while CC in PRE-EXISTING files fell 236.0 → 49.7).
+
+`wmc_handler` / `entry_cc` / `erosion_handler` stay valid for the **ungated control** comparison,
+where nothing is optimising them. Never publish them as the headline for an intervention arm.
 
 ### The structural-impact metric (`impact_stats` in `metrics.py`)
 
@@ -92,6 +110,16 @@ rationale (the "why", so it doesn't silently regress):
   all checkpoints. `analyze` also emits additive-only (`_add`) and mutative-only (`_mut`)
   slice views. Including mutative compresses the additive-only ratio (17× → ~10× composite)
   because it is a harder test where OfficeFloor must also mutate — honest signal, not dilution.
+- **Disclosed, it stops being a measurement (measured, not predicted).** The score is a good
+  *observer* of structural decay and a bad *objective*. When `blind-202609010045` put the formula
+  in the agent's prompt, Spring's `impact_composite` slope fell 45× while the total CC the run
+  touched did not move at all, correctness fell hard, and duplication rose (full numbers in
+  "Condition 4 measured" below). Both anti-gaming devices in this metric — the `WMC_other` floor
+  and the `× files_changed` spread — held individually and were still not enough, because
+  dispersal into ~21 new static-utility classes per chain pays the spread term once and escapes
+  the context weight everywhere. **Do not add the formula to any prompt the agent sees**, and
+  treat any future run whose impact slope drops by an order of magnitude as a disclosure/leak
+  suspect until the cumulative CC audit says complexity actually left the codebase.
 - **The `× files_changed` spread term is a deliberate Goodhart trade.** It anti-correlates
   with the context weight across the arms (Spring concentrates → few files/high WMC_other;
   OfficeFloor distributes → more files/low WMC_other), so it *costs* a little arm-separation
@@ -198,12 +226,109 @@ ONE lever so the per-checkpoint impact trajectory vs the control isolates what r
    Delta vs just-solve = the effect of a tool-guided refactor; delta vs cohesion-prompt = what the
    tool adds beyond good prompting.
 4. **`metric-in-prompt`** — the design-A prompt that hands the AI the cost FORMULA as its objective.
-   **Retained for reproducibility only** — it was Goodhart-gamed (dispersal + duplication). Run it
-   from the archived design-A code or `--strategy metric-in-prompt`; it is not this repo's default.
+   **Retained for reproducibility only** — it is Goodhart-gamed (dispersal + duplication), now with
+   a full 10-chain measurement behind that claim (next section). Run it from the archived design-A
+   code or `--strategy metric-in-prompt`; it is not this repo's default.
 
 Conditions 3 and 4 differ deliberately: 4 tells the AI the metric (and it games it); 3 never does —
 the AI only ever sees the spec and, on a refactor, the symptom locations. The prompts live in
 `config.yaml: prompt_strategies`; the header there is the canonical statement of the four conditions.
+
+### Condition 4 measured — `blind-202609010045` (the formula in the prompt)
+
+Run 2026-09-01, harness sha `4c86953`, model `claude-opus-4-8`, 10 chains × 60 checkpoints × 2 arms.
+`checkpoints.yaml` and `acceptance/` were last touched 2026-08-08 — before **both** this run and the
+`just-solve` control `blind-202608100006` — so the two are like-for-like and every number below is
+control → formula.
+
+**Read it as condition 4, not condition 3, even though it is labelled `impact_gated`.** The run
+predates `enforcement: advisory`; it ran `block` at `block_percentile: 95` with the *formula* as the
+implement prompt (each chain's `evolve-results/config/config.yaml` snapshot is the authority). The
+gate then fired on **3 of 1200 checkpoints** (OF 1, Spring 2; mean accepted grade p31.0 / p37.8;
+0 stops; 10/10 chains reached cp60), so almost nothing here is the tool — it is the **prompt** lever,
+measured. The prompt is also *more leading* than `prompt_strategies: metric-in-prompt`: it adds "the
+biggest lever is `WMC_other` … do not grow one method or one class. Add behaviour as small, cohesive
+units", which names the dispersal move outright. Treat these as an **upper bound** on disclosure.
+
+**1. The formula works, spectacularly, on its own metric.** Slope per checkpoint:
+
+| slope | Spring | OfficeFloor |
+|---|---|---|
+| `impact_composite` | 435.1 → **9.71** (45×) | 76.4 → **5.74** (13×) |
+| `impact_mutation` | 241.9 → **3.17** (76×) | 17.6 → **2.12** |
+| `impact_godclass` | 193.2 → **6.54** | 58.8 → **3.62** |
+
+Spring's final-phase mean `impact_mutation` fell 15,900 → 235 and `impact_godclass` 14,100 → 407;
+its median per-checkpoint `impact_composite` fell 4,367 → 173.
+
+**2. It erases the god-method and nearly erases the arm difference.** Spring's final `wmc_handler`
+went 135 → 22.5, final `entry_cc` 11 → 3.3, `erosion_handler` slope 0.00326 → 0, `node_cc_median`
+slope 3.028 → 1.101. Blast radius moved the same way: existing-fns-modified 178.5 → 101.3 per chain,
+zero-blast checkpoints **44/600 → 183/600**, new files 10.2 → 32.8 per chain. On the difference-of-
+slopes test, `wmc_handler` and `erosion_handler` stop discriminating entirely and `impact_composite`
+shrinks ~90× (+358.7 → +3.97 [0.78, 7.79], still just excluding 0). `node_path_cc` even **inverts**
+(−0.224 [−0.57, 0.14] → −0.901 [−1.43, −0.36]): the dispersed Spring create path is now *shorter*
+than OfficeFloor's. Under this prompt Spring behaves structurally much as OfficeFloor did ungated.
+
+**3. It relocated complexity; it did not remove it.** The cumulative base→tip audit, which no
+prompt-side scoping can hide from:
+
+| Spring, base→tip | control | formula |
+|---|---|---|
+| **CC sum over touched fns** | 282.3 ± 22.2 | **267.9 ± 41.5** |
+| ↳ in new files | 46.3 | **218.2** |
+| ↳ in pre-existing files | 236.0 | **49.7** |
+| distinct fns touched | 110.3 | 133.5 |
+| files parsed | 18.7 ± 5.4 | **41.4 ± 3.3** |
+
+Total complexity is flat inside its spread; the file count doubled. `WMC_other` is the formula's
+dominant lever and a greenfield file has `WMC_other = 1`. (OfficeFloor, which had nowhere much to
+move to, did fall genuinely: 341.9 → 269.9.)
+
+**4. Goodhart, visible in class shape and clone count.** Spring's created classes per chain went
+9.0 (range 1–20) → **31.5** (26–37), of which **static-util 2.3 → 20.6** (12–31) and spring-bean
+0.0 → 7.3 — the exact move the class-shape table was added to watch for, trading injection, test
+seams, proxying and transaction participation for a near-zero `WMC_other`. Duplication rose with it:
+Spring's final-phase clone lines 2,230 → 2,510 on a *smaller* codebase (2,700 → 2,550 LOC),
+verbosity 0.827 → 0.98. (OfficeFloor's verbosity rise, 0.856 → 0.937, is denominator-driven — its
+clone lines were flat.) **Caveat:** the smell half did not run in *either* run, so verbosity here is
+clones only; the PMD switch (2026-09-06) postdates both captures and will not backfill them.
+
+**5. It cost correctness — the finding to lead with.** `func_p` is **1.000** in all four groups:
+every checkpoint's own new rule always landed. What broke is the *revised prior rules*, and
+mutative checkpoints ship updated copies of the tests they change, so these are genuine failures,
+not measurement artifacts.
+
+| | Spring ctl | Spring formula | OF ctl | OF formula |
+|---|---|---|---|---|
+| mean `strict_pass` / EvoScore γ=1 | 0.787 | **0.440** | 0.732 | **0.577** |
+| standing prior-test failures, Mid | 9 / 4990 | **191** | 26 | **151** |
+| standing prior-test failures, Late | 30 / 6520 | **152** | 51 | **108** |
+| standing prior-test failures, Final | 198 / 7830 | **301** | 168 | 171 |
+| true regressions | 37 | **56** | 31 | **50** |
+| median chain onset of first standing failure | cp47.5 | **cp24** | cp36 | **cp24** |
+
+Systemic, not one bad chain — every chain's onset moves earlier. Read the true-regression counts
+with care: chain 0 alone carried 22 of Spring's 56 and 29 of OfficeFloor's 50, so the *standing*
+series above, not the true-regression total, is the robust correctness signal here. Cost was
+neutral-to-cheaper ($78.40 → $76.82/chain Spring, $86.51 → $77.96 OF) and the impact metric's
+construct validity held (Spearman ρ ≈ 0.53–0.60 vs agent $ / comprehension / model time).
+
+**What it means for the thesis.** This is an argument *for* the hypothesis, not against it. The
+formula can only flatten Spring's concentration statistics by making Spring stop being Spring —
+one handler becomes ~31 dispersed classes, two-thirds of them static utilities — and it pays for
+that with more duplication and a `strict_pass` fall of 0.787 → 0.440. OfficeFloor gets that distribution
+architecturally, for free, and under the identical prompt still holds `strict_pass` 0.577 vs
+Spring's 0.440. It is also the cleanest available demonstration that **a metric handed to the
+optimiser stops measuring the thing it was built to measure**, which is precisely why design B
+keeps the formula out of every prompt the agent sees.
+
+**Still missing.** The clean, ungated `--strategy metric-in-prompt` condition (same prompt lever,
+without the `impact_gated` label or the 3 stray refactors) and `cohesion-prompt` (condition 2, the
+plain-language structure request) have not been run. Until condition 2 exists there is no way to
+separate "disclosing the formula is harmful" from "any structure-directed prompt costs correctness
+on this checkpoint plan" — that is the next run to schedule, and it is a load-bearing control for
+the claim in point 5.
 
 ## The impact-gated pipeline (`impact_gated` strategy)
 
@@ -228,7 +353,11 @@ impact cost function as its objective (in both the implement and refactor prompt
 run gamed it exactly as Goodhart predicts: it dispersed logic into greenfield classes
 (`WMC_other` collapses to 1) and DUPLICATED code (reuse means editing a penalised large class),
 holding the score down while the code stopped being idiomatic Spring. The cost function is blind
-to duplication, so "minimise it" and "write clean code" came apart. Design B removes the formula
+to duplication, so "minimise it" and "write clean code" came apart. That was a single-run
+observation when design B was written; **`blind-202609010045` has since measured it over 10 chains
+per arm** — 45× lower impact slope, unchanged total complexity, ~21 new static-utility classes per
+Spring chain, and `strict_pass` 0.787 → 0.440 (see "Condition 4 measured" above). The design-B
+decision is therefore evidence-backed, not precautionary. Design B removes the formula
 from every prompt the agent sees and, instead, holds each refactor's OWN output to a
 deterministic code-quality gate:
 - the **implement** turn uses a NEUTRAL prompt (`impact_gate.implement_strategy`, default
@@ -725,6 +854,25 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   in a capture is `impact_gate.attempts[].impact == 0` with a non-empty `.agent.diff` touching
   a `@Entity` class. Never take "0" from a parser as "no complexity" without proving the parser
   can see the file.
+- **A condition is what the agent was PROMPTED with, not what the strategy key is named
+  (2026-09-06).** `blind-202609010045` is recorded under `strategy: impact_gated`, but its
+  implement prompt was the design-A cost formula and its gate fired on **3 of 1200** checkpoints.
+  Read from the label alone it would have credited ImpactGate with a 45× impact reduction the tool
+  had no part in, and filed the strongest available Goodhart evidence under the wrong condition.
+  `analyze` groups by the strategy KEY, which is a label, not a description of the turn. Before
+  comparing two runs, diff the `prompt_strategies` entry actually used from each run's
+  `evolve-results/config/config.yaml` snapshot, and check `ig_refactors` is non-zero before
+  attributing anything to the gate. Every chain snapshots its own config for exactly this reason.
+- **`regressions` and `regr_p`/`regr_t` answer different questions; the second one is the
+  sensitive one (2026-09-06).** `count_regressions` counts pass→fail **transitions** at that one
+  checkpoint, while `regr_p`/`regr_t` is the **standing** count of prior-checkpoint tests failing
+  *right now* — so a rule broken at cp24 and never repaired keeps counting at cp25..60. Comparing
+  `blind-202609010045` against its control, the transition totals looked identical (837 vs 833
+  regressions, 787 vs 796 intended) while the standing failures differed by **up to 20×**
+  (Spring Mid phase: 191 vs 9 of 4990). A run can therefore look regression-clean on the totals
+  while failing its gate on most checkpoints (`strict_pass` 0.440 vs the control's 0.787). Use the standing series (or `strict_pass`) when
+  asking "did this condition hold the suite", and the transition counts only for "what did this
+  checkpoint break".
 - **A crashed gate used to read as a mass regression.** On `full-202608102319` a
   Surefire fork died (exit 134, `The forked VM terminated without properly saying
   goodbye`) at 3 OfficeFloor checkpoints and 1 Spring one. Each recorded

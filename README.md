@@ -420,7 +420,11 @@ is an untouched control). Default `enforcement: advisory`:
 
 1. **Implement.** The agent implements the checkpoint (same isolation, same blind view) with the
    **NEUTRAL** prompt (spec only, no formula — design B). The AI is never told the metric it is
-   scored on; telling it (the `metric-in-prompt` condition) got Goodhart-gamed.
+   scored on; telling it (the `metric-in-prompt` condition) got Goodhart-gamed — measured over
+   10 chains per arm in `blind-202609010045`: 45× lower impact slope, *unchanged* total
+   complexity (it relocated into new files), ~21 new static-utility classes per Spring chain,
+   and `strict_pass` 0.787 → 0.440. See **AGENTS.md → "Condition 4 measured"** for the full
+   result and the caveats.
 2. **Score.** The production diff is staged and scored by the standalone `impact-gate`
    CLI: `impact-gate score --mode staged --curve`, graded against the reference distribution.
 3. **Below `block_percentile`?** **Accept**; continue to the normal correctness gate, **and record
