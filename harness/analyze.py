@@ -229,6 +229,20 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
                   f"live {live_val!r} (binary location, not measurement config)")
             run_cfg["tools"][key] = live_val
 
+    # The PMD RULESET decides verdicts, so like astgrep_rules the snapshot wins when it
+    # has one; a run recorded before PMD existed (its snapshot names only ast-grep) has
+    # none, so fill from live to honour the "a metric added after a run backfills onto
+    # every past run" promise. Without this the live pmd BINARY is injected above but
+    # _pmd_lines receives an empty ruleset, returns None, and silently falls back to the
+    # run's ast-grep rules (SlopCodeBench's Python rules match nothing on Java) — so the
+    # smell half stays 0 exactly as if PMD were never configured.
+    if not run_cfg["tools"].get("pmd_rules"):
+        live_pmd_rules = live_cfg.get("tools", {}).get("pmd_rules")
+        if live_pmd_rules:
+            run_cfg["tools"]["pmd_rules"] = live_pmd_rules
+            print(f"  tools.pmd_rules: absent from snapshot -> live {live_pmd_rules!r} "
+                  f"(PMD added after this run)")
+
     print(f"  using per-run config snapshot from {branch}")
     return run_cfg
 
@@ -1117,17 +1131,35 @@ def main() -> int:
                      f"{cell(_final_mean(grp, 'java_loc'))} |")
     lines.append("")
     # metrics.verbosity() degrades gracefully: if ONE of the two stacks produces no
-    # output it silently uses the other, so a missing ast-grep binary turns verbosity
-    # into a clones-only measure with no error anywhere. That is the same silent-zero
-    # failure the lizard pin exists to prevent, so say it out loud here.
+    # output it silently uses the other, so a missing/mismatched smell detector turns
+    # verbosity into a clones-only measure with no error anywhere. That is the same
+    # silent-zero failure the lizard pin exists to prevent, so say it out loud here.
     if all(math.isnan(_final_mean(grp, "verbosity_pattern_lines"))
            for grp in groups.values()):
-        lines.append("> **The smell half did not run.** `verbosity_pattern_lines` is empty for "
-                     "every checkpoint, so `verbosity` above is CLONE DETECTION ONLY and the "
-                     "`astgrep-rules/` patterns contributed nothing. `metrics.verbosity()` falls "
-                     "back to whichever stack produced output, so this fails silently — check "
-                     "that `tools.astgrep` in the run's config snapshot names a binary that "
-                     "exists on this machine.\n")
+        # verbosity_pattern_lines is RECOMPUTED live here (recompute_rows ->
+        # metrics.compute_all with the resolved tools), not read from the capture, so an
+        # empty column is a CURRENT-environment failure of the configured detector and is
+        # fixable by re-analysis once the detector works — no re-run needed. Name the
+        # detector the resolved config actually uses (PMD when tools.pmd is set, else the
+        # legacy ast-grep), not a hard-coded guess.
+        _tools = eff_cfg.get("tools", {})
+        if _tools.get("pmd"):
+            _detector = (f"PMD (`{_tools['pmd']}`, ruleset "
+                         f"`{_tools.get('pmd_rules', '')}`)")
+        else:
+            _detector = (f"ast-grep (`{_tools.get('astgrep', 'unset')}`, rules "
+                         f"`{_tools.get('astgrep_rules', '')}`)")
+        lines.append(
+            "> **The smell half did not run.** `verbosity_pattern_lines` is empty for every "
+            "checkpoint, so `verbosity` above is CLONE DETECTION ONLY. This column is "
+            "recomputed at analyze time from the resolved tools, so it means the configured "
+            f"smell detector — {_detector} — returned no output and `verbosity()` silently "
+            "fell back to clones. Check that the binary runs and its ruleset matches the arm's "
+            "language (the legacy ast-grep set was `language: python` and never matches Java), "
+            "then RE-ANALYZE — this column backfills without a re-run. NOTE: the same stack "
+            "backs the refactor quality gate, but `ig_quality_smell_lines` is read from the "
+            "run's OWN capture, not recomputed; if that column is also empty the gate itself "
+            "ran clone-only during the run, and only a re-run fixes that.\n")
 
     # Invalid gates are MISSING correctness, not failed correctness (a Surefire fork
     # crash, not the agent's code). They are excluded from every correctness aggregate

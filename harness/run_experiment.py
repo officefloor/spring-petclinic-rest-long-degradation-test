@@ -1174,6 +1174,30 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         raise ChainStopped(f"{arm}/{strategy}/chain{chain} stopped at cp{captures[-1]['checkpoint']:02d}")
 
 
+# The long-lived credential from `claude setup-token`. A full run drives the headless
+# `claude` CLI across many checkpoints over many hours, well past any interactive login's
+# lifetime, so it MUST run on this non-expiring token rather than a browser session that
+# will lapse mid-run. We require it up front and fail closed: better to stop in the first
+# second than after hours of work when the session silently expires.
+OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def require_long_lived_token() -> None:
+    """Abort immediately unless the long-lived Claude token is in the environment.
+
+    Raises SystemExit (exit 2) with instructions if it is missing or blank."""
+    if (os.environ.get(OAUTH_TOKEN_ENV) or "").strip():
+        return
+    print(
+        f"FATAL: {OAUTH_TOKEN_ENV} is not set.\n"
+        f"This run takes many hours and must use a long-lived token, not an interactive\n"
+        f"login that would expire mid-run. Create one with `claude setup-token` and export it:\n"
+        f"    export {OAUTH_TOKEN_ENV}=$(claude setup-token)\n"
+        f"then re-run. (Skipped only under --dry-run, which launches no agent.)",
+        file=sys.stderr, flush=True)
+    raise SystemExit(2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -1195,6 +1219,11 @@ def main() -> int:
                     "(default: current time as YYYYMMDDHHMM). The --test-mode is "
                     "automatically prepended, so do NOT include it yourself.")
     args = ap.parse_args()
+
+    # Fail fast if the long-lived token is missing, before any worktree/agent work.
+    # --dry-run launches no agent, so it does not need the token.
+    if not args.dry_run:
+        require_long_lived_token()
 
     # Fold the test mode into the run_id so blind and full runs can never collide on branch
     # names or work dirs (the branch path is evolve/<run_id>/... and does not otherwise carry
