@@ -181,7 +181,9 @@ from the untouched `base_ref` (note the order: run_id first, so the README's old
 commit** (`commit_run_manifest`): the run's static `provenance.json` (run/model
 identity, harness SHA, `tool_versions`, `agent_env`, `base_commit`, but **no**
 `checkpoint_shas`) and the `config/` snapshot (`config.yaml`, `checkpoints.yaml`,
-`astgrep-rules/`). Written **up front, not at chain end**, so a partial run is
+`astgrep-rules/`, and the PMD ruleset as `pmd-rules/<basename>`). **Both** smell
+rulesets travel, whichever detector the run used, because they decide verdicts.
+Written **up front, not at chain end**, so a partial run is
 self-describing and the control (tool/agent env) is captured before it can drift over
 a multi-hour chain. Then for each checkpoint k, **two commits**:
 
@@ -777,6 +779,52 @@ OfficeFloor as a 1-node arm at CC 8 instead of a 19-node pipeline. The tell was 
 statistics that can only coincide when there is exactly one node. **When adding a
 metric with new config, check the backfill log for the fill lines and sanity-check one
 checkpoint by hand before trusting the trajectory.**
+
+### Smell-ruleset paths must be absolute by the time PMD is spawned
+
+`metrics`/`quality_gate` run PMD with **`cwd=<arm worktree>`**, so a config-relative
+`tools.pmd_rules` (`pmd-rules/java-wasteful.xml`) resolves against the *worktree* and
+PMD exits 1 with `Cannot resolve rule/ruleset reference` — another "did not run reads
+as found nothing" failure, since the gate then enforces on clones alone and Verbosity
+loses its pattern half. `_pmd_lines`' `os.path.isfile` guard does **not** catch it: that
+check resolves against the harness cwd, where the file really is. Three places keep it
+absolute, and all three are needed:
+
+* `run_experiment.main` / `analyze.main` anchor the **live** `tools.pmd_rules` to the
+  config dir (alongside `astgrep_rules` and the binaries).
+* `analyze._resolve_run_config` takes the ruleset from the run's own snapshot
+  (`evolve-results/config/pmd-rules/`, extracted to an absolute tmp path) and falls back
+  to the live anchored path — runs made **before** the ruleset travelled snapshot only
+  the relative *string*, which is exactly what broke on 2026-09-20.
+* `_pmd_lines` itself `abspath`s the ruleset as a last line of defence.
+
+### Why the smell detector is BACKFILLED, not pinned to the run
+
+`tools.pmd` is not only a location: `quality_gate.review` and `metrics._pattern_lines`
+both branch on its truthiness, so it selects PMD vs ast-grep. The binary-location loop
+fills it from live like any other location, which **deliberately re-derives a pre-PMD run
+under PMD**. That looks like it violates "an old run replays with the detector it used",
+and pinning the choice instead was tried and reverted. The archive is why:
+
+| snapshot detector | runs | pinned replay | backfilled replay |
+|---|---|---|---|
+| ast-grep, rules no longer parse | 5 | **smell half DID NOT RUN** | PMD |
+| ast-grep, rules parse | 1 | 5 lines, all unchanged upstream code | PMD |
+| PMD | 1 | PMD | PMD |
+
+Six of the seven recorded runs predate PMD, and five snapshot an
+`astgrep-rules/java-wasteful.yml` still containing `catch ($TYPE $E) { }` and
+`$T $V = $E; return $V;`. Those are multi-node patterns the **pinned** ast-grep rejects,
+and they were later deleted from the live rules (that file's header documents it). One
+unparseable rule aborts the whole directory (**exit 8**), so pinning does not reproduce
+those runs' numbers — it yields no smell half at all, the exact silent-zero this function
+exists to prevent. PMD fires properly on the same trees (23 lines spring / 14 officefloor).
+
+So backfilling is both the documented "a metric added after a run applies to every past
+run" promise and the only option that measures anything. **Re-check this if the ast-grep
+rules are ever repaired retroactively.** The converse needs no special case: a snapshot
+that chose PMD keeps it even if the live config later unsets `pmd`, because a falsy live
+value never overrides.
 
 ### Rare-event guard (`analyze.MIN_EVENTS`)
 

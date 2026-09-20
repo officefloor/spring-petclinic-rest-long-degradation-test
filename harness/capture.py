@@ -292,11 +292,16 @@ def write_json(path: str, obj) -> None:
 
 
 def snapshot_config(config_path: str | None, checkpoints_path: str | None,
-                    astgrep_rules_dir: str | None, dest_dir: str) -> None:
+                    astgrep_rules_dir: str | None, dest_dir: str,
+                    pmd_rules_file: str | None = None) -> None:
     """Copy the analysis-shaping config INTO the results commit, so a run is
     self-contained: the metrics a run's globs / thresholds / entry-handler regex /
-    ast-grep rules define are pinned to the run, not read from whatever config
-    happens to be live when analyze runs later. Writes `<dest_dir>/config/`."""
+    smell rules define are pinned to the run, not read from whatever config
+    happens to be live when analyze runs later. Writes `<dest_dir>/config/`.
+
+    BOTH smell rulesets travel, whichever detector the run used: the ast-grep rules
+    DIRECTORY and the PMD ruleset FILE (as `config/pmd-rules/<basename>`). They decide
+    verdicts, so re-deriving a run with today's edited rules would silently rescore it."""
     dest = os.path.join(dest_dir, "config")
     os.makedirs(dest, exist_ok=True)
     for src, name in ((config_path, "config.yaml"), (checkpoints_path, "checkpoints.yaml")):
@@ -306,6 +311,10 @@ def snapshot_config(config_path: str | None, checkpoints_path: str | None,
         rules_dest = os.path.join(dest, "astgrep-rules")
         shutil.rmtree(rules_dest, ignore_errors=True)
         shutil.copytree(astgrep_rules_dir, rules_dest)
+    if pmd_rules_file and os.path.isfile(pmd_rules_file):
+        pmd_dest = os.path.join(dest, "pmd-rules")
+        os.makedirs(pmd_dest, exist_ok=True)
+        shutil.copy2(pmd_rules_file, os.path.join(pmd_dest, os.path.basename(pmd_rules_file)))
 
 
 def assemble_into(cap_dir: str, results_dir: str) -> None:

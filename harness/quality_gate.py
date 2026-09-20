@@ -250,6 +250,12 @@ def _pmd_lines(root: str, src_dirs: list[str], pmd_bin: str,
     """
     if not ruleset or not os.path.isfile(ruleset):
         return None
+    # ABSOLUTE, always. PMD is invoked with cwd=<arm worktree>, so a config-relative
+    # ruleset ("pmd-rules/java-wasteful.xml") resolves against the WORKTREE and PMD
+    # exits 1 with "Cannot resolve rule/ruleset reference" - smell detection silently
+    # stops running. The isfile() guard above passes because it resolves against the
+    # harness cwd, which is exactly what makes this fail only once PMD is spawned.
+    ruleset = os.path.abspath(ruleset)
     cmd = [pmd_bin, "check", "-f", "json", "-R", ruleset,
            "--no-fail-on-violation", "--no-progress"]
     for d in src_dirs:

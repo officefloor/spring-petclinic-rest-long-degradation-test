@@ -212,6 +212,37 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     else:
         run_cfg["tools"]["astgrep_rules"] = live_cfg.get("tools", {}).get("astgrep_rules", "")
 
+    # Same for the PMD ruleset, except it is a FILE (config/pmd-rules/<basename>) rather
+    # than a directory. Three cases, in priority order:
+    #   1. the run snapshotted a ruleset -> use it (it decided that run's verdicts);
+    #   2. the snapshot names one but did not carry it (every run before the ruleset
+    #      travelled) -> the recorded value is a CONFIG-RELATIVE string, and PMD runs
+    #      with cwd=<arm worktree>, so using it verbatim makes PMD exit 1 with "Cannot
+    #      resolve rule/ruleset reference" and smell detection not run at all;
+    #   3. the snapshot predates PMD entirely -> fill from live, so a detector added
+    #      after a run still backfills onto it (see the `pmd` note below).
+    # 2 and 3 both resolve to the live, config-anchored path, so one fallback covers both.
+    prel = "evolve-results/config/pmd-rules"
+    plisting = git_out(repo, ["ls-tree", branch, prel]).strip()
+    pmd_snap = ""
+    if plisting:
+        parch = subprocess.run(["git", "-C", repo, "archive", branch, prel], capture_output=True)
+        if parch.returncode == 0:
+            subprocess.run(["tar", "-x", "-C", tmp_dir], input=parch.stdout)
+            pdir = os.path.join(tmp_dir, prel)
+            files = sorted(f for f in os.listdir(pdir)) if os.path.isdir(pdir) else []
+            if files:
+                pmd_snap = os.path.join(pdir, files[0])
+    if pmd_snap:
+        run_cfg["tools"]["pmd_rules"] = pmd_snap
+    else:
+        live_pmd_rules = live_cfg.get("tools", {}).get("pmd_rules", "")
+        if live_pmd_rules and live_pmd_rules != run_cfg["tools"].get("pmd_rules"):
+            print(f"  tools.pmd_rules: snapshot "
+                  f"{run_cfg['tools'].get('pmd_rules')!r} -> live {live_pmd_rules!r} "
+                  f"(ruleset not carried by this run)")
+        run_cfg["tools"]["pmd_rules"] = live_pmd_rules
+
     # Tool BINARIES are filesystem locations, like the arm repos above — where a
     # machine keeps jscpd/ast-grep says nothing about how the run was measured, and a
     # snapshot naming a binary this machine does not have makes the metric vanish
@@ -222,26 +253,28 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     # is empty for all 2400 rows. Take the LOCATIONS from live config; everything
     # that decides a verdict (astgrep_rules above, the jscpd_min_* thresholds) still
     # comes from the snapshot.
+    #
+    # `pmd` is filled from live the same way, and that DELIBERATELY changes the detector
+    # for a pre-PMD run, because `tools.pmd` being truthy is what selects PMD over
+    # ast-grep (quality_gate.review and metrics._pattern_lines branch on it together, so
+    # gate and metric never disagree). Pinning each run to the detector it recorded was
+    # tried and is WRONG here, for a reason only the archive shows: 6 of the 7 recorded
+    # runs predate PMD, and 5 of those snapshot an `astgrep-rules/java-wasteful.yml` that
+    # the PINNED ast-grep can no longer parse — it still contains `catch ($TYPE $E) { }`
+    # and `$T $V = $E; return $V;`, multi-node patterns that were later deleted from the
+    # live rules (see the header of that file). One unparseable rule aborts the whole
+    # directory (exit 8), so pinning does not reproduce those runs' numbers; it yields NO
+    # smell half at all, which is the silent-zero failure this function exists to avoid.
+    # The 6th parses but matches 5 lines, all in unchanged upstream code. Backfilling
+    # gives every run a detector that actually fires on Java (23 lines on spring, 14 on
+    # officefloor) and makes the runs mutually comparable. Re-check this if the ast-grep
+    # rules are ever repaired retroactively.
     for key in ("jscpd", "astgrep", "pmd"):
         live_val = live_cfg.get("tools", {}).get(key)
         if live_val and run_cfg["tools"].get(key) != live_val:
             print(f"  tools.{key}: snapshot {run_cfg['tools'].get(key)!r} -> "
                   f"live {live_val!r} (binary location, not measurement config)")
             run_cfg["tools"][key] = live_val
-
-    # The PMD RULESET decides verdicts, so like astgrep_rules the snapshot wins when it
-    # has one; a run recorded before PMD existed (its snapshot names only ast-grep) has
-    # none, so fill from live to honour the "a metric added after a run backfills onto
-    # every past run" promise. Without this the live pmd BINARY is injected above but
-    # _pmd_lines receives an empty ruleset, returns None, and silently falls back to the
-    # run's ast-grep rules (SlopCodeBench's Python rules match nothing on Java) — so the
-    # smell half stays 0 exactly as if PMD were never configured.
-    if not run_cfg["tools"].get("pmd_rules"):
-        live_pmd_rules = live_cfg.get("tools", {}).get("pmd_rules")
-        if live_pmd_rules:
-            run_cfg["tools"]["pmd_rules"] = live_pmd_rules
-            print(f"  tools.pmd_rules: absent from snapshot -> live {live_pmd_rules!r} "
-                  f"(PMD added after this run)")
 
     print(f"  using per-run config snapshot from {branch}")
     return run_cfg

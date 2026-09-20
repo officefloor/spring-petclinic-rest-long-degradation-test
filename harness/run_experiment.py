@@ -511,7 +511,8 @@ def commit_run_manifest(wt: str, branch: str, run_id: str, arm: str, strategy: s
     capture.write_json(os.path.join(out_dir, "provenance.json"), provenance)
     if snapshot:
         capture.snapshot_config(snapshot.get("config"), snapshot.get("checkpoints"),
-                                snapshot.get("astgrep_rules"), out_dir)
+                                snapshot.get("astgrep_rules"), out_dir,
+                                snapshot.get("pmd_rules"))
     subprocess.run(["git", "-C", wt, "add", "evolve-results"], capture_output=True, text=True)
     msg = f"manifest: {arm}/{strategy}/chain{chain} - run {run_id}"
     c = subprocess.run(["git", "-C", wt, "commit", "-m", msg, "--", "evolve-results"],
@@ -1295,6 +1296,7 @@ def main() -> int:
         "config": os.path.abspath(args.config),
         "checkpoints": cfg["checkpoints_file"],
         "astgrep_rules": cfg.get("tools", {}).get("astgrep_rules"),
+        "pmd_rules": cfg.get("tools", {}).get("pmd_rules"),
     }
 
     with open(cfg["checkpoints_file"]) as fh:
