@@ -214,23 +214,34 @@ def _pattern_lines_astgrep(root: str, src_dirs: list[str], sg_bin: str,
     return None if smells is None else set(smells)
 
 
-def _pattern_lines(root: str, src_dirs: list[str], tools: dict) -> Optional[set[tuple[str, int]]]:
+def _pattern_lines(root: str, src_dirs: list[str], tools: dict,
+                   pmd_report: Optional[dict] = None,
+                   pmd_keep: Optional[set[str]] = None
+                   ) -> Optional[set[tuple[str, int]]]:
     """Smell lines from whichever detector this run configures: PMD (Java rules that can
     fire on these arms) or the legacy ast-grep. Same selection rule as quality_gate.review,
-    so the metric and the gate always see the same findings."""
+    so the metric and the gate always see the same findings.
+
+    `pmd_report` is an already-run merged PMD report (see `compute_all`); `pmd_keep`
+    restricts it to the wasteful ruleset's own rules. Without them PMD is run here, as
+    before -- that is the path `quality_gate.review` and every other caller still take."""
     if tools.get("pmd"):
-        from .quality_gate import _pmd_lines
+        from .quality_gate import _pmd_lines, pmd_lines_from_report
+        if pmd_report is not None:
+            return set(pmd_lines_from_report(pmd_report, root, pmd_keep))
         found = _pmd_lines(root, src_dirs, tools["pmd"], tools.get("pmd_rules", ""))
         return None if found is None else set(found)
     return _pattern_lines_astgrep(root, src_dirs, tools.get("astgrep", "sg"),
                                   tools.get("astgrep_rules", ""))
 
 
-def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict) -> tuple[float, dict]:
+def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict,
+              pmd_report: Optional[dict] = None,
+              pmd_keep: Optional[set[str]] = None) -> tuple[float, dict]:
     if loc <= 0:
         return float("nan"), {"reason": "no LOC"}
     clones = _clone_lines_jscpd(root, src_dirs, tools.get("jscpd", "jscpd"))
-    patterns = _pattern_lines(root, src_dirs, tools)
+    patterns = _pattern_lines(root, src_dirs, tools, pmd_report, pmd_keep)
     if clones is None and patterns is None:
         return float("nan"), {"reason": "neither jscpd nor ast-grep produced output"}
     union: set[tuple[str, int]] = set()
@@ -871,8 +882,40 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
 
     ed = erosion_detail(fns)            # whole app (SlopCodeBench-comparable)
     eds = erosion_detail(touched_fns)   # scoped to the evolving footprint
-    vscore, vdetail = verbosity(worktree, arm_cfg.get("verbosity_dirs", ["src/main/java"]),
-                                loc, tools)
+
+    # ONE PMD process for BOTH rulesets. Verbosity and the placement metrics each need
+    # PMD over the same tree, and PMD's JVM startup dominates the scan (~1.1s of a ~2.2s
+    # wasteful pass), so running it twice cost ~1.1s of every checkpoint.
+    #
+    # The rulesets stay two FILES and two violation SETS -- java-metrics.xml documents at
+    # length why mixing their RULES would couple Verbosity to the complexity signal it
+    # must stay independent of. Merging only the INVOCATION preserves that: rule results
+    # do not depend on which other rules ran, and the report is split back by rule name,
+    # which is exact only while the two rule sets are disjoint. That is asserted here
+    # rather than assumed -- on any overlap, or any missing source dir (where the two
+    # call sites differ in how they treat a partial scan), this falls back to the
+    # original separate runs.
+    src_dirs = arm_cfg.get("verbosity_dirs", ["src/main/java"])
+    pmd_report = pmd_keep_waste = pmd_keep_metrics = None
+    if tools.get("pmd") and tools.get("pmd_rules") and tools.get("pmd_metrics_rules"):
+        from .quality_gate import ruleset_rule_names, run_pmd
+        waste, mtr = (ruleset_rule_names(tools["pmd_rules"]),
+                      ruleset_rule_names(tools["pmd_metrics_rules"]))
+        overlap = (waste & mtr) if (waste and mtr) else set()
+        all_present = all(os.path.isdir(os.path.join(worktree, d)) for d in src_dirs)
+        if overlap:
+            print(f"    ! pmd rulesets overlap on {sorted(overlap)}; running them "
+                  f"separately (a merged report could not be split by rule name)",
+                  flush=True)
+        elif waste and mtr and all_present:
+            pmd_report = run_pmd(worktree, src_dirs, tools["pmd"],
+                                 [tools["pmd_rules"], tools["pmd_metrics_rules"]],
+                                 "smell detection + cohesion/cognitive metrics")
+            if pmd_report is not None:
+                pmd_keep_waste, pmd_keep_metrics = waste, mtr
+
+    vscore, vdetail = verbosity(worktree, src_dirs,
+                                loc, tools, pmd_report, pmd_keep_waste)
     hs = hotspot_stats(touched_fns)                          # worst fn in the footprint
     fp = function_package_stats(worktree, arm_cfg.get("function_package_glob"))
     br = blast_radius(worktree, prev_ref, cur_ref, exclude=exclude)
@@ -895,10 +938,14 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     roots = _node_roots(worktree, index[0], arm_cfg)
     handler_cls = hw.get("wmc_handler_class") or eh.get("entry_fn", "")
     plc = placement.placement_all(worktree, fns, adj, roots, base_commit, prev_ref, cur_ref)
-    src_dirs = arm_cfg.get("verbosity_dirs", ["src/main/java"])
     if tools.get("pmd") and tools.get("pmd_metrics_rules"):
-        pm = placement.pmd_metrics(worktree, src_dirs, tools["pmd"],
-                                   tools["pmd_metrics_rules"], handler_class=handler_cls)
+        if pmd_report is not None:
+            pm = placement.pmd_metrics_from_report(pmd_report, handler_cls,
+                                                   pmd_keep_metrics)
+        else:
+            pm = placement.pmd_metrics(worktree, src_dirs, tools["pmd"],
+                                       tools["pmd_metrics_rules"],
+                                       handler_class=handler_cls)
         if pm:
             plc.update(pm)
     if tools.get("ck"):

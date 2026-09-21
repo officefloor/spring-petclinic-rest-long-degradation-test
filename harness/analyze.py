@@ -22,6 +22,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import time
 from collections import Counter, defaultdict
 from typing import Optional
 
@@ -296,6 +297,17 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
     return run_cfg
 
 
+def _heartbeat_val(row: dict, field: str) -> str:
+    """One metric as the progress heartbeat shows it.
+
+    `-` means the field is BLANK (the metric did not run), never a real 0 -- the
+    "did not run reads as found nothing" confusion this harness has hit before.
+    Display only; nothing is derived from this.
+    """
+    v = row.get(field, "")
+    return "-" if v is None or v == "" else str(v)
+
+
 def recompute_rows(cfg: dict, run_id: str, work_root: str,
                    exclude: str | None = None,
                    chains: set[int] | None = None) -> list[dict]:
@@ -347,7 +359,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         n_invalid = 0             # gates that aborted -> correctness is missing, not failed
         pending_mutated: list[int] = []   # `mutates` of skipped checkpoints, owed to the next scored one
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True)
-        for k in ks:
+        t_chain = time.time()
+        for i_cp, k in enumerate(ks, 1):
             real = shas.get(k) or ""     # AGENT commit sha; "" => no-op checkpoint
             tree = real or prev_tree     # a no-op reuses the previous checkpoint's tree
             # The agent commit's parent IS the previous reset commit, so diffing the
@@ -386,6 +399,17 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                                capture_output=True, text=True)
                 shutil.rmtree(wt, ignore_errors=True)
             prev_tree = tree
+
+            # Heartbeat, one line per CHECKPOINT (~5s). Deliberately not per-metric:
+            # ~93% of a checkpoint is three external tool launches (PMD x2, CK), so a
+            # per-metric line would be ~20x the volume while idling on exactly the
+            # three steps that take the time.
+            el = time.time() - t_chain
+            eta = (el / i_cp) * (n - i_cp)
+            print(f"      cp{k:02d} {i_cp:>3}/{n}  {el / i_cp:4.1f}s/cp"
+                  f"  eta {eta / 60:4.1f}m"
+                  f"  erosion={_heartbeat_val(row, 'erosion')}"
+                  f"  loc={_heartbeat_val(row, 'java_loc')}", flush=True)
 
             # DERIVE: correctness from the RAW captured test-result map, via the
             # same outcome->row mapping the runner uses. build_ok comes from the

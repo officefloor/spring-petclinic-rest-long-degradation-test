@@ -707,36 +707,33 @@ def pmd_metrics(worktree: str, src_dirs: list[str], pmd_bin: str, ruleset: str,
         binary published detector firing on one arm and not the other is the one
         structural claim in this suite that requires no metric of our own.
 
-    Returns None if PMD did not run (see `ck_metrics` on why never zeros). PMD exits
-    4 when it finds violations, hence --no-fail-on-violation; and the ruleset path is
-    made absolute because PMD is spawned with cwd=<worktree>, where a config-relative
-    path resolves against the wrong tree and silently disables the whole pass.
+    Returns None if PMD did not run (see `ck_metrics` on why never zeros). The spawn
+    itself -- --no-fail-on-violation, the absolute ruleset path, the returncode and
+    parse guards -- lives in `quality_gate.run_pmd`, which `metrics.compute_all` also
+    calls ONCE for this ruleset and the wasteful one together. This entry point stays
+    for callers that want the metrics ruleset on its own.
     """
-    import json as _json
+    from .quality_gate import run_pmd
     if not pmd_bin or not ruleset or not os.path.isfile(ruleset):
         return None
-    ruleset = os.path.abspath(ruleset)
-    cmd = [pmd_bin, "check", "-f", "json", "-R", ruleset,
-           "--no-fail-on-violation", "--no-progress", "--no-cache"]
     present = [d for d in src_dirs if os.path.isdir(os.path.join(worktree, d))]
     if not present:
         return None
-    for d in present:
-        cmd += ["-d", d]
-    try:
-        proc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True,
-                              timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired):
+    report = run_pmd(worktree, present, pmd_bin, [ruleset],
+                     "cohesion/cognitive metrics", timeout)
+    if report is None:
         return None
-    if proc.returncode != 0:
-        first = ((proc.stderr or "").strip().splitlines() or [""])[0]
-        print(f"    ! pmd(metrics) exited {proc.returncode}; cohesion/cognitive metrics "
-              f"DID NOT RUN ({first[:160]})", flush=True)
-        return None
-    try:
-        report = _json.loads(proc.stdout or "{}")
-    except ValueError:
-        return None
+    return pmd_metrics_from_report(report, handler_class)
+
+
+def pmd_metrics_from_report(report: dict, handler_class: Optional[str] = None,
+                            keep: Optional[set[str]] = None) -> Optional[dict]:
+    """The metrics block out of an already-parsed PMD report.
+
+    `keep` restricts to this ruleset's rule names when the report came from a merged
+    run (see `metrics.compute_all`). Split out from `pmd_metrics` so a checkpoint can
+    pay PMD's JVM startup once instead of twice.
+    """
     vals: dict[str, list[float]] = {k: [] for k in _PMD_VALUE_RX}
     verdicts: Counter = Counter()
     god_classes: list[str] = []
@@ -745,6 +742,8 @@ def pmd_metrics(worktree: str, src_dirs: list[str], pmd_bin: str, ruleset: str,
         stem = os.path.basename(path).removesuffix(".java")
         for v in f.get("violations", []):
             rule = v.get("rule") or ""
+            if keep is not None and rule not in keep:
+                continue
             msg = v.get("description") or ""
             if rule in ("GodClass", "DataClass", "LawOfDemeter"):
                 verdicts[rule] += 1

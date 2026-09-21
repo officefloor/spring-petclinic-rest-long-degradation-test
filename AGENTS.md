@@ -252,6 +252,14 @@ important negative result in the suite** and must be reported as such.
   The wasteful ruleset feeds Verbosity and the quality gate and deliberately excludes
   every complexity rule; merging them would couple two metrics that must stay
   independent. Never pass the metrics ruleset to the quality gate.
+  The two RULESETS stay separate; the PMD **invocation** does not. `compute_all` runs
+  `quality_gate.run_pmd` ONCE with both rulesets and splits the report back by rule
+  name (`ruleset_rule_names`), which cuts ~0.9s off every checkpoint. That split is
+  exact only while the two rule sets are **disjoint** and every rule is named
+  individually — both are checked at the call site, and either failing falls back to
+  the original two runs. A whole-category `ref=` (`category/java/design.xml` with no
+  rule after it) makes the names unenumerable and trips the same fallback. If you add
+  a rule to either file, the disjointness is what keeps Verbosity independent.
 * **`container_total` is a VALIDITY column, not a quality measure.** It automates the
   framework-dispatch count this guide already required before quoting any call-graph
   statistic. If it moves off baseline, the call-graph numbers for that chain are
@@ -306,7 +314,12 @@ others, say so — that outcome is the interesting one.
 All of it is pure-derive: `analyze --recompute` materialises every checkpoint tree
 already, so no run needs re-executing and no agent tokens are spent. `placement_all`
 is arithmetic over data already in memory plus two git diffs (~free); PMD and CK each
-spawn a JVM per checkpoint, which dominates. Unset `tools.ck` to re-analyse without
+spawn a JVM per checkpoint, which dominates: on `blind-202608100006` chain0 a
+checkpoint is ~4.8s, of which the two JVMs are ~3.6s and every pure-Python metric put
+together is ~0.2s. PMD is spawned **once** for both rulesets (see the gotcha above);
+spawning it twice cost ~0.9s per checkpoint — 12 checkpoints across both arms measured
+5.71s/cp before the merge and 4.81s/cp after, with all 2196 CSV field values identical.
+That is ~20 min off a full four-run re-analysis. Unset `tools.ck` to re-analyse without
 the C&K suite — those columns then go BLANK, not zero, and `series_by_chain` drops
 them from fits.
 
@@ -321,7 +334,7 @@ them from fits.
 | `placement.py` | **placement** metrics: where the (conserved) complexity sits and how far change spreads. Concentration indices (Gini/HHI/top-k/entropy) over CC per function/file/package, Halstead + Maintainability Index, indirection depth, MacCormack propagation cost, Hassan change entropy, container-dispatch accounting, and the PMD/CK readers. Called from `compute_all`; **published measures only** — see that module's header for why the bespoke `impact_*` score may not carry this claim. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
 | `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the symptom-only refactor prompt from the flagged-class LOCATIONS + spec (`refactor_prompt`; `_format_drivers` strips cost figures — design B), and shapes the capture entry per attempt (`attempt_summary`, incl. `quality`/`quality_turns`). No effect on the other strategies. |
-| `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + **PMD** smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Smell detector is PMD when `tools.pmd` is set (`_pmd_lines`, ruleset `pmd-rules/java-wasteful.xml`), else the legacy ast-grep path (`_smell_lines`) — selected from the run's own config snapshot, so an old run replays with the detector it used. `metrics._pattern_lines` routes Verbosity through the SAME choice, so gate and metric never disagree. If one detector cannot run the gate enforces on the other and records `clones_ran`/`smells_ran`; it never stops a run. Reused by `_impact_gated_implement`'s quality sub-loop. |
+| `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + **PMD** smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Smell detector is PMD when `tools.pmd` is set (`_pmd_lines`, ruleset `pmd-rules/java-wasteful.xml`), else the legacy ast-grep path (`_smell_lines`) — selected from the run's own config snapshot, so an old run replays with the detector it used. `metrics._pattern_lines` routes Verbosity through the SAME choice, so gate and metric never disagree. If one detector cannot run the gate enforces on the other and records `clones_ran`/`smells_ran`; it never stops a run. Reused by `_impact_gated_implement`'s quality sub-loop. Owns `run_pmd`, the single PMD spawn (returncode/parse guards, absolute ruleset paths, `--no-cache`) that `metrics.compute_all` calls once for both rulesets, plus `ruleset_rule_names`/`pmd_lines_from_report` that split a merged report. |
 | `quality_selftest.py` | fail-closed check that the PINNED `jscpd` (tools/package.json) and the configured smell tool — PMD at `tools/pmd-version.txt`, else `@ast-grep/cli` — are at the locked versions AND a golden clone+smell fixture fails the gate. `require()` runs beside `parser_selftest.require` in `run_experiment.main` when the gate is active; standalone `python -m harness.quality_selftest --config config.yaml`. |
 | `build_impact_baseline.py` | builds an ImpactGate baseline JSON from a completed run's OWN per-checkpoint `impact_composite` (reads `results/<run_id>/records.concat.csv`, else recomputes). Used to calibrate the gate to OfficeFloor's observed cohesion so Spring is graded against it. Standalone `python -m harness.build_impact_baseline`. |
 | `cumulative_impact.py` | audit answering "what did the WHOLE run add, everywhere": one diff from `base_ref` to the chain TIP, every changed file (not just `source_globs`), changed lines mapped to their function at the tip, CC summed over the DISTINCT functions touched. Reports the two buckets a CC sum cannot contain — `orphan` (inside a parsed file, outside every function body) split into boilerplate vs content vs **branch tokens**, and `opaque` (no lizard parser at all: `.yml`, `.xml`, `.json`) with OfficeFloor's wiring edges counted by a real YAML parse. Cross-check for the scoped per-checkpoint metrics, not a replacement. Run automatically at the end of `analyze`; also standalone via `python -m harness.cumulative_impact --config config.yaml` (adds `--top N`, the heaviest-touched-function listing that the summary section omits). |

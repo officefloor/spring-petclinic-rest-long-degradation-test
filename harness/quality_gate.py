@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -239,40 +241,110 @@ def _pmd_lines(root: str, src_dirs: list[str], pmd_bin: str,
     curated subset lives in `pmd-rules/java-wasteful.xml` (committed; it decides verdicts,
     so it travels with the run like the ast-grep rules did).
 
+    The spawn and its "did not run reads as found nothing" guards live in `run_pmd`.
+    Analysis is source-only (no --aux-classpath): checkpoint trees are materialised but
+    never compiled, and type resolution is not needed by these rules.
+
+    This is the gate's entry point, and it runs PMD for this ruleset alone.
+    `metrics.compute_all` instead runs `run_pmd` ONCE for this ruleset and the metrics
+    one together and splits the report with `pmd_lines_from_report`.
+    """
+    if not ruleset or not os.path.isfile(ruleset):
+        return None
+    report = run_pmd(root, src_dirs, pmd_bin, [ruleset], "smell detection")
+    if report is None:
+        return None
+    return pmd_lines_from_report(report, root)
+
+
+def ruleset_rule_names(ruleset: str) -> Optional[set[str]]:
+    """The rule NAMES a ruleset file pulls in -- the last path segment of every `ref=`.
+
+    Used to split ONE merged PMD report back into the per-ruleset violation sets, which
+    is only sound while the rulesets are DISJOINT; `compute_all` asserts that and falls
+    back to separate runs if it ever stops holding. PMD's own `ruleset` JSON field cannot
+    do this job: it reports the rule's CATEGORY ("Design"), and both of this repo's
+    rulesets draw from category/java/design.xml.
+
+    None means "cannot enumerate, do not split a merged report with this". That is
+    returned for a CATEGORY-level ref (`ref="category/java/design.xml"`, no rule after
+    it), which pulls in every rule in that file under names this function cannot see:
+    those violations would silently vanish from whichever half they belong to, which is
+    exactly the "did not run reads as found nothing" failure this file keeps guarding
+    against. Neither committed ruleset does this today -- both name every rule -- so the
+    branch exists to keep a future edit from quietly corrupting Verbosity.
+    """
+    if not ruleset or not os.path.isfile(ruleset):
+        return None
+    try:
+        with open(ruleset, encoding="utf-8", errors="ignore") as fh:
+            body = fh.read()
+    except OSError:
+        return None
+    names: set[str] = set()
+    for r in re.findall(r'ref="([^"]+)"', body):
+        leaf = r.rsplit("/", 1)[-1]
+        if not leaf or leaf.endswith(".xml"):
+            return None          # whole-category ref: rule names are not enumerable here
+        names.add(leaf)
+    return names or None
+
+
+def run_pmd(root: str, src_dirs: list[str], pmd_bin: str, rulesets: list[str],
+            what: str = "pmd", timeout: int = 900) -> Optional[dict]:
+    """ONE PMD process over `rulesets`; the raw JSON report, or None if PMD did not run.
+
+    Several rulesets in one invocation is how a checkpoint avoids paying JVM startup
+    twice -- see `metrics.compute_all`. Rule results are independent of which other
+    rules ran alongside them, so the merged report's violations are identical to those
+    of the separate runs; `pmd_lines_from_report`/`placement.pmd_metrics_from_report`
+    split it back apart by rule name.
+
     Two traps, both of the "did not run reads as found nothing" family that already bit
     this metric twice:
       * PMD exits 4 when it finds violations. Without --no-fail-on-violation a returncode
         check would treat every DIRTY scan as a failed one and report zero smells.
       * a ruleset naming an unknown rule still runs, reporting only the rules it resolved.
         `processingErrors` and the parse below are checked so a broken ruleset surfaces.
-    Analysis is source-only (no --aux-classpath): checkpoint trees are materialised but
-    never compiled, and type resolution is not needed by these rules.
     """
-    if not ruleset or not os.path.isfile(ruleset):
-        return None
     # ABSOLUTE, always. PMD is invoked with cwd=<arm worktree>, so a config-relative
     # ruleset ("pmd-rules/java-wasteful.xml") resolves against the WORKTREE and PMD
     # exits 1 with "Cannot resolve rule/ruleset reference" - smell detection silently
-    # stops running. The isfile() guard above passes because it resolves against the
-    # harness cwd, which is exactly what makes this fail only once PMD is spawned.
-    ruleset = os.path.abspath(ruleset)
-    cmd = [pmd_bin, "check", "-f", "json", "-R", ruleset,
-           "--no-fail-on-violation", "--no-progress"]
+    # stops running. The isfile() guard at each call site passes because it resolves
+    # against the harness cwd, which is exactly what makes this fail only once PMD is
+    # spawned.
+    refs = ",".join(os.path.abspath(r) for r in rulesets)
+    # --no-cache: never let an incremental cache decide a published number. PMD only
+    # caches when --cache names a file, so this is belt-and-braces plus it silences the
+    # "you should use a cache" notice that would otherwise head up stderr and be quoted
+    # as the failure reason above.
+    cmd = [pmd_bin, "check", "-f", "json", "-R", refs,
+           "--no-fail-on-violation", "--no-progress", "--no-cache"]
     for d in src_dirs:
         cmd += ["-d", d]
     try:
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=900)
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                              timeout=timeout)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         first = ((proc.stderr or "").strip().splitlines() or [""])[0]
-        print(f"    ! pmd exited {proc.returncode}; smell detection DID NOT RUN "
+        print(f"    ! pmd exited {proc.returncode}; {what} DID NOT RUN "
               f"({first[:160]})", flush=True)
         return None
     try:
-        report = json.loads(proc.stdout or "{}")
+        return json.loads(proc.stdout or "{}")
     except json.JSONDecodeError:
         return None
+
+
+def pmd_lines_from_report(report: dict, root: str,
+                          keep: Optional[set[str]] = None
+                          ) -> dict[tuple[str, int], str]:
+    """Violation lines out of an already-parsed PMD report.
+
+    `keep` restricts to one ruleset's rule names when the report came from a merged run.
+    """
     out: dict[tuple[str, int], str] = {}
     for f in report.get("files", []):
         path = f.get("filename") or ""
@@ -280,6 +352,8 @@ def _pmd_lines(root: str, src_dirs: list[str], pmd_bin: str,
         for v in f.get("violations", []):
             begin, end = v.get("beginline"), v.get("endline")
             if begin is None:
+                continue
+            if keep is not None and (v.get("rule") or "") not in keep:
                 continue
             msg = v.get("rule") or "wasteful pattern"
             # PMD lines are already 1-based. The curated ruleset deliberately excludes
