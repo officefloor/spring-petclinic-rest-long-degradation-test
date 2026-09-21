@@ -24,6 +24,8 @@ import subprocess
 from collections import Counter, defaultdict
 from typing import Optional
 
+from . import placement
+
 import lizard
 
 from . import git_out
@@ -508,24 +510,25 @@ def _call_index(worktree: str, fns: list[dict]) -> tuple[dict, dict]:
     return by_key, by_name
 
 
-def _closure(roots: list[dict], by_key: dict, by_name: dict) -> set[tuple[str, str]]:
-    """Methods transitively reachable from `roots`, resolved CONSERVATIVELY.
+def call_adjacency(by_key: dict, by_name: dict) -> dict:
+    """Resolved call edges: (class, method) -> set of callee (class, method).
 
-    Java call resolution without a type checker is inexact, so this takes the lower
-    bound: a call resolves only when it names a method of the same class, or a method
-    name that exists in exactly one class project-wide. Ambiguous names (`getName`) and
-    everything outside the project (JDK, Spring Data repositories, generated MapStruct
-    impls) resolve to nothing -- symmetric across arms, so both paths are undercounted
-    the same way. An upper bound that follows every same-named method was checked
-    off-line and agrees on every between-arm comparison."""
-    seen: set[tuple[str, str]] = set()
-    queue = list(roots)
-    while queue:
-        f = queue.pop()
+    THE single definition of how a Java call is resolved in this harness, extracted
+    so the closure walk (`_closure`) and the placement metrics (indirection depth,
+    propagation cost) cannot drift apart on it.
+
+    Resolution is CONSERVATIVE -- a lower bound. A call resolves only when it names
+    a method of the same class, or a method name that exists in exactly one class
+    project-wide. Ambiguous names (`getName`) and everything outside the project
+    (JDK, Spring Data repositories, generated MapStruct impls) resolve to nothing.
+    Symmetric across arms, so both are undercounted the same way. An upper bound
+    that follows every same-named method was checked off-line and agrees on every
+    between-arm comparison.
+    """
+    adj: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for f in by_key.values():
         key = (f["_cls"], f["_meth"])
-        if key in seen:
-            continue
-        seen.add(key)
+        out: set[tuple[str, str]] = set()
         for name in f["_calls"]:
             same = by_key.get((f["_cls"], name))
             if same:
@@ -535,8 +538,27 @@ def _closure(roots: list[dict], by_key: dict, by_name: dict) -> set[tuple[str, s
             else:
                 continue          # ambiguous or external -> not followed
             for c in cands:
-                if (c["_cls"], c["_meth"]) not in seen:
-                    queue.append(c)
+                out.add((c["_cls"], c["_meth"]))
+        adj[key] = out
+    return adj
+
+
+def _closure(roots: list[dict], by_key: dict, by_name: dict,
+             adj: Optional[dict] = None) -> set[tuple[str, str]]:
+    """Methods transitively reachable from `roots` (see `call_adjacency` for the
+    resolution rule, which this shares so the two can never diverge)."""
+    if adj is None:
+        adj = call_adjacency(by_key, by_name)
+    seen: set[tuple[str, str]] = set()
+    queue = [(r["_cls"], r["_meth"]) for r in roots]
+    while queue:
+        key = queue.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        for nxt in adj.get(key, ()):
+            if nxt not in seen:
+                queue.append(nxt)
     return seen
 
 
@@ -572,7 +594,8 @@ def _node_roots(worktree: str, by_key: dict, arm_cfg: dict) -> list[dict]:
     return [max(hits, key=lambda f: (f["cc"], f["nloc"]))] if hits else []
 
 
-def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict) -> dict:
+def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict,
+                       index: Optional[tuple[dict, dict]] = None) -> dict:
     """Per-node comprehension load, and how much of it each node owns.
 
     `node_cc_median` is the headline: the complexity reachable from a typical node, i.e.
@@ -586,7 +609,7 @@ def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict) -> dict:
              "node_exclusive_share": None, "node_path_cc": None, "node_path_methods": None}
     if not fns:
         return dict(blank)
-    by_key, by_name = _call_index(worktree, fns)
+    by_key, by_name = index if index else _call_index(worktree, fns)
     roots = _node_roots(worktree, by_key, arm_cfg)
     if not roots:
         return dict(blank)
@@ -858,10 +881,31 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     eh = entry_handler_stats(fns, arm_cfg.get("entry_handler"))  # whole-app: found even if unchanged
     ehe = handler_scoped_erosion(fns, arm_cfg.get("entry_handler"))  # erosion of the handler's own class
     hw = handler_wmc_stats(fns, arm_cfg.get("entry_handler"))    # god-class, pinned to the SAME role in both arms
-    nc = node_closure_stats(worktree, fns, arm_cfg)              # per-node comprehension load (relocation-proof)
+    index = _call_index(worktree, fns)                           # built ONCE, shared below
+    nc = node_closure_stats(worktree, fns, arm_cfg, index=index)  # per-node comprehension load (relocation-proof)
     spread = change_spread(worktree, prev_ref, cur_ref)
     reedit = reedit_stats(worktree, base_commit, prev_ref, cur_ref)  # temporal coupling vs base
     imp = impact_stats(worktree, prev_ref, cur_ref)  # blast weighted by complexity disturbed
+
+    # PLACEMENT: where the (conserved) complexity sits, and how far change spreads.
+    # Published/textbook measures only -- see harness/placement.py for why none of the
+    # bespoke impact_* score may be used for that claim. The call adjacency is derived
+    # from the SAME resolution rule as the closure walk, so the two cannot diverge.
+    adj = call_adjacency(*index)
+    roots = _node_roots(worktree, index[0], arm_cfg)
+    handler_cls = hw.get("wmc_handler_class") or eh.get("entry_fn", "")
+    plc = placement.placement_all(worktree, fns, adj, roots, base_commit, prev_ref, cur_ref)
+    src_dirs = arm_cfg.get("verbosity_dirs", ["src/main/java"])
+    if tools.get("pmd") and tools.get("pmd_metrics_rules"):
+        pm = placement.pmd_metrics(worktree, src_dirs, tools["pmd"],
+                                   tools["pmd_metrics_rules"], handler_class=handler_cls)
+        if pm:
+            plc.update(pm)
+    if tools.get("ck"):
+        ckm = placement.ck_metrics(worktree, src_dirs, tools["ck"],
+                                   tools.get("java", "java"), handler_class=handler_cls)
+        if ckm:
+            plc.update(ckm)
 
     row = {
         "erosion": ed["erosion"],
@@ -891,6 +935,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     row.update(spread)
     row.update(reedit)
     row.update(imp)
+    row.update(plc)
 
     details = {
         "erosion": ed,
@@ -910,6 +955,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "change_spread": spread,
         "reedit": reedit,
         "impact": imp,
+        "placement": plc,
         "functions": [{**f, "mass": round(_mass(f), 4)} for f in fns],
     }
     return row, details

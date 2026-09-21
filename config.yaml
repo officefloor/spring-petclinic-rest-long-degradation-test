@@ -330,6 +330,20 @@ tools:
   # NOT used: `sg` also collides with shadow-utils' setgid tool. Fall back to bare names only if
   # tools/node_modules is absent (ungated verbosity metric degrades gracefully; the gate does not).
   jscpd: "tools/node_modules/.bin/jscpd"
+  # PLACEMENT metrics (harness/placement.py). Both are PURE-DERIVE and source-only --
+  # no compilation, so they run over a materialised checkpoint tree like lizard/PMD do.
+  #   pmd_metrics_rules: cognitive complexity, NPath, and the PUBLISHED GodClass /
+  #     DataClass detectors (Lanza & Marinescu thresholds). Kept in its OWN ruleset,
+  #     never merged into pmd-rules/java-wasteful.xml: that one feeds Verbosity and the
+  #     quality gate and deliberately excludes complexity rules, so mixing them would
+  #     couple two metrics that must stay independent.
+  #   ck: the Chidamber & Kemerer suite (lcom, lcom*, tcc, lcc, cbo, rfc, dit, noc,
+  #     fanin/fanout) via the CK tool, pinned by tools/ck-version.txt. Spawns a JVM per
+  #     checkpoint, so it is the expensive half -- unset `ck` to re-analyse without it
+  #     (the ck_* columns then go BLANK, not zero, and analyze drops them from fits).
+  pmd_metrics_rules: "pmd-rules/java-metrics.xml"
+  ck: "tools/ck/ck.jar"
+  java: "java"
   # SMELL DETECTOR. PMD when `pmd` is set, else the legacy ast-grep path below.
   # Why PMD: the Verbosity metric's pattern half comes from SlopCodeBench, whose 137
   # ast-grep rules are `language: python` and can never match these Java arms — the

@@ -776,6 +776,70 @@ checkpoints, additive-only (`_add`), mutative-only (`_mut`) — as filtered view
 mutative checkpoint is a mandated rule revision, so the context weight makes it
 genuine architectural signal: the arm that isolated the concern pays less).
 
+**Placement metrics (`harness/placement.py`)** — *where* the complexity sits, as
+distinct from how much there is. Added because the `impact_*` score above was
+identified on this experiment and so cannot be the evidence for a claim about it;
+everything in this group is a published or textbook measure that predates the work.
+
+*Amount — expected to show NO arm difference (Tesler's conservation):*
+
+| field | meaning |
+|---|---|
+| `total_cc` | total cyclomatic complexity, whole app (McCabe 1976) |
+| `pmd_cognitive_total` / `_max` / `_mean` | cognitive complexity (Campbell/SonarSource 2018) — penalises nesting, forgives flat sequences, so it separates a nested method from a long flat dispatch |
+| `pmd_npath_total` / `_max` | acyclic execution paths (Nejmeh 1988) |
+| `halstead_volume`, `halstead_effort`, `halstead_vocab` | Halstead (1977) — vocabulary size, an operationalisation independent of control flow |
+| `mi_mean`, `mi_min` | Maintainability Index (Coleman et al. 1994), computed **per file** then averaged; `mi_min` is the worst file |
+| `ck_wmc_total` | total WMC from CK — an independent parser's cross-check on the lizard numbers |
+| `total_fns`, `total_files`, `total_packages` | unit counts |
+
+*Concentration — the thesis. Reported over functions, files, packages and classes:*
+
+| field | meaning |
+|---|---|
+| `ccdist_{fn,file,pkg}_{gini,hhi,top1,top5,hnorm,n}` | how total CC distributes. `gini` is **scale-free** (shape only); `hhi`/`top1`/`top5` are **not** (an arm with more files scores lower for free). Publish both: if Gini matches and HHI does not, the honest statement is "the units are larger", not "the distribution is more unequal" |
+| `ccdist_file_lorenz` | 11 cumulative-share points, so the exact Lorenz curve can be drawn (`analysis/lorenz.png`) |
+| `wmcdist_class_*`, `cogdist_fn_*`, `voldist_file_*` | the same panel over WMC, cognitive complexity and Halstead volume |
+| `change_entropy`, `change_entropy_norm`, `change_top1/top5`, `change_hhi`, `change_files` | Hassan (2009) change entropy for **this** checkpoint: how the rule's diff spreads over files |
+| `cum_change_*` | the same, cumulatively from `base_ref` — an architecture where every rule lands in one file keeps low cumulative entropy no matter how each rule looks alone |
+
+*Cohesion & coupling (CK tool, Aniche 2015 — source-only via Eclipse JDT):*
+
+| field | meaning |
+|---|---|
+| `ck_lcom_{mean,max}`, `ck_lcom_star_mean` | lack of cohesion (C&K 1994; Henderson-Sellers 1996) — **low is cohesive** |
+| `ck_tcc_mean`, `ck_lcc_mean` | tight/loose class cohesion (Bieman & Kang 1995) — **high is cohesive**, the opposite sign to LCOM, which is why both are reported |
+| `ck_cbo_*`, `ck_rfc_*`, `ck_fanin/fanout_*`, `ck_dit_mean` | coupling, response set, fan-in/out, inheritance depth |
+| `ck_handler_*` | the same metrics pinned to the **handler class**, the like-for-like role in both arms |
+
+*Published detector verdicts — binary, with thresholds nobody here chose:*
+
+| field | meaning |
+|---|---|
+| `pmd_god_classes` | classes tripping PMD's `GodClass`, i.e. Lanza & Marinescu (2006): WMC ≥ 47 ∧ ATFD > 5 ∧ TCC < 1/3 |
+| `pmd_handler_is_god_class` | whether the endpoint's own handler class trips it |
+| `pmd_data_classes`, `pmd_demeter_violations` | `DataClass`; Law of Demeter (Lieberherr 1989) |
+
+*The distribution tax — expected to favour the CONCENTRATED arm (Brooks):*
+
+| field | meaning |
+|---|---|
+| `indirection_median/_max/_deep_share/_reached` | call hops from a handling node. **Understates a pipeline arm**: its wired steps are all depth 0 and its hops are YAML, not Java calls — read it as this plus `node_count` |
+| `propagation_cost` | MacCormack et al. (2006): density of the transitive closure of the file dependency matrix. The `n²` denominator rewards more files and the conservative call resolver drops edges, so use the **between-arm** comparison only |
+| `propagation_fanout_median/_max` | raw reachable-file counts, **not** normalised — these show whether the dependency structure differs or only the packaging |
+
+*Validity:* `container_{advice,aspect,filter,entity_listener,validator,body_advice,total}`
+counts classes the **framework** dispatches, which no call-graph statistic can see. If
+this moves off its baseline, every `node_*` number for that chain is measuring a
+shrinking fraction of the code.
+
+**Statistical reporting.** With 80+ metrics a 95% CI alone manufactures several false
+positives per run, so `summary.md` reports **Benjamini-Hochberg FDR** beside the raw
+`excludes 0`, **Cliff's delta** as an effect size, both a **slope** and an end-state
+**level** test, a **Counter-signals** section listing every measure that contradicts
+its pre-declared expectation, and an **Outcome-prediction matrix** regressing each
+structural metric against independently measured outcomes. Quote the FDR column.
+
 **Probe & integrity (nullable)** — `probe_*`: the read-only cold-reader probe (cost,
 and `probe_recall` = how well a fresh agent recalls the accumulated rules);
 `pinned_touched` (pinned guide files the agent edited — should be empty);

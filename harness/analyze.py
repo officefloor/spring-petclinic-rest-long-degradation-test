@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import bisect
 import math
 import os
 import re
@@ -22,6 +23,7 @@ import shutil
 import statistics
 import subprocess
 from collections import Counter, defaultdict
+from typing import Optional
 
 import numpy as np
 import yaml
@@ -276,12 +278,27 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
                   f"live {live_val!r} (binary location, not measurement config)")
             run_cfg["tools"][key] = live_val
 
+    # A tool key ABSENT from the snapshot is filled from live, exactly as `arms.*`
+    # keys are above and for the same reason: a metric added after a run needs config
+    # that run could never have recorded, and the harness's promise is that adding a
+    # metric backfills onto every past run. Without this the placement suite's
+    # `pmd_metrics_rules` and `ck` were missing from every snapshot, both readers
+    # returned None, and ALL the PMD/CK columns came back blank on re-analysis --
+    # the silent-zero failure this function exists to prevent, one level up.
+    # Recorded values still win; only gaps are filled, and every fill is logged.
+    for key, live_val in (live_cfg.get("tools", {}) or {}).items():
+        if key not in run_cfg["tools"] and live_val not in (None, ""):
+            run_cfg["tools"][key] = live_val
+            print(f"  ! tools.{key} absent from the run's config snapshot "
+                  f"(metric added after the run); using the live value")
+
     print(f"  using per-run config snapshot from {branch}")
     return run_cfg
 
 
 def recompute_rows(cfg: dict, run_id: str, work_root: str,
-                   exclude: str | None = None) -> list[dict]:
+                   exclude: str | None = None,
+                   chains: set[int] | None = None) -> list[dict]:
     """Rebuild every checkpoint row for `run_id` from its commits + capture.
 
     Structural metrics come from metrics.compute_all over a detached worktree at
@@ -294,6 +311,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
     for repo, branch, arm, strat, chain in _evolve_branches(cfg, run_id):
         arm_cfg = cfg["arms"].get(arm)
         if not arm_cfg:
+            continue
+        if chains is not None and int(chain) not in chains:
             continue
         caps = _read_captures(repo, branch)
         prov = _read_provenance(repo, branch)
@@ -562,7 +581,8 @@ def _mean_curve_slope(chain_series: dict[int, list[tuple[int, float]]],
 
 
 def bootstrap_diff_slope(rows_a: list[dict], rows_b: list[dict], field: str,
-                         n_boot: int = 2000, seed: int = 0) -> tuple[float, float, float]:
+                         n_boot: int = 2000, seed: int = 0
+                         ) -> tuple[float, float, float, list[float]]:
     """Bootstrap CI for slope(A) − slope(B): the PAIRED test the thesis needs.
 
     Comparing each arm's slope CI to zero separately is not the same as testing that
@@ -572,7 +592,7 @@ def bootstrap_diff_slope(rows_a: list[dict], rows_b: list[dict], field: str,
     """
     sa, sb = series_by_chain(rows_a, field), series_by_chain(rows_b, field)
     if not sa or not sb:
-        return (math.nan, math.nan, math.nan)
+        return (math.nan, math.nan, math.nan, [])
     ka, kb = list(sa), list(sb)
     point = _mean_curve_slope(sa, ka) - _mean_curve_slope(sb, kb)
     rng = np.random.default_rng(seed)
@@ -583,9 +603,9 @@ def bootstrap_diff_slope(rows_a: list[dict], rows_b: list[dict], field: str,
         if not (math.isnan(da) or math.isnan(db)):
             diffs.append(da - db)
     if not diffs:
-        return (point, math.nan, math.nan)
+        return (point, math.nan, math.nan, [])
     lo, hi = np.percentile(diffs, [2.5, 97.5])
-    return (point, float(lo), float(hi))
+    return (point, float(lo), float(hi), diffs)
 
 
 def _rankdata(a: np.ndarray) -> np.ndarray:
@@ -757,6 +777,287 @@ for _fld in IMPACT_BASE_FIELDS:
     METRICS_TO_PLOT.append((_fld + "_add", f"Impact ({_IMPACT_LABEL[_fld]}) — ADDITIVE checkpoints only"))
     METRICS_TO_PLOT.append((_fld + "_mut", f"Impact ({_IMPACT_LABEL[_fld]}) — MUTATIVE checkpoints only"))
 
+# ---------------------------------------------------------------------------
+# PLACEMENT metrics (harness/placement.py). Grouped by the CLAIM each one tests,
+# because the three groups have OPPOSITE predictions and a table that mixes them
+# reads as noise:
+#
+#   AMOUNT     - Tesler's conservation. Prediction: NO arm difference. Four
+#                independent operationalisations (cyclomatic, cognitive, NPath,
+#                Halstead volume); if they all agree the arms carry the same
+#                complexity, the conservation claim does not rest on McCabe alone.
+#   TAX        - Brooks' accidental complexity. Prediction: the DISTRIBUTED arm is
+#                WORSE. These are expected counter-signals, listed so the cost of
+#                distribution is published rather than discovered by a referee.
+#   PLACEMENT  - the actual thesis. Prediction: the concentrated arm is worse.
+#
+# `analysis_expectation` (below) records the predicted direction per metric so the
+# summary can flag every measure that comes out AGAINST the hypothesis.
+PLACEMENT_METRICS = [
+    # --- AMOUNT: expected to show NO between-arm difference -------------------
+    ("total_cc", "Total cyclomatic complexity, whole app (Tesler conservation)"),
+    ("pmd_cognitive_total", "Total cognitive complexity (Campbell/SonarSource)"),
+    ("pmd_npath_total", "Total NPath complexity (Nejmeh 1988)"),
+    ("halstead_volume", "Total Halstead volume (Halstead 1977)"),
+    ("halstead_effort", "Total Halstead effort"),
+    ("ck_wmc_total", "Total WMC across classes (CK — independent parser cross-check)"),
+    ("total_fns", "Function count"),
+    ("total_files", "File count"),
+    ("total_packages", "Package count"),
+    ("mi_mean", "Maintainability Index, mean over files (Coleman 1994)"),
+    ("mi_min", "Maintainability Index, worst file"),
+    # --- TAX: expected to favour the CONCENTRATED arm ------------------------
+    ("indirection_median", "Indirection — median call hops from a handling node"),
+    ("indirection_max", "Indirection — deepest call chain"),
+    ("indirection_deep_share", "Indirection — share of reached methods >2 hops away"),
+    ("ck_cbo_mean", "Coupling between objects, mean (C&K)"),
+    ("ck_cbo_max", "Coupling between objects, worst class"),
+    ("ck_fanout_mean", "Fan-out, mean"),
+    ("pmd_demeter_violations", "Law of Demeter violations (Lieberherr 1989)"),
+    # --- PLACEMENT: the thesis -----------------------------------------------
+    ("ccdist_file_hhi", "CC concentration across files (HHI)"),
+    ("ccdist_file_top1", "Share of all CC in the heaviest file"),
+    ("ccdist_file_top5", "Share of all CC in the heaviest five files"),
+    ("ccdist_file_gini", "CC inequality across files (Gini — scale-free)"),
+    ("ccdist_file_hnorm", "CC spread across files (normalised entropy)"),
+    ("ccdist_fn_gini", "CC inequality across functions (Gini)"),
+    ("ccdist_fn_hhi", "CC concentration across functions (HHI)"),
+    ("ccdist_pkg_hhi", "CC concentration across packages (HHI)"),
+    ("wmcdist_class_hhi", "WMC concentration across classes (HHI)"),
+    ("cogdist_fn_hhi", "Cognitive-complexity concentration across functions (HHI)"),
+    ("voldist_file_hhi", "Halstead-volume concentration across files (HHI)"),
+    ("change_entropy_norm", "Change spread THIS rule (Hassan 2009, normalised)"),
+    ("change_top1", "Share of this rule's changed lines in one file"),
+    ("cum_change_entropy_norm", "Change spread base→here, cumulative (Hassan 2009)"),
+    ("cum_change_top1", "Share of ALL change so far in one file"),
+    ("cum_change_top5", "Share of ALL change so far in five files"),
+    ("cum_change_hhi", "Cumulative change concentration (HHI)"),
+    ("cum_change_files", "Files carrying the change so far"),
+    ("propagation_cost", "Propagation cost (MacCormack 2006) — n² normalised, see caveat"),
+    ("propagation_fanout_median", "Files reachable from a typical file (NOT normalised)"),
+    ("ck_lcom_mean", "Lack of cohesion LCOM, mean (C&K 1994) — low is cohesive"),
+    ("ck_lcom_max", "LCOM, worst class"),
+    ("ck_lcom_star_mean", "LCOM* mean (Henderson-Sellers 1996)"),
+    ("ck_tcc_mean", "Tight class cohesion, mean (Bieman & Kang 1995) — HIGH is cohesive"),
+    ("ck_lcc_mean", "Loose class cohesion, mean"),
+    ("ck_rfc_mean", "Response for a class, mean (C&K)"),
+    ("ck_rfc_max", "Response for a class, worst"),
+    ("ck_dit_mean", "Depth of inheritance tree, mean (C&K)"),
+    ("ck_handler_lcom", "LCOM of the HANDLER class (like-for-like role)"),
+    ("ck_handler_tcc", "TCC of the handler class"),
+    ("ck_handler_rfc", "RFC of the handler class"),
+    ("ck_handler_cbo", "CBO of the handler class"),
+    ("ck_handler_wmc", "WMC of the handler class (CK cross-check on wmc_handler)"),
+    # --- published DETECTOR verdicts (binary, externally defined thresholds) ---
+    ("pmd_god_classes", "God classes detected (Lanza & Marinescu thresholds, via PMD)"),
+    ("pmd_handler_is_god_class", "Handler class trips the published God-Class detector"),
+    ("pmd_data_classes", "Data classes detected"),
+    # --- VALIDITY: does the call graph still see the code? --------------------
+    ("container_total", "Framework-dispatched classes (call-graph escape counter)"),
+]
+METRICS_TO_PLOT += PLACEMENT_METRICS
+
+# Which CLAIM each metric belongs to, for the outcome-correlation summary. The whole
+# point of that analysis is that the three groups should behave DIFFERENTLY against
+# maintenance outcomes: if amount predicts nothing and placement predicts cost and
+# breakage, Tesler and Brooks are tested rather than assumed.
+METRIC_GROUP = {}
+for _f2, _lab in PLACEMENT_METRICS:
+    METRIC_GROUP[_f2] = "amount"
+for _f2 in ("total_files", "total_packages", "indirection_median", "indirection_max",
+            "indirection_deep_share", "ck_cbo_mean", "ck_cbo_max", "ck_fanout_mean",
+            "pmd_demeter_violations", "files_created", "cum_change_files"):
+    METRIC_GROUP[_f2] = "tax"
+for _f2 in [k for k in METRIC_GROUP if k.startswith(
+        ("ccdist_", "wmcdist_", "cogdist_", "voldist_", "change_", "cum_change_",
+         "propagation_", "ck_lcom", "ck_tcc", "ck_lcc", "ck_rfc", "ck_handler_",
+         "pmd_god", "pmd_data", "pmd_handler"))]:
+    METRIC_GROUP[_f2] = "placement"
+for _f2 in ("wmc_handler", "wmc_max", "entry_cc", "node_cc_median", "node_cc_max",
+            "erosion_handler", "impact_composite", "impact_mutation", "reedit_rate",
+            "existing_fns_modified", "packages_touched"):
+    METRIC_GROUP[_f2] = "placement"
+for _f2 in ("total_cc", "pmd_cognitive_total", "pmd_npath_total", "halstead_volume",
+            "halstead_effort", "ck_wmc_total", "total_fns", "node_path_cc", "erosion",
+            "java_loc", "mi_mean"):
+    METRIC_GROUP[_f2] = "amount"
+
+
+# ---------------------------------------------------------------------------
+# Pre-declared expectations, so a metric that contradicts the thesis is REPORTED
+# rather than found by a referee.
+# ---------------------------------------------------------------------------
+#
+# Value = the sign of (concentrated arm - distributed arm) that would SUPPORT the
+# hypothesis, where the hypothesis is: both arms carry the same complexity (amount),
+# the distributed arm pays a navigational tax (tax), and the concentrated arm packs
+# that complexity into fewer, larger, less cohesive units (placement).
+#
+#   +1  supporting if the CONCENTRATED arm scores HIGHER
+#   -1  supporting if the DISTRIBUTED arm scores HIGHER  (includes the expected tax)
+#    0  supporting if the arms DO NOT DIFFER             (the conservation claim)
+#   omitted entirely = no prediction on record; never flagged either way
+#
+# The second element is WHICH DIMENSION the prediction is about, and getting it wrong
+# manufactures false counter-signals: `files_created` is a LEVEL claim (the pipeline arm
+# creates 63 files per chain against 10) whose SLOPE runs the other way, because the
+# pipeline arm front-loads its files and its per-rule rate then declines faster. A
+# state claim must be tested on the final-phase level, a degradation claim on the slope.
+#   "level" - the end state of the codebase (default; most structural descriptions)
+#   "slope" - the RATE of change per checkpoint (degradation claims)
+#   "both"  - must hold on both (conservation: same total AND not diverging)
+#
+# Declaring these BEFORE reading the run is what makes the counter-signal section
+# meaningful. Do not edit an entry to match an observed result -- add a note to
+# AGENTS.md and leave the prediction wrong on the record.
+METRIC_EXPECTATION = {
+    # --- AMOUNT: conservation (Tesler). Same total AND not diverging. ---
+    "total_cc": (0, "both"), "pmd_cognitive_total": (0, "both"),
+    "pmd_npath_total": (0, "both"), "halstead_volume": (0, "both"),
+    "halstead_effort": (0, "both"), "ck_wmc_total": (0, "both"),
+    "total_fns": (0, "level"),
+    # --- the distribution tax (Brooks' accidental complexity): STATE claims ---
+    "total_files": (-1, "level"), "total_packages": (-1, "level"),
+    "indirection_median": (-1, "level"), "indirection_max": (-1, "level"),
+    "indirection_deep_share": (-1, "level"),
+    "ck_cbo_mean": (-1, "level"), "ck_cbo_max": (-1, "level"),
+    "ck_fanout_mean": (-1, "level"), "pmd_demeter_violations": (-1, "level"),
+    "files_created": (-1, "level"), "cum_change_files": (-1, "level"),
+    "mi_mean": (-1, "level"), "mi_min": (-1, "level"),
+    # --- PLACEMENT: concentration. Higher in the end state AND growing faster. ---
+    "ccdist_file_hhi": (+1, "both"), "ccdist_file_top1": (+1, "both"),
+    "ccdist_file_top5": (+1, "both"), "ccdist_file_gini": (+1, "level"),
+    "ccdist_file_hnorm": (-1, "both"),
+    "ccdist_pkg_hhi": (+1, "level"), "wmcdist_class_hhi": (+1, "both"),
+    "cogdist_fn_hhi": (+1, "level"), "voldist_file_hhi": (+1, "level"),
+    # the god class is many ORDINARY methods packed together, not giant methods,
+    # so no per-FUNCTION difference is predicted on either dimension
+    "ccdist_fn_gini": (0, "both"), "ccdist_fn_hhi": (0, "both"),
+    "change_entropy_norm": (-1, "level"), "change_top1": (+1, "level"),
+    "cum_change_entropy_norm": (-1, "both"), "cum_change_top1": (+1, "both"),
+    "cum_change_top5": (+1, "both"), "cum_change_hhi": (+1, "both"),
+    "propagation_cost": (+1, "level"), "propagation_fanout_median": (0, "level"),
+    # cohesion: LCOM low = cohesive, TCC/LCC high = cohesive -- opposite signs
+    "ck_lcom_mean": (+1, "level"), "ck_lcom_max": (+1, "both"),
+    "ck_lcom_star_mean": (+1, "level"),
+    "ck_tcc_mean": (-1, "level"), "ck_lcc_mean": (-1, "level"),
+    "ck_rfc_mean": (+1, "level"), "ck_rfc_max": (+1, "both"),
+    "ck_dit_mean": (0, "level"),
+    "ck_handler_lcom": (+1, "both"), "ck_handler_rfc": (+1, "both"),
+    "ck_handler_cbo": (+1, "level"), "ck_handler_wmc": (+1, "both"),
+    "ck_handler_tcc": (-1, "level"),
+    # published detectors (external thresholds)
+    "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
+    "pmd_data_classes": (0, "level"),
+    # --- pre-existing metrics with a documented prediction ---
+    "wmc_handler": (+1, "both"), "wmc_max": (+1, "both"), "entry_cc": (+1, "both"),
+    "node_cc_median": (+1, "both"), "node_cc_max": (+1, "both"),
+    "node_path_cc": (0, "level"),
+    "erosion_handler": (+1, "slope"), "impact_composite": (+1, "slope"),
+    "impact_mutation": (+1, "slope"),
+    # whole-app erosion is location-blind and documented as NOT a thesis test
+    "erosion": (0, "slope"),
+    # container_total is a VALIDITY column, not a quality claim: no prediction.
+}
+
+
+def bootstrap_diff_level(rows_a: list[dict], rows_b: list[dict], field: str,
+                         tail_frac: float = 0.2, n_boot: int = 2000, seed: int = 0
+                         ) -> tuple[float, float, float, list[float]]:
+    """Bootstrap CI for the END-STATE difference: mean(A) - mean(B) over the final
+    phase, resampling CHAINS within each arm independently.
+
+    The slope test answers 'do they degrade at different rates'; most structural
+    descriptions ("this arm ends with a god class", "this arm spreads over more
+    files") are claims about where the codebase ENDS UP, and testing those on a
+    slope is a category error that produces false counter-signals.
+    """
+    sa, sb = series_by_chain(rows_a, field), series_by_chain(rows_b, field)
+    if not sa or not sb:
+        return (math.nan, math.nan, math.nan, [])
+
+    def tail_means(cs: dict) -> dict[int, float]:
+        out = {}
+        for c, pts in cs.items():
+            if not pts:
+                continue
+            last = max(k for k, _ in pts)
+            cut = last - max(1.0, last * tail_frac)
+            vals = [v for k, v in pts if k >= cut]
+            if vals:
+                out[c] = float(np.mean(vals))
+        return out
+
+    ta, tb = tail_means(sa), tail_means(sb)
+    if not ta or not tb:
+        return (math.nan, math.nan, math.nan, [])
+    ka, kb = list(ta), list(tb)
+    point = float(np.mean([ta[c] for c in ka]) - np.mean([tb[c] for c in kb]))
+    rng = np.random.default_rng(seed)
+    diffs = []
+    for _ in range(n_boot):
+        da = np.mean([ta[c] for c in rng.choice(ka, len(ka), replace=True)])
+        db = np.mean([tb[c] for c in rng.choice(kb, len(kb), replace=True)])
+        diffs.append(float(da - db))
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return (point, float(lo), float(hi), diffs)
+
+
+def cliffs_delta(a: list[float], b: list[float]) -> Optional[float]:
+    """Cliff's delta: P(a>b) - P(a<b). Non-parametric EFFECT SIZE.
+
+    A bootstrap CI says a difference is not zero; it does not say it is large. These
+    distributions are heavily skewed and ordinal comparisons are the honest summary,
+    so delta accompanies every between-arm comparison. Conventional reading:
+    |d| < 0.147 negligible, < 0.33 small, < 0.474 medium, else large.
+    """
+    if not a or not b:
+        return None
+    a_s = sorted(a)
+    gt = lt = 0
+    for y in b:
+        lo = bisect.bisect_left(a_s, y)
+        hi = bisect.bisect_right(a_s, y)
+        lt += lo               # a values strictly below y
+        gt += len(a_s) - hi    # a values strictly above y
+    n = len(a) * len(b)
+    return round((gt - lt) / n, 4) if n else None
+
+
+def benjamini_hochberg(pvals: list[float], alpha: float = 0.05) -> list[bool]:
+    """Benjamini-Hochberg FDR control; returns the reject/keep mask.
+
+    WHY THIS IS NOT OPTIONAL HERE. The suite tests 80+ metrics per run. At a 95% CI,
+    roughly one in twenty null comparisons excludes zero by chance, so a table this
+    wide manufactures several 'significant' results per run from noise alone. Adding
+    metrics without FDR control makes the analysis weaker, not stronger -- which is
+    the direct cost of measuring everything, and is paid here rather than denied.
+    """
+    m = len(pvals)
+    if not m:
+        return []
+    order = sorted(range(m), key=lambda i: pvals[i])
+    keep = [False] * m
+    thresh = 0
+    for rank, i in enumerate(order, 1):
+        if pvals[i] <= alpha * rank / m:
+            thresh = rank
+    for rank, i in enumerate(order, 1):
+        keep[i] = rank <= thresh
+    return keep
+
+
+def _boot_p(diffs: list[float]) -> float:
+    """Two-sided bootstrap p-value: the mass of the replicate distribution on the
+    other side of zero, doubled. Floored at 1/n_boot -- a bootstrap cannot report a
+    p smaller than its own resolution, and pretending otherwise inflates the FDR."""
+    if not diffs:
+        return 1.0
+    n = len(diffs)
+    below = sum(1 for d in diffs if d <= 0)
+    p = 2.0 * min(below, n - below) / n
+    return max(p, 1.0 / n)
+
 
 def plot_metric(groups: dict, field: str, title: str, out_path: str) -> None:
     if not HAVE_MPL:
@@ -789,11 +1090,194 @@ def plot_metric(groups: dict, field: str, title: str, out_path: str) -> None:
     plt.close()
 
 
+# Validated two-series categorical palette (dataviz reference instance, light mode:
+# slot 1 blue / slot 2 orange). Checked with the palette validator -- adjacent CVD
+# ΔE 24.7 (protan), normal-vision ΔE 33.6, both arms >= 3:1 on the chart surface.
+# Colour follows the ARM, never its rank, so an arm keeps its hue in every figure.
+ARM_COLORS = {"spring": "#eb6834", "officefloor": "#2a78d6"}
+_ARM_FALLBACK = ["#1baf7a", "#eda100", "#e87ba4"]
+
+
+def _arm_color(arm: str, seen: dict) -> str:
+    if arm in ARM_COLORS:
+        return ARM_COLORS[arm]
+    return seen.setdefault(arm, _ARM_FALLBACK[len(seen) % len(_ARM_FALLBACK)])
+
+
+def _mean_series(rows: list[dict], field: str):
+    cs = series_by_chain(rows, field)
+    if not cs:
+        return None, None
+    acc = _bucket_by_checkpoint(cs)
+    ks = sorted(acc)
+    return ks, [float(np.mean(acc[k])) for k in ks]
+
+
+def plot_conservation(groups: dict, out_path: str) -> None:
+    """THE figure for the Tesler/Brooks claim: amount conserved, placement diverging.
+
+    Two STACKED PANELS sharing the x-axis, never a dual-axis chart. Total complexity
+    and a concentration ratio have different units, and putting two y-scales on one
+    frame lets the reader's eye infer a relationship from whatever scaling was
+    chosen -- the single most misleading thing a chart of this kind can do.
+    Small multiples say the same thing and cannot lie about it.
+    """
+    if not HAVE_MPL:
+        return
+    # The LABEL must travel with the field, not be hardcoded beside a fallback: a
+    # panel captioned "total cyclomatic complexity" while plotting java_loc is a
+    # mislabelled chart, which is worse than no chart.
+    top_choices = [("total_cc", "AMOUNT — total cyclomatic complexity"),
+                   ("halstead_volume", "AMOUNT — total Halstead volume"),
+                   ("java_loc", "AMOUNT — Java lines of code (fallback: total_cc absent)")]
+    bottom_choices = [("ccdist_file_top5", "PLACEMENT — share of all CC in the heaviest 5 files"),
+                      ("cum_change_top5", "PLACEMENT — share of all change in 5 files"),
+                      ("wmc_handler", "PLACEMENT — WMC of the handler class (fallback)")]
+    def _pick(choices):
+        for field, label in choices:
+            if any(series_by_chain(r, field) for r in groups.values()):
+                return field, label
+        return None, None
+    top, top_label = _pick(top_choices)
+    bottom, bottom_label = _pick(bottom_choices)
+    if not top or not bottom:
+        return
+    fig, axes = plt.subplots(2, 1, figsize=(7.2, 6.4), sharex=True)
+    seen: dict = {}
+    for ax, field, label in ((axes[0], top, top_label), (axes[1], bottom, bottom_label)):
+        for (arm, strat), rows in sorted(groups.items()):
+            ks, mean = _mean_series(rows, field)
+            if not ks:
+                continue
+            ax.plot(ks, mean, linewidth=2, color=_arm_color(arm, seen),
+                    label=f"{arm}/{strat}")
+            if len(ks) > 1:                      # selective direct label, last point only
+                ax.annotate(f"{mean[-1]:.4g}", (ks[-1], mean[-1]), textcoords="offset points",
+                            xytext=(4, 0), fontsize=8, color="#52514e", va="center")
+        ax.set_title(label, fontsize=10, loc="left")
+        ax.set_ylabel(field, fontsize=9)
+        ax.grid(True, alpha=0.18, linewidth=0.6)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+    axes[1].set_xlabel("checkpoint")
+    axes[0].legend(fontsize=8, frameon=False)
+    fig.suptitle("Complexity is conserved; its placement is not", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
+def plot_lorenz(groups: dict, out_path: str) -> None:
+    """Lorenz curves of CC across files at the chain tips — how to SHOW a Gini.
+
+    Each arm's curve is the mean over its chains of the per-chain Lorenz points.
+    The diagonal is perfect equality. Two curves of SIMILAR SHAPE drawn over very
+    different file counts is the honest picture: the inequality is comparable, the
+    number of units it is spread over is not -- which is exactly why Gini and HHI
+    disagree here and why both are reported.
+    """
+    if not HAVE_MPL:
+        return
+    fig, ax = plt.subplots(figsize=(6.2, 5.2))
+    seen: dict = {}
+    drew = False
+    for (arm, strat), rows in sorted(groups.items()):
+        curves, nfiles = [], []
+        by_chain: dict[int, dict] = {}
+        for r in rows:
+            if r.get("ccdist_file_lorenz"):
+                by_chain.setdefault(int(r["chain"]), {})[int(r["checkpoint"])] = r
+        for chain, cps in by_chain.items():
+            tip = cps[max(cps)]
+            try:
+                pts = [float(x) for x in tip["ccdist_file_lorenz"].split(",")]
+            except (ValueError, AttributeError):
+                continue
+            curves.append(pts)
+            nf = _f(tip.get("total_files"))
+            if not math.isnan(nf):
+                nfiles.append(nf)
+        if not curves:
+            continue
+        width = min(len(c) for c in curves)
+        mean = [float(np.mean([c[i] for c in curves])) for i in range(width)]
+        xs = [i / (width - 1) for i in range(width)]
+        lbl = f"{arm}/{strat}"
+        if nfiles:
+            lbl += f" ({np.mean(nfiles):.0f} files)"
+        ax.plot(xs, mean, linewidth=2, marker="o", markersize=4,
+                color=_arm_color(arm, seen), label=lbl)
+        drew = True
+    if not drew:
+        plt.close(fig)
+        return
+    ax.plot([0, 1], [0, 1], linewidth=1, linestyle="--", color="#9b9a93",
+            label="perfect equality")
+    ax.set_xlabel("cumulative share of files (least complex first)")
+    ax.set_ylabel("cumulative share of total cyclomatic complexity")
+    ax.set_title("Lorenz curve of complexity across files (chain tips)", fontsize=11)
+    ax.grid(True, alpha=0.18, linewidth=0.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
+def plot_chain_strip(groups: dict, fields: list[str], out_path: str) -> None:
+    """Per-chain tip values for the headline placement metrics.
+
+    A mean curve hides the SPREAD between chains, and the spread is itself a finding
+    in this experiment (one prompt, ten chains, several genuinely different
+    architectures). One dot per chain, so a reader sees whether an effect is
+    consistent or driven by two outliers.
+    """
+    if not HAVE_MPL:
+        return
+    fields = [f for f in fields if any(series_by_chain(r, f) for r in groups.values())]
+    if not fields:
+        return
+    fig, axes = plt.subplots(1, len(fields), figsize=(2.6 * len(fields) + 1.4, 4.0))
+    if len(fields) == 1:
+        axes = [axes]
+    seen: dict = {}
+    for ax, field in zip(axes, fields):
+        labels = []
+        for i, ((arm, strat), rows) in enumerate(sorted(groups.items())):
+            cs = series_by_chain(rows, field)
+            tips = [pts[-1][1] for pts in cs.values() if pts]
+            if not tips:
+                continue
+            jitter = (np.random.default_rng(0).random(len(tips)) - 0.5) * 0.18
+            ax.scatter([i + j for j in jitter], tips, s=34, alpha=0.85,
+                       color=_arm_color(arm, seen), edgecolors="#fcfcfb", linewidths=0.8)
+            ax.hlines(float(np.mean(tips)), i - 0.28, i + 0.28,
+                      color=_arm_color(arm, seen), linewidth=2)
+            labels.append((i, arm))
+        ax.set_xticks([i for i, _ in labels])
+        ax.set_xticklabels([a for _, a in labels], fontsize=8, rotation=20)
+        ax.set_title(field, fontsize=9)
+        ax.grid(True, axis="y", alpha=0.18, linewidth=0.6)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+    fig.suptitle("Per-chain values at the chain tip (bar = arm mean)", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--run-id", help="which run to analyze (default: latest)")
     ap.add_argument("--gammas", default="1,1.5,2")
+    ap.add_argument("--chains", default="",
+                    help="comma-separated chain indices to recompute (default: all). "
+                         "For VALIDATING an analysis change in minutes instead of hours "
+                         "— a one-chain pass exercises every derive and summary code path. "
+                         "Results from a subset are NOT publishable: the chain-cluster "
+                         "bootstrap needs the full set, and the summary says so.")
     args = ap.parse_args()
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
@@ -822,7 +1306,8 @@ def main() -> int:
     def _anchor(value: str) -> str:
         v = expand_path(value, "tools")
         return v if os.path.isabs(v) else os.path.join(_cfg_dir, v)
-    for _tk in ("jscpd", "astgrep", "astgrep_rules", "pmd", "pmd_rules"):
+    for _tk in ("jscpd", "astgrep", "astgrep_rules", "pmd", "pmd_rules",
+                "pmd_metrics_rules", "ck"):
         _tv = cfg.get("tools", {}).get(_tk)
         if _tv and (os.sep in _tv or (os.altsep and os.altsep in _tv)):
             cfg["tools"][_tk] = _anchor(_tv)
@@ -840,8 +1325,14 @@ def main() -> int:
     shutil.rmtree(snap_tmp, ignore_errors=True)
     os.makedirs(snap_tmp, exist_ok=True)
     eff_cfg = _resolve_run_config(cfg, run_id, snap_tmp)
+    chain_filter = ({int(c) for c in args.chains.split(",") if c.strip()}
+                    if args.chains else None)
+    if chain_filter:
+        print(f"  ! VALIDATION MODE: chains {sorted(chain_filter)} only — "
+              f"results are NOT publishable (the chain-cluster bootstrap needs all chains)")
     rows = recompute_rows(eff_cfg, run_id, work_root,
-                          exclude=eff_cfg.get("acceptance", {}).get("dest_subpath"))
+                          exclude=eff_cfg.get("acceptance", {}).get("dest_subpath"),
+                          chains=chain_filter)
     if not rows:
         raise SystemExit(f"no checkpoint commits found for run_id {run_id!r}")
     print(f"run_id {run_id}: recomputed {len(rows)} rows from checkpoint commits")
@@ -887,14 +1378,10 @@ def main() -> int:
     lines.append("## Degradation slopes m (OLS of metric on checkpoint; 95% bootstrap CI)\n")
     lines.append("| arm/strategy | metric | slope m | CI low | CI high |")
     lines.append("|---|---|---:|---:|---:|")
-    slope_fields = ["erosion", "erosion_scoped", "erosion_handler", "verbosity", "cost_usd",
-                    "cache_read_tokens", "duration_api_ms", "hotspot_cc",
-                    "existing_fns_modified", "files_created",
-                    "wmc_max", "wmc_handler", "node_cc_median", "node_cc_max", "node_path_cc",
-                    "entry_cc", "packages_touched", "reedit_rate",
-                    "impact_mutation", "impact_godclass", "impact_composite"]
-    # each impact sub-score also sliced additive-only (_add) and mutative-only (_mut)
-    slope_fields += [f + s for f in IMPACT_BASE_FIELDS for s in ("_add", "_mut")]
+    # DERIVED from METRICS_TO_PLOT, never written out again: the two lists were
+    # maintained separately and a metric added to one but not the other silently got
+    # a plot with no slope, or a slope with no plot.
+    slope_fields = [f for f, _ in METRICS_TO_PLOT]
     for gk, grp in sorted(groups.items()):
         for field in slope_fields:
             cs = series_by_chain(grp, field)
@@ -971,8 +1458,16 @@ def main() -> int:
     lines.append("## Difference of slopes (arm A − arm B; 95% bootstrap CI over chains)\n")
     lines.append("A CI that excludes 0 means the two arms degrade at genuinely different rates on "
                  "that metric — the actual between-arm test, not eyeballing two separate CIs.\n")
-    lines.append("| strategy | A − B | metric | slope diff | CI low | CI high | excludes 0 |")
-    lines.append("|---|---|---|---:|---:|---:|:--:|")
+    lines.append("`q` is the Benjamini-Hochberg FDR-adjusted verdict over ALL metrics in this "
+                 "family: with 80+ metrics a 95% CI alone manufactures several false positives per "
+                 "run, so `excludes 0` is the raw test and `FDR` is the one to quote. `delta` is "
+                 "Cliff's delta (effect SIZE: |d|<0.147 negligible, <0.33 small, <0.474 medium, "
+                 "else large) — a CI says a difference is not zero, not that it matters. `exp` is "
+                 "the PRE-DECLARED expected direction (`METRIC_EXPECTATION`); `!` marks a result "
+                 "that contradicts it and is collected in the counter-signals section below.\n")
+    lines.append("| strategy | A − B | metric | slope diff | CI low | CI high | excludes 0 | FDR | delta | level diff | level FDR | exp |")
+    lines.append("|---|---|---|---:|---:|---:|:--:|:--:|---:|---:|:--:|:--:|")
+    counter_signals: list[tuple] = []
     for strat in sorted({s for (_, s) in groups}):
         arms = [a for (a, s) in groups if s == strat]
         if len(arms) != 2:
@@ -980,13 +1475,93 @@ def main() -> int:
         a1, a2 = (("spring", "officefloor") if {"spring", "officefloor"} <= set(arms)
                   else tuple(sorted(arms, reverse=True)))
         ra, rb = groups[(a1, strat)], groups[(a2, strat)]
+        # A bootstrap over fewer than 3 chains is degenerate: every replicate is the
+        # same resample, the CI collapses to a point and EVERY comparison "survives"
+        # FDR. That would fill the counter-signal section with spurious
+        # contradictions, which is worse than reporting nothing -- so predictions are
+        # not judged at all below that floor.
+        n_chains = min(len({int(r["chain"]) for r in ra}),
+                       len({int(r["chain"]) for r in rb}))
+        judge = n_chains >= 3
+        if not judge:
+            lines.append(f"| {strat} | {a1}−{a2} | _expectations not judged_ | | | | | | | | | "
+                         f"only {n_chains} chain(s) — bootstrap degenerate |")
+        rows_out = []
         for field in slope_fields:
-            d, lo, hi = bootstrap_diff_slope(ra, rb, field)
+            d, lo, hi, reps = bootstrap_diff_slope(ra, rb, field)
             if math.isnan(d):
                 continue
+            ld, llo, lhi, lreps = bootstrap_diff_level(ra, rb, field)
+            va = [_f(r.get(field)) for r in ra]
+            vb = [_f(r.get(field)) for r in rb]
+            delta = cliffs_delta([x for x in va if not math.isnan(x)],
+                                 [x for x in vb if not math.isnan(x)])
+            rows_out.append([field, d, lo, hi, _boot_p(reps), delta,
+                             ld, llo, lhi, (_boot_p(lreps) if lreps else 1.0)])
+        # FDR is applied ACROSS the whole family, separately per dimension: the slope
+        # tests and the level tests are two families of 80+, not one of 160.
+        keep_s = benjamini_hochberg([r[4] for r in rows_out])
+        keep_l = benjamini_hochberg([r[9] for r in rows_out])
+        for (field, d, lo, hi, pv, delta, ld, llo, lhi, lpv), sig, lsig in zip(
+                rows_out, keep_s, keep_l):
             excl = "yes" if (lo > 0 or hi < 0) else "no"
-            lines.append(f"| {strat} | {a1}−{a2} | {field} | {d:.4g} | {lo:.4g} | {hi:.4g} | {excl} |")
+            spec = METRIC_EXPECTATION.get(field)
+            mark = ""
+            if spec is not None and judge:
+                exp, dim = spec
+                # `d > 0 else -1` sent an exact 0 to -1, reporting a zero difference
+                # as a direction -- which happens for real (erosion_handler is 0 in
+                # both arms on several runs), not just in degenerate samples.
+                obs_slope = 0 if (not sig or d == 0) else (1 if d > 0 else -1)
+                obs_level = (0 if (not lsig or math.isnan(ld) or ld == 0)
+                             else (1 if ld > 0 else -1))
+                checks = ([("slope", obs_slope)] if dim == "slope"
+                          else [("level", obs_level)] if dim == "level"
+                          else [("slope", obs_slope), ("level", obs_level)])
+                for dim_name, obs in checks:
+                    m = ""
+                    if exp == 0 and obs != 0:
+                        m = "!"
+                    elif exp != 0 and obs == -exp:
+                        m = "!"
+                    elif exp != 0 and obs == 0:
+                        m = "~"
+                    if m:
+                        mark = "!" if (m == "!" or mark == "!") else "~"
+                        shown = (d, lo, hi) if dim_name == "slope" else (ld, llo, lhi)
+                        counter_signals.append((strat, f"{a1}−{a2}", field, dim_name,
+                                                *shown, exp, obs, delta, m))
+            exps = {1: "+", -1: "−", 0: "0"}.get(spec[0] if spec else None, "")
+            lines.append(f"| {strat} | {a1}−{a2} | {field} | {d:.4g} | {lo:.4g} | {hi:.4g} | "
+                         f"{excl} | {'yes' if sig else 'no'} | "
+                         f"{'' if delta is None else f'{delta:+.3f}'} | "
+                         f"{'' if math.isnan(ld) else f'{ld:.4g}'} | "
+                         f"{'yes' if lsig else 'no'} | {exps}{mark} |")
     lines.append("")
+
+    # ---- Counter-signals: every measure that does NOT support the hypothesis -----
+    lines.append("## Counter-signals — measures that do NOT support the hypothesis\n")
+    lines.append("Every metric whose FDR-surviving result contradicts its pre-declared expectation "
+                 "(`!`), or where a predicted difference did not appear (`~`). This section exists so "
+                 "a disagreeing measure is published by the harness rather than found by a reader: the "
+                 "suite is deliberately wider than the argument, and a wide suite is only honest if "
+                 "the misses are as visible as the hits. `~` is the weaker note — an absent effect is "
+                 "not a contrary one, and with FDR control over 80+ metrics some real effects will "
+                 "fail to survive.\n")
+    if not counter_signals:
+        lines.append("_None: every metric with a recorded expectation matched it "
+                     "(or expectations were not judged — see the note in the table above "
+                     "if a comparison had fewer than 3 chains)._\n")
+    else:
+        lines.append("| strategy | A − B | metric | on | diff | CI | expected | observed | delta | |")
+        lines.append("|---|---|---|:--:|---:|---|:--:|:--:|---:|:--:|")
+        for (strat, pair, field, dim_name, d, lo, hi, exp, obs, delta, mark) in counter_signals:
+            nm = {1: "A higher", -1: "B higher", 0: "no difference"}
+            lines.append(f"| {strat} | {pair} | {field} | {dim_name} | {d:.4g} | [{lo:.3g}, {hi:.3g}] | "
+                         f"{nm[exp]} | {nm[obs]} | {'' if delta is None else f'{delta:+.3f}'} | {mark} |")
+        lines.append("")
+        n_bang = sum(1 for c in counter_signals if c[10] == "!")
+        lines.append(f"**{n_bang} contradicted, {len(counter_signals) - n_bang} predicted-but-absent.**\n")
 
     # Impact-metric external validation — does per-checkpoint impact predict independent pain?
     lines.append("## Impact-metric validation (Spearman ρ of `impact_composite` vs independent outcomes)\n")
@@ -1015,6 +1590,56 @@ def main() -> int:
                              f"{k} event(s) < {MIN_EVENTS} of {n} |")
                 continue
             lines.append(f"| {gk[0]}/{gk[1]} | {note} | {rho:+.3f} | {lo:+.3f} | {hi:+.3f} | {n} |")
+    lines.append("")
+
+    # ---- Does structure predict MAINTENANCE OUTCOMES? ------------------------
+    lines.append("## Outcome-prediction matrix (Spearman ρ of each structural metric "
+                 "vs independent outcomes)\n")
+    lines.append("The thesis is not that the arms differ structurally — it is that PLACEMENT drives "
+                 "maintainability. That is only tested by regressing the structural measures against "
+                 "outcomes measured independently of them: what the agent paid ($, time, cache reads) "
+                 "and what it broke. ρ is computed WITHIN each arm/strategy (so the between-arm "
+                 "difference cannot manufacture a correlation) and then averaged over groups via "
+                 "Fisher z; `sig` counts the groups whose chain-cluster CI excluded 0.\n")
+    lines.append("If the `amount` rows are flat and the `placement` rows are not, Tesler and Brooks "
+                 "are supported by prediction and not merely by description — and if the `amount` "
+                 "rows predict just as well, that is the single most important negative result in "
+                 "this suite and belongs in the abstract.\n")
+    lines.append("| group | metric | " + " | ".join(n for _, n in OUTCOMES) + " |")
+    lines.append("|---|---|" + "---:|" * len(OUTCOMES))
+    _summary: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for field, _lab in METRICS_TO_PLOT:
+        grp_name = METRIC_GROUP.get(field)
+        if grp_name is None:
+            continue
+        cells = []
+        for ofield, _note in OUTCOMES:
+            zs, nsig = [], 0
+            for gk, grp in sorted(groups.items()):
+                src = scored(grp) if ofield in CORRECTNESS_OUTCOMES else grp
+                rho, lo, hi, n, k = spearman_ci(src, field, ofield, n_boot=400)
+                if math.isnan(rho):
+                    continue
+                zs.append(np.arctanh(max(min(rho, 0.999999), -0.999999)))
+                if lo > 0 or hi < 0:
+                    nsig += 1
+            if not zs:
+                cells.append("—")
+                continue
+            rho_bar = float(np.tanh(np.mean(zs)))
+            _summary[grp_name][ofield].append(abs(rho_bar))
+            cells.append(f"{rho_bar:+.3f} ({nsig}/{len(groups)})")
+        lines.append(f"| {grp_name} | `{field}` | " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append("### Mean |ρ| by claim group — the headline of this section\n")
+    lines.append("| group | " + " | ".join(n for _, n in OUTCOMES) + " |")
+    lines.append("|---|" + "---:|" * len(OUTCOMES))
+    for grp_name in ("amount", "tax", "placement"):
+        cells = []
+        for ofield, _note in OUTCOMES:
+            vals = _summary.get(grp_name, {}).get(ofield, [])
+            cells.append(f"{np.mean(vals):.3f} (n={len(vals)})" if vals else "—")
+        lines.append(f"| {grp_name} | " + " | ".join(cells) + " |")
     lines.append("")
     lines.append("### `impact_composite` on checkpoints that caused a true regression vs not\n")
     lines.append("| arm/strategy | median (true regression) | median (none) | n true-regr |")
@@ -1327,11 +1952,38 @@ def main() -> int:
     for field, title in METRICS_TO_PLOT:
         out_png = os.path.join(out_dir, f"{field}.png")
         plot_metric(groups, field, title, out_png)
+    # Purpose-built figures. The per-metric trajectory plot renders ONE field at a
+    # time, so the conservation argument (two quantities, different units) and the
+    # Lorenz display (a distribution, not a time series) need their own figures.
+    custom = []
+    for name, fn in (("conservation", plot_conservation), ("lorenz", plot_lorenz)):
+        path = os.path.join(out_dir, f"{name}.png")
+        try:
+            fn(groups, path)
+            if os.path.isfile(path):
+                custom.append(name)
+        except Exception as exc:                   # noqa: BLE001 - reported, not raised
+            print(f"  ({name} figure failed: {exc})")
+    strip_fields = ["ccdist_file_top5", "cum_change_top5", "ck_handler_lcom", "wmc_handler"]
+    strip_path = os.path.join(out_dir, "chain_strip.png")
+    try:
+        plot_chain_strip(groups, strip_fields, strip_path)
+        if os.path.isfile(strip_path):
+            custom.append("chain_strip")
+    except Exception as exc:                       # noqa: BLE001
+        print(f"  (chain_strip figure failed: {exc})")
     if HAVE_MPL:
         lines.append("## Plots\n")
+        for name in custom:
+            lines.append(f"- `analysis/{name}.png`  **(purpose-built figure)**")
         for field, _ in METRICS_TO_PLOT:
             lines.append(f"- `analysis/{field}.png`")
 
+    if chain_filter:
+        lines.insert(1, f"\n> **PARTIAL RUN — NOT PUBLISHABLE.** Recomputed from chains "
+                        f"{sorted(chain_filter)} only (`--chains`). Every CI here is built on a "
+                        f"fraction of the chain-cluster sample. Re-run without `--chains` before "
+                        f"quoting any number.\n")
     summary = os.path.join(out_dir, "summary.md")
     with open(summary, "w") as fh:
         fh.write("\n".join(lines) + "\n")

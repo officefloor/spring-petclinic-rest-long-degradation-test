@@ -120,7 +120,42 @@ CSV_FIELDS = [
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
     "acceptance_touched",  # acceptance test files the agent edited (restored; blank = none)
     "notes",
-]
+    # PLACEMENT (harness/placement.py): where the conserved complexity sits, and how
+    # far change spreads. Published/textbook measures only -- see that module's header.
+    # `analyze` writes the UNION of row keys, so these also appear on re-analysis of
+    # runs recorded before they existed; listing them here is for the LIVE runner.
+    "total_cc", "total_fns", "total_files", "total_packages",
+    "ccdist_fn_gini", "ccdist_fn_hhi", "ccdist_fn_top1", "ccdist_fn_top5",
+    "ccdist_fn_hnorm", "ccdist_fn_n",
+    "ccdist_file_gini", "ccdist_file_hhi", "ccdist_file_top1", "ccdist_file_top5",
+    "ccdist_file_hnorm", "ccdist_file_n", "ccdist_file_lorenz",
+    "ccdist_pkg_gini", "ccdist_pkg_hhi", "ccdist_pkg_top1", "ccdist_pkg_top5",
+    "ccdist_pkg_hnorm", "ccdist_pkg_n",
+    "halstead_volume", "halstead_effort", "halstead_vocab", "mi_mean", "mi_min",
+    "voldist_file_gini", "voldist_file_hhi", "voldist_file_top1", "voldist_file_top5",
+    "voldist_file_hnorm", "voldist_file_n",
+    "indirection_median", "indirection_max", "indirection_deep_share", "indirection_reached",
+    "propagation_cost", "propagation_fanout_median", "propagation_fanout_max", "propagation_files",
+    "change_entropy", "change_entropy_norm", "change_files", "change_top1", "change_top5", "change_hhi",
+    "cum_change_entropy", "cum_change_entropy_norm", "cum_change_files",
+    "cum_change_top1", "cum_change_top5", "cum_change_hhi",
+    "container_advice", "container_aspect", "container_filter", "container_entity_listener",
+    "container_validator", "container_body_advice", "container_total",
+    # PMD: cognitive / NPath values + the published GodClass / DataClass verdicts
+    "pmd_cognitive_total", "pmd_cognitive_max", "pmd_cognitive_mean",
+    "pmd_cyclo_total", "pmd_cyclo_max", "pmd_cyclo_mean",
+    "pmd_npath_total", "pmd_npath_max", "pmd_npath_mean",
+    "cogdist_fn_gini", "cogdist_fn_hhi", "cogdist_fn_top1", "cogdist_fn_top5",
+    "cogdist_fn_hnorm", "cogdist_fn_n",
+    "pmd_god_classes", "pmd_data_classes", "pmd_demeter_violations", "pmd_handler_is_god_class",
+    # CK: the Chidamber & Kemerer suite, per arm and pinned to the handler class
+    "ck_classes", "ck_wmc_total",
+    "wmcdist_class_gini", "wmcdist_class_hhi", "wmcdist_class_top1", "wmcdist_class_top5",
+    "wmcdist_class_hnorm", "wmcdist_class_n",
+] + [f"ck_{m}_{agg}" for m in ("cbo", "rfc", "lcom", "lcom_star", "tcc", "lcc",
+                               "dit", "fanin", "fanout") for agg in ("mean", "max")
+] + [f"ck_handler_{m}" for m in ("cbo", "rfc", "lcom", "lcom_star", "tcc", "lcc",
+                                 "dit", "fanin", "fanout", "wmc")]
 
 PHASES = ["Start", "Early", "Mid", "Late", "Final"]
 
@@ -1268,6 +1303,12 @@ def main() -> int:
         cfg["tools"]["astgrep_rules"] = resolve(cfg["tools"]["astgrep_rules"])
     if cfg.get("tools", {}).get("pmd_rules"):
         cfg["tools"]["pmd_rules"] = resolve(cfg["tools"]["pmd_rules"])
+    # Placement metrics: same absolute-path discipline as pmd_rules. PMD and CK are
+    # both spawned with cwd=<arm worktree>, where a config-relative path resolves
+    # against the wrong tree and the pass silently reports nothing.
+    for _tk in ("pmd_metrics_rules", "ck"):
+        if cfg.get("tools", {}).get(_tk):
+            cfg["tools"][_tk] = resolve(cfg["tools"][_tk])
     # Pinned clone/smell binaries: anchor to the config dir when given as a PATH (contains a
     # separator, e.g. tools/node_modules/.bin/jscpd) so they resolve against the harness repo,
     # not the arm worktree that metrics/quality_gate run them in. Bare names on PATH stay bare.

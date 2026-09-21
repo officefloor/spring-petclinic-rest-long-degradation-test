@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<ruleset name="java-metrics"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+  <description>
+    COHESION / COUPLING / COGNITIVE metrics for harness/placement.py.
+
+    KEPT SEPARATE FROM pmd-rules/java-wasteful.xml ON PURPOSE. That ruleset feeds the
+    Verbosity metric and the impact_gated quality gate, and it deliberately EXCLUDES
+    every complexity rule so Verbosity stays independent of the complexity signal.
+    Mixing these in would silently couple two metrics that must not be coupled. This
+    ruleset is never passed to the quality gate; it is read only by the metrics pass,
+    which parses the VALUES out of the messages rather than counting violations.
+
+    Thresholds are set to their minimum so the rules fire on EVERY unit and act as
+    value reporters, not as judgements -- except GodClass and DataClass, which are
+    published DETECTORS (Lanza and Marinescu 2006) and are wanted as verdicts: a
+    binary, externally-defined threshold nobody in this experiment chose.
+  </description>
+
+  <!-- ===================== value reporters (threshold = report everything) ==== -->
+
+  <!-- Campbell / SonarSource 2018. Penalises NESTING and forgives flat sequences,
+       so it separates 'one deeply nested method' from 'one long flat dispatch' -
+       a distinction cyclomatic complexity cannot make. -->
+  <rule ref="category/java/design.xml/CognitiveComplexity">
+    <properties><property name="reportLevel" value="1"/></properties>
+  </rule>
+
+  <!-- McCabe 1976, reported per method AND as a class total, as a cross-check on
+       the harness's own lizard-derived CC. Two independent parsers agreeing is
+       worth the duplication. -->
+  <rule ref="category/java/design.xml/CyclomaticComplexity">
+    <properties>
+      <property name="classReportLevel" value="1"/>
+      <property name="methodReportLevel" value="1"/>
+    </properties>
+  </rule>
+
+  <!-- Nejmeh 1988: acyclic execution paths. A third, independent operationalisation
+       of 'amount of complexity' for the conservation test. -->
+  <rule ref="category/java/design.xml/NPathComplexity">
+    <properties><property name="reportLevel" value="1"/></properties>
+  </rule>
+
+  <!-- CBO-equivalent: distinct classes this one depends on. -->
+  <rule ref="category/java/design.xml/CouplingBetweenObjects">
+    <properties><property name="threshold" value="1"/></properties>
+  </rule>
+
+  <!-- Import fan-out: the other half of the coupling picture. -->
+  <rule ref="category/java/design.xml/ExcessiveImports">
+    <properties><property name="minimum" value="1"/></properties>
+  </rule>
+
+  <!-- ===================== published detectors (verdicts, not values) ========= -->
+
+  <!-- Lanza and Marinescu 2006, exactly: WMC >= 47 AND ATFD > 5 AND TCC < 1/3.
+       The threshold is theirs, not ours - which is the whole point of including it. -->
+  <rule ref="category/java/design.xml/GodClass"/>
+
+  <!-- The complement: a class that holds data and no behaviour. -->
+  <rule ref="category/java/design.xml/DataClass"/>
+
+  <!-- Lieberherr 1989. Chained access across objects - a coupling smell that a
+       distributed architecture could plausibly make WORSE, so it is here as a
+       counter-signal candidate, not as expected supporting evidence. -->
+  <rule ref="category/java/design.xml/LawOfDemeter"/>
+</ruleset>

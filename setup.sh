@@ -85,6 +85,37 @@ else
   fi
 fi
 
+# CK supplies the Chidamber & Kemerer suite (lcom, lcom*, tcc, lcc, cbo, rfc, dit, noc,
+# fanin/fanout) for harness/placement.py. Source-only via Eclipse JDT -- no compilation,
+# so it runs over a materialised checkpoint tree exactly like lizard and PMD do. ~16MB,
+# gitignored and pinned by tools/ck-version.txt + tools/ck-sha256.txt.
+CK_VERSION="$(cat "$HARNESS_DIR/tools/ck-version.txt" 2>/dev/null || echo '')"
+if [ -z "$CK_VERSION" ]; then
+  echo "   ! tools/ck-version.txt missing — skipping CK (ck_* metrics will be BLANK, not zero)"
+elif [ -f "$HARNESS_DIR/tools/ck/ck.jar" ] \
+     && [ "$(sha256sum "$HARNESS_DIR/tools/ck/ck.jar" | cut -d' ' -f1)" \
+          = "$(cut -d' ' -f1 < "$HARNESS_DIR/tools/ck-sha256.txt" 2>/dev/null)" ]; then
+  echo "   CK $CK_VERSION already installed (tools/ck/ck.jar)"
+else
+  CK_URL="https://repo1.maven.org/maven2/com/github/mauricioaniche/ck/${CK_VERSION}/ck-${CK_VERSION}-jar-with-dependencies.jar"
+  echo "   downloading CK $CK_VERSION ..."
+  mkdir -p "$HARNESS_DIR/tools/ck"
+  if curl -sfL -o "$HARNESS_DIR/tools/ck/ck.jar" "$CK_URL"; then
+    # FAIL CLOSED on a hash mismatch, like the lizard/jscpd pins: a metric computed by
+    # a different build of the tool is not comparable with the runs already recorded.
+    if [ -f "$HARNESS_DIR/tools/ck-sha256.txt" ] \
+       && [ "$(sha256sum "$HARNESS_DIR/tools/ck/ck.jar" | cut -d' ' -f1)" \
+            != "$(cut -d' ' -f1 < "$HARNESS_DIR/tools/ck-sha256.txt")" ]; then
+      echo "   ! CK sha256 MISMATCH — removing; ck_* metrics will not run"
+      rm -f "$HARNESS_DIR/tools/ck/ck.jar"
+    else
+      echo "   CK $CK_VERSION installed (tools/ck/ck.jar)"
+    fi
+  else
+    echo "   ! CK download failed — the ck_* cohesion/coupling metrics will not run"
+  fi
+fi
+
 # ImpactGate (the impact_gated strategy's structural-impact gate). Optional: only the
 # impact_gated strategy needs it. Installed editable from a sibling checkout if present,
 # so `impact-gate` is on PATH inside this venv; otherwise the run uses config.yaml's

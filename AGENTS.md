@@ -151,6 +151,165 @@ rationale (the "why", so it doesn't silently regress):
   Changing this would redefine the measure and invalidate `baselines/officefloor.json` — do
   not do it mid-experiment.
 
+## The placement suite (`harness/placement.py`) — conservation vs. placement
+
+Added 2026-09-21. It exists because of a methodological objection that the
+`impact_*` score cannot answer: **the structural-impact formula was identified on
+this experiment**, and the run it scores is in the set it was fitted to (the
+formula landed 2026-08-21/22; every pre-`blind-202609010045` run predates it but
+informed it). An instrument fitted to the data cannot then be the evidence for a
+claim about that data, and its in-sample construct-validity correlations are not a
+defence. So the placement suite is **published or textbook measures only**, and the
+argument is re-derived without any bespoke composite.
+
+### The claim it measures, in three parts
+
+The thesis is NOT that one architecture is simpler. It is Tesler and Brooks:
+
+1. **AMOUNT is conserved** (Tesler). Measured four independent ways — cyclomatic
+   (McCabe 1976), cognitive (Campbell/SonarSource 2018), NPath (Nejmeh 1988) and
+   Halstead volume (1977). On `blind-202608100006` chain0 the arms agree on all
+   four: total CC 680 vs 672, cognitive 336 vs 333, NPath 971 vs 1046, Halstead
+   volume 221,706 vs 227,302. **This is the most important NEGATIVE result the
+   harness produces and belongs in the abstract**, not buried: the arms carry the
+   same complexity, so any claim of "simpler" is false and the whole argument has
+   to be about placement.
+2. **The distributed arm pays a TAX** (Brooks' accidental complexity). More files
+   (174 vs 64), a 555-line YAML wiring artifact with no counterpart, more coupling,
+   higher agent cost. These are expected COUNTER-SIGNALS and are declared as such.
+3. **PLACEMENT differs, and that is the whole finding.** Same total, packed
+   differently: CC-in-the-heaviest-file share 9% vs 21%, heaviest five 22% vs 50%,
+   cumulative change entropy 0.89 vs 0.70 with 80% of all Spring's change landing in
+   five files. Cohesion follows (handler LCOM 0 vs 513, WMC 2 vs 137), and PMD's
+   **GodClass detector — Lanza & Marinescu's published thresholds, not ours** —
+   fires on the Spring handler and on no OfficeFloor class.
+
+### `METRIC_EXPECTATION`: predictions on the record, and the counter-signal section
+
+Every metric with a prediction carries `(sign, dimension)` in `analyze.py`:
+`+1` supporting if the concentrated arm is higher, `-1` if the distributed arm is,
+`0` if they should not differ; dimension is `level` (end state), `slope` (rate) or
+`both`. **Metrics not listed are never flagged** — silence is not a prediction.
+
+`analyze` then emits a **Counter-signals** section listing every measure whose
+FDR-surviving result contradicts its prediction (`!`) or where a predicted
+difference did not appear (`~`). The suite is deliberately wider than the argument,
+and a wide suite is only honest if the misses are as visible as the hits. **Do not
+edit an expectation to match an observed result** — record the miss instead.
+
+> **The dimension is load-bearing, and getting it wrong invents counter-signals.**
+> `files_created` is a LEVEL claim (the pipeline arm creates 63 files per chain
+> against 10) whose SLOPE runs the *other* way, because it front-loads its files and
+> its per-rule rate then declines faster. Testing a state claim on a slope flagged it
+> as contradicting the thesis when it does the opposite. State claims → `level`,
+> degradation claims → `slope`.
+
+### Multiple comparisons are now a first-class problem
+
+The suite tests **80+ metrics per run**. At a 95% CI roughly one in twenty null
+comparisons excludes zero by chance, so a table this wide manufactures several false
+positives per run. `analyze` therefore reports **Benjamini-Hochberg FDR** (`FDR`
+column) beside the raw `excludes 0`, and **Cliff's delta** as an effect size, and the
+counter-signal logic judges on the FDR-surviving verdict only. **Quote the FDR
+column, not the raw CI.** This is the direct cost of measuring everything and it is
+paid here rather than denied.
+
+One immediate consequence: on `blind-202608100006` the whole-app `erosion` slope
+difference (raw CI `[-0.00166, -3.7e-05]`, the "ordering came out backwards" result
+noted above) **does not survive FDR**. Treat it as noise, not as a backwards finding.
+
+### The outcome-prediction matrix
+
+Structure alone is description. The section *Outcome-prediction matrix* regresses
+every structural metric against outcomes measured independently of it (agent $, time,
+cache reads, true regressions), **within** each arm so the between-arm difference
+cannot manufacture the correlation, and summarises mean |ρ| by claim group. If
+`amount` is flat and `placement` is not, Tesler and Brooks are tested by prediction
+rather than assumed. **If `amount` predicts just as well, that is the single most
+important negative result in the suite** and must be reported as such.
+
+### Gotchas specific to this suite
+
+* **`indirection_*` understates a pipeline arm and must never be quoted alone.**
+  Depth is measured from the handling NODES, so a pipeline's ~20 wired steps are all
+  depth 0 while a single-handler arm has exactly one — the same 1-node/N-node
+  asymmetry `node_cc_median` carries. Worse, a pipeline's hops are declared in YAML
+  and dispatched by the container, so they are not Java calls and do not appear at
+  all. Read it as this depth PLUS `node_count`.
+* **`propagation_cost` magnitudes are not trustworthy; only the between-arm
+  comparison is.** The `n²` denominator rewards splitting the same code over more
+  files, and the metric inherits `call_adjacency`'s conservative resolution.
+  MacCormack reports 10-60% for real systems; we see 1.5-3.3%, which means edges are
+  missing, not that the design is exceptional. Publish
+  `propagation_fanout_median`/`_max` (NOT normalised) beside it.
+* **Maintainability Index is computed PER FILE then averaged**, never over
+  whole-codebase totals: fed a 680-CC total it saturates the 0 floor for both arms
+  and silently reports nothing.
+* **CK emits `NaN` for ratios with no denominator** (TCC of a class with fewer than
+  two methods). These are converted to blanks; a `NaN` reaching the CSV would be
+  coerced to a float by `_f()` and poison a fit.
+* **`pmd-rules/java-metrics.xml` is SEPARATE from `java-wasteful.xml` on purpose.**
+  The wasteful ruleset feeds Verbosity and the quality gate and deliberately excludes
+  every complexity rule; merging them would couple two metrics that must stay
+  independent. Never pass the metrics ruleset to the quality gate.
+* **`container_total` is a VALIDITY column, not a quality measure.** It automates the
+  framework-dispatch count this guide already required before quoting any call-graph
+  statistic. If it moves off baseline, the call-graph numbers for that chain are
+  measuring a shrinking fraction of the code.
+* **`call_adjacency` is now the ONE definition of call resolution**, shared by
+  `_closure` and the placement metrics so they cannot drift. Changing it changes
+  `node_cc_*` too — re-check a known chain (OF `blind-202608100006` chain0: 19 nodes,
+  median 9.0, path 229) after any edit.
+* **`_resolve_run_config` backfilled `arms.*` but NOT `tools.*`, and that silently
+  emptied the whole PMD/CK half.** A run's config snapshot cannot contain a tool key
+  invented after it, so `pmd_metrics_rules` and `ck` were absent, both readers
+  correctly returned `None`, and every `pmd_*`/`ck_*` column came back BLANK on
+  re-analysis while the pure-Python columns looked perfect — the exact silent-zero
+  failure that function exists to prevent, one level up. Absent `tools.*` keys are now
+  filled from live with a logged `!` line, like `arms.*`. **After adding any metric
+  that needs new config, re-analyse ONE chain and check the columns are populated, not
+  just that the run exited 0.**
+* **A bootstrap over fewer than 3 chains is degenerate, and it looks like signal.**
+  Every replicate resamples the same chain, so the CI collapses to a POINT and every
+  comparison "survives" FDR — a one-chain validation pass produced **17 spurious
+  counter-signals** before this was guarded. `analyze` now refuses to judge
+  expectations below 3 chains and says so in the table. Never read a counter-signal
+  section from a `--chains` run.
+* **An exact ZERO difference is not a direction.** `1 if d > 0 else -1` sent a
+  point estimate of 0 to −1 and reported "B higher" for a difference of zero. This
+  happens on real runs, not just degenerate ones: `erosion_handler` is 0 in both arms
+  on several chains. Both the slope and level verdicts now map `d == 0` to "no
+  difference".
+* **`slope_fields` is DERIVED from `METRICS_TO_PLOT`.** They used to be two hand-kept
+  lists and a metric added to one but not the other silently got a plot with no slope,
+  or a slope with no plot. Add a metric in one place.
+
+### First reading (one chain of `blind-202608100006`, provisional)
+
+Mean |ρ| against independently measured outcomes, by claim group — the analysis that
+tests the thesis rather than describing it:
+
+| group | agent $ | comprehension | model time |
+|---|---:|---:|---:|
+| amount | 0.055 | 0.022 | 0.036 |
+| tax | 0.095 | 0.068 | 0.103 |
+| **placement** | **0.180** | **0.164** | **0.166** |
+
+Placement measures predict maintenance effort roughly **3x better than amount
+measures**, which is the Tesler/Brooks claim stated as a prediction. **Provisional:
+one chain, and the `broke untouched rule` column had too few events to test.** Re-read
+it from a full run before quoting, and if the `amount` column rises to meet the
+others, say so — that outcome is the interesting one.
+
+### Cost
+
+All of it is pure-derive: `analyze --recompute` materialises every checkpoint tree
+already, so no run needs re-executing and no agent tokens are spent. `placement_all`
+is arithmetic over data already in memory plus two git diffs (~free); PMD and CK each
+spawn a JVM per checkpoint, which dominates. Unset `tools.ck` to re-analyse without
+the C&K suite — those columns then go BLANK, not zero, and `series_by_chain` drops
+them from fits.
+
 ## Module map (`harness/`)
 
 | file | responsibility |
@@ -159,6 +318,7 @@ rationale (the "why", so it doesn't silently regress):
 | `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation). `probe()` is the read-only cold-reader. |
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
+| `placement.py` | **placement** metrics: where the (conserved) complexity sits and how far change spreads. Concentration indices (Gini/HHI/top-k/entropy) over CC per function/file/package, Halstead + Maintainability Index, indirection depth, MacCormack propagation cost, Hassan change entropy, container-dispatch accounting, and the PMD/CK readers. Called from `compute_all`; **published measures only** — see that module's header for why the bespoke `impact_*` score may not carry this claim. |
 | `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
 | `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the symptom-only refactor prompt from the flagged-class LOCATIONS + spec (`refactor_prompt`; `_format_drivers` strips cost figures — design B), and shapes the capture entry per attempt (`attempt_summary`, incl. `quality`/`quality_turns`). No effect on the other strategies. |
 | `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + **PMD** smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Smell detector is PMD when `tools.pmd` is set (`_pmd_lines`, ruleset `pmd-rules/java-wasteful.xml`), else the legacy ast-grep path (`_smell_lines`) — selected from the run's own config snapshot, so an old run replays with the detector it used. `metrics._pattern_lines` routes Verbosity through the SAME choice, so gate and metric never disagree. If one detector cannot run the gate enforces on the other and records `clones_ran`/`smells_ran`; it never stops a run. Reused by `_impact_gated_implement`'s quality sub-loop. |
@@ -855,7 +1015,22 @@ python -m harness.run_experiment --config config.yaml --test-mode blind         
 python -m harness.run_experiment --config config.yaml --test-mode full                      # full run, full-suite condition
 python -m harness.run_experiment --config config.yaml --test-mode blind --run-id <id> --arm officefloor --chain 2      # re-run ONE chain into an existing run
 python -m harness.analyze --config config.yaml --run-id <id>
+python -m harness.analyze --config config.yaml --run-id <id> --chains 0          # VALIDATION: one chain, minutes not hours
 ```
+
+**`analyze` is pure-derive and costs no agent tokens.** It materialises a detached
+worktree at every checkpoint commit and re-runs `metrics.compute_all` over it, so a
+metric added today can be backfilled onto every historical run without re-executing
+anything. The cost is CPU and wall-clock: ~1 hour per 1200-checkpoint run before the
+placement suite, and the PMD and CK passes each spawn a JVM per checkpoint on top.
+
+**Use `--chains 0` to validate an analysis change.** A one-chain pass exercises every
+derive and every summary code path in minutes, which is the difference between finding
+a bug in the summary stage now and finding it after a multi-hour recompute. Subset
+results are **not publishable** — the chain-cluster bootstrap needs the full set — and
+`summary.md` stamps a PARTIAL RUN banner at the top so a partial file can never be
+mistaken for a real one afterwards. **Back up `results/<run_id>/analysis/` before a
+re-run**: it is overwritten in place.
 
 `make_worktree` is idempotent per run_id (force-removes the worktree, deletes the
 branch, recreates from base) so a single-chain re-run into an existing run_id is

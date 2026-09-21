@@ -7,3 +7,4 @@ __pycache__/
 # The aggregate results/<run_id>/ CSV + analysis stay LOCAL (gitignored here).
 # Each chain's results are committed onto its evolve/<strategy>/<arm>/chain<n>/<run_id>
 # branch in the arm repo instead, so every branch is a self-contained record.
+/results-backup-*/
