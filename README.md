@@ -1,3 +1,9 @@
+## The paper for this test harness
+
+Conserved amount, negotiable placement: prompting moves one architecture's complexity distribution and not the other's
+
+Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550) 
+
 # PetClinic-Evolve
 
 <!-- MAINTAINERS: keep this README and AGENTS.md in sync with the harness on every
