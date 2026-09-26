@@ -2,7 +2,16 @@
 
 Conserved amount, negotiable placement: prompting moves one architecture's complexity distribution and not the other's
 
-Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550) 
+Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550)
+
+> Sagenschneider, D. (2026). *Conserved amount, negotiable placement: prompting
+> moves one architecture's complexity distribution and not the other's.*
+> Zenodo. https://doi.org/10.5281/zenodo.22967550
+
+The paper's LaTeX source and figures are in [`paper/`](./paper). The per
+checkpoint commits and raw capture for every chain are published as branches in
+[officefloor/spring-petclinic-rest](https://github.com/officefloor/spring-petclinic-rest),
+named `evolve/<run>/<strategy>/<arm>/chain<n>`.
 
 # PetClinic-Evolve
 
@@ -16,19 +25,6 @@ Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](ht
 > referenced by `CLAUDE.md`) for the architecture, the checkpoint lifecycle, the
 > design pillars, the acceptance-suite conventions, and the run/analyze internals.
 > AGENTS.md supersedes this README wherever they disagree.
-
-## Cite this work
-
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550)
-
-> Sagenschneider, D. (2026). *Conserved amount, negotiable placement: prompting
-> moves one architecture's complexity distribution and not the other's.*
-> Zenodo. https://doi.org/10.5281/zenodo.22967550
-
-The paper's LaTeX source and figures are in [`paper/`](./paper). The per
-checkpoint commits and raw capture for every chain are published as branches in
-[officefloor/spring-petclinic-rest](https://github.com/officefloor/spring-petclinic-rest),
-named `evolve/<run>/<strategy>/<arm>/chain<n>`.
 
 A long-horizon degradation harness that holds the coding agent **fixed** and
 makes **architecture** the independent variable: Spring `@RestController`
