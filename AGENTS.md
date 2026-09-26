@@ -346,6 +346,103 @@ them from fits.
 `acceptance/` holds the black-box test suite (see below). `checkpoints.yaml` is
 the ordered rule stream; `config.yaml` wires arms/paths/limits.
 
+### `tools/gallery/` — the cross-run metric gallery (reader-facing, 2026-09)
+
+`analyze` is per-RUN: it recomputes one run's branches and answers "what happened
+here". The gallery is the orthogonal cut — ONE metric across ALL FOUR conditions
+and both arms — which is the view a reader needs to understand a metric in
+isolation, and the source of the blog series' per-metric figures.
+
+**It publishes DESCRIPTIVE numbers only — no inferential ones.** Each figure is
+four small multiples (one per condition, shared y) with two lines each, the final
+phase shaded with each arm's mean over it drawn and labelled, and under it a table
+of all five phase means for all eight series. The prose beside it says what the
+metric is and how it is calculated. **No slope, no CI, no significance test, no
+effect size.** Those belong in `summary.md`, which has the FDR correction across
+all 101 metrics, Cliff's delta, and the counter-signals section; quoting a slope
+off a per-metric page is exactly the multiplicity error the correction exists to
+prevent. A phase mean is an average of the data and carries no such claim, which
+is why it is allowed here and a CI is not — **do not "just add" an interval to the
+table, that is the whole line this tool holds.** `--stats` re-adds `metrics.csv`
+(all five phase means + bootstrapped slope) when the machine-readable cut is
+wanted, and the bootstrap is the ONLY thing in this tool that costs real time: the
+default full build is ~38s, with `--stats --n-boot 2000` it is ~7min.
+
+**Phase means are computed on every build and are free.** They are arithmetic over
+rows already in memory (`all_phase_means`), so the figures, `index.html` and the
+Blogger posts all carry them without `--stats`. Phases come from `PHASES` /
+`phase_for` in `run_experiment.py`, **imported not restated**, so the tool cannot
+drift from the `phase` column it reads: five bins of twelve over sixty change
+requests, and `Final` is therefore the mean of the last twelve. The figure reads
+its shaded window off the data's own phase stamps rather than hardcoding 49-60, so
+a run of a different length shades its own fifth. `--reuse-stats` now caches the
+SLOPE only; phase means are always recomputed, because they are free and a stale
+one would be silent. Verified against the authority: all 280 phase means that
+`summary.md` also reports (7 metrics x 4 runs x 2 arms x 5 phases) match it exactly.
+
+| file | responsibility |
+|---|---|
+| `metric_catalog.py` | the PROSE. One entry per metric: `title`, `group`, `direction`, `source`, `what`, **`formula`**, **`terms`**, `how`, `read`, and a `caveat` carrying that metric's known misreading (the ones in "Gotchas" below, written for a reader who has not read this file). 101 entries. `formula` is the equation and `terms` defines every symbol in it and the population summed over — **every formula was read off the implementation, not off the paper**, and where the harness deviates from the published definition the deviation is stated. **When a metric's definition changes in `metrics.py` / `placement.py`, update its entry here in the same change, `formula` included** — this is the only place either the maths or the caveats are stated for an outside audience. |
+| `metric_gallery.py` | the NUMBERS and the figures. Reads each run's already-computed `records.concat.csv` (it recomputes NOTHING — if a value disagrees with that run's `summary.md`, the run is right and this has a bug), and emits `blog/metric-gallery/`: one PNG per metric showing all eight series with the final phase shaded and its mean labelled, a five-phase table under every figure, `metrics.csv`, a browsable `index.html`, and with `--blogger` a set of paste-ready Blogger post bodies. `phase_rows` is the ONE place the table's contents are decided, so the page and the Blogger fragment cannot disagree about a number; they differ only in markup. `check_catalog_style()` runs first and **fails the build** if the catalogue breaks house style. |
+| `publish_figs.sh` | hosts `figs/` on GitHub Pages via an orphan `gh-pages` branch built in a throwaway worktree. Exists because Blogger has no bulk image upload and hands back opaque URLs, so a regenerated figure could not replace an old one in place. With the figures self-hosted, the post body is generated text with stable URLs and a re-analysis updates every figure in every post without touching Blogger. `--push` to publish; local-only by default. |
+
+Aggregation is kept identical to `analyze.plot_metric` by **importing**
+`series_by_chain` / `_bucket_by_checkpoint` / `bootstrap_slope` / `ARM_COLORS`
+rather than reimplementing them; verified against `summary.md` (e.g. `wmc_handler`
+spring/just-solve 1.769 [1.592, 1.925] in both). Two things it must do that
+`analyze` does not: synthesise the derived `impact_*_add` / `_mut` views (they are
+never written to the CSV), and coerce the `True`/`False` columns to 1/0 (otherwise
+every pass-rate metric silently reads as empty rather than erroring).
+
+The run → condition mapping lives in `metric_gallery.RUNS` and is the one thing to
+re-check when adding a run: **a condition is what the agent was PROMPTED with, not
+what the `strategy` column is named** (`blind-202609010045` is recorded as
+`impact_gated` and is condition 4). `formula-provided` there is the reader-facing
+name for `metric-in-prompt`.
+
+```bash
+python -m tools.gallery.metric_gallery                       # figures + page, ~25s
+python -m tools.gallery.metric_gallery --only node_path_cc   # iterate on one figure
+python -m tools.gallery.metric_gallery --no-figs             # prose edits, no redraw
+python -m tools.gallery.metric_gallery --stats --n-boot 2000 # + metrics.csv (~7 min)
+# publish route: host the figures, then regenerate the post bodies against them
+./tools/gallery/publish_figs.sh --push
+python -m tools.gallery.metric_gallery --no-figs --blogger \
+    --img-base https://officefloor.github.io/spring-petclinic-rest-long-degradation-test/figs/
+```
+
+`--only` writes `index.partial.html` / `metrics.partial.csv`, never the real ones:
+it is for iterating on one figure, and it used to silently truncate the full
+gallery down to that single metric.
+
+**House style is enforced, not advised.** Everything in `metric_catalog.py` is
+published prose. The blog's rules are short sentences and no dash punctuation, and
+markdown emphasis does not render on an HTML page, so a stray `*word*` reaches the
+reader verbatim. `check_catalog_style()` asserts both at import and refuses to
+build. Hyphenated compounds (`scale-free`) are deliberately allowed, and so is
+anything inside a `<code>` span or an HTML tag — a CLI flag legitimately reads
+`--name-status -M` and rewriting it to satisfy the rule would make the
+documentation wrong. Fix a real violation by breaking the sentence or using a
+colon, not by loosening the regex.
+
+**Formulas are Unicode + inline HTML, never LaTeX or MathJax.** The destination is
+a Blogger post body, which cannot rely on an external script or stylesheet loading
+(and the Artifact CSP blocks most of them outright). `&Sigma;`, `&radic;`,
+`<sub>`/`<sup>` and `&middot;` render everywhere with zero dependencies.
+
+**Blogger specifics** (why the fragments look the way they do): a post body is an
+HTML fragment rendered inside the blog template, so a `<style>` block fights it and
+some themes strip it. Every rule in the Blogger output is therefore an inline
+`style=` attribute and no element carries a class, matching the convention the
+existing `blog/*.html` posts already use. Output is one post per metric group by
+default, because all 101 figures in one post is ~18 MB of images;
+`--blogger-single` overrides that. Every figure is wrapped in a link to itself,
+since the panels are small at blog column width.
+
+The per-metric CIs it prints carry **no multiplicity correction** — that is what
+`summary.md`'s Benjamini-Hochberg column is for, and `index.html` says so where a
+reader will see it. The gallery is for explaining a metric, not for establishing one.
+
 ## The checkpoint lifecycle (current design)
 
 Per chain, `make_worktree` cuts a fresh branch **`evolve/<run_id>/<strategy>/<arm>/chain<n>`**

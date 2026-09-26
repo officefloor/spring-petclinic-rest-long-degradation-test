@@ -17,6 +17,19 @@ Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](ht
 > design pillars, the acceptance-suite conventions, and the run/analyze internals.
 > AGENTS.md supersedes this README wherever they disagree.
 
+## Cite this work
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550)
+
+> Sagenschneider, D. (2026). *Conserved amount, negotiable placement: prompting
+> moves one architecture's complexity distribution and not the other's.*
+> Zenodo. https://doi.org/10.5281/zenodo.22967550
+
+The paper's LaTeX source and figures are in [`paper/`](./paper). The per
+checkpoint commits and raw capture for every chain are published as branches in
+[officefloor/spring-petclinic-rest](https://github.com/officefloor/spring-petclinic-rest),
+named `evolve/<run>/<strategy>/<arm>/chain<n>`.
+
 A long-horizon degradation harness that holds the coding agent **fixed** and
 makes **architecture** the independent variable: Spring `@RestController`
 methods vs OfficeFloor YAML-composed functions. It borrows its measurement
@@ -683,6 +696,30 @@ Every column `analyze` recomputes per checkpoint, grouped as in
 `run_experiment.CSV_FIELDS`. Structural metrics are over **production Java only**
 (YAML wiring is counted separately, never mixed into a Java denominator), with
 identical tools/thresholds for both arms.
+
+> **Want one metric at a time, with a picture and the maths?** This glossary is
+> the terse reference; `tools/gallery/` is the reader-facing companion. It
+> renders, for each metric, one figure carrying all eight series (four conditions
+> × two arms) beside a plain-language explanation of what the metric is, **the
+> formula with every symbol defined**, how the harness obtains it, how to read it,
+> and how it can be misread. Each figure shades the **final phase** and labels each
+> arm's mean over it — the last twelve of the sixty change requests, which is the
+> number to quote for where a run ended up and is far steadier than the value at
+> the final checkpoint — and under every figure is a table of that mean for all
+> five phases. Those are descriptive means and nothing more: slopes, CIs, effect
+> sizes and the FDR correction stay in `summary.md`, where the multiplicity is
+> handled.
+>
+> ```bash
+> python -m tools.gallery.metric_gallery                 # -> blog/metric-gallery/index.html
+> ./tools/gallery/publish_figs.sh --push                 # host the figures on GitHub Pages
+> python -m tools.gallery.metric_gallery --no-figs --blogger \
+>     --img-base https://<user>.github.io/<repo>/figs/   # -> paste-ready Blogger posts
+> ```
+>
+> The prose lives in `tools/gallery/metric_catalog.py` and must be updated
+> alongside any definition change here. See AGENTS.md, "the cross-run metric
+> gallery".
 
 **Identity / bookkeeping** — `run_id`, `branch`; `arm`, `strategy`, `chain`,
 `checkpoint`; `checkpoint_id` (the rule's id); `checkpoint_type` (`additive` or
