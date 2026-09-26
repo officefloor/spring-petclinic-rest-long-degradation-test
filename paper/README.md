@@ -13,6 +13,7 @@ architecture's complexity distribution and not the other's*
 | `figures/strict_pass.png` | Figure 3. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | Last local build, 17 pages. |
+| `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
 
 ## Build
 
@@ -20,7 +21,8 @@ architecture's complexity distribution and not the other's*
 ./build.sh
 ```
 
-`pdflatex main.tex` twice also works, and is exactly what arXiv does.
+`pdflatex main.tex` twice also works, and is exactly what arXiv does, but it
+will not repack `arxiv.tar.gz`. Use `build.sh` and both artifacts stay in step.
 
 ### The one engine caveat
 

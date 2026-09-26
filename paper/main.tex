@@ -237,10 +237,10 @@ frozen on 2026-08-08, before the earliest of the four runs reported here, so
 all four conditions faced an identical task.
 
 \paragraph{Architectures.} The \emph{mutative} arm is an idiomatic Spring
-\texttt{@RestController}: a rule is a statement added to a handler method. The
-\emph{additive} arm is the same application built with OfficeFloor, where the
-endpoint is a YAML composed graph of functions and a rule is a new function and
-a new edge. Both arms implement the same sixty rules and are held to the same
+\cite{spring} \texttt{@RestController}: a rule is a statement added to a
+handler method. The \emph{additive} arm is the same application built with
+OfficeFloor \cite{officefloor}, a framework whose endpoints are YAML composed
+graphs of functions, so a rule is a new function and a new edge. Both arms implement the same sixty rules and are held to the same
 black box acceptance suite, which the agent never sees.
 
 \paragraph{Agent.} \texttt{claude-opus-4-8}, held fixed across all cells. Each
@@ -1081,6 +1081,14 @@ personally.
   ``PetClinic-Evolve run data,'' 2026. The per checkpoint commits and raw
   capture for every chain, as branches:
   \url{https://github.com/officefloor/spring-petclinic-rest}
+
+\bibitem{officefloor} D.~Sagenschneider,
+  ``OfficeFloor: using office patterns to improve software design,''
+  in \emph{Proc. 18th European Conference on Pattern Languages of Programs
+  (EuroPLoP)}, ACM, pp.~1--27, 2013. \url{https://doi.org/10.1145/2739011.2739013}
+
+\bibitem{spring} Spring Framework, VMware.
+  \url{https://spring.io/projects/spring-framework}
 
 \bibitem{strathern1997} M.~Strathern,
   ```Improving ratings': audit in the British University system,''

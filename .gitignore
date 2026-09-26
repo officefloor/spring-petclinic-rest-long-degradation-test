@@ -8,3 +8,4 @@ __pycache__/
 # Each chain's results are committed onto its evolve/<strategy>/<arm>/chain<n>/<run_id>
 # branch in the arm repo instead, so every branch is a self-contained record.
 /results-backup-*/
+/paper/arxiv.tar.gz

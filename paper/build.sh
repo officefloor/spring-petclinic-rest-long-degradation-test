@@ -19,11 +19,21 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The arXiv submission bundle. Packed on every build so it cannot drift from
+# main.tex, which is exactly what happened when it was packed by hand. It is
+# gitignored: every byte in it is already tracked as main.tex and figures/, so
+# committing it would only add a large binary that churns on each rebuild.
+pack() {
+  tar czf arxiv.tar.gz main.tex figures/
+  echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries)"
+}
+
 if command -v pdflatex >/dev/null 2>&1; then
   echo "pdflatex found: building the file exactly as submitted."
   pdflatex -interaction=nonstopmode -halt-on-error main.tex
   pdflatex -interaction=nonstopmode -halt-on-error main.tex   # twice, for refs
   echo "Built main.pdf"
+  pack
   exit 0
 fi
 
@@ -42,3 +52,4 @@ cp -r figures "$tmp/"
 "$TEC" -X compile "$tmp/main.tex" >/dev/null
 cp "$tmp/main.pdf" main.pdf
 echo "Built main.pdf (verification build)"
+pack
