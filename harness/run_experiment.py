@@ -1048,7 +1048,10 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
             verdict = (rev.result_text or "").strip()
             reviews.append({"round": r, "ok": rev.ok, "session_id": rev.session_id,
                             "resumed": bool(resume_review), "cost_usd": rev.cost_usd,
-                            "findings": verdict[:8000]})
+                            # The reviewer's FULL findings text, untruncated: this is the
+                            # structured record of exactly what was sent to the author, and
+                            # analyze relies on `reviews` holding the complete per-round text.
+                            "findings": verdict})
             satisfied = (not verdict) or (satisfied_token in verdict.lower()[:200])
             print(f"    review {r}/{rounds}: "
                   f"{'CLEAN (' + satisfied_token + ')' if satisfied else 'findings raised'}"
@@ -1090,7 +1093,9 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
         "enabled": True, "rounds": rounds, "turns_run": turns_run,
         "review_model": review_model, "review_tools": review_tools,
         "review_follow_up": review_follow_up,
-        "final_verdict": (verdict or "")[:2000],
+        # The final round's FULL verdict, untruncated. The complete per-round text is in
+        # `reviews`; this mirrors the last one for convenience. CSV derives a short one-liner.
+        "final_verdict": (verdict or ""),
         "review_cost_usd": round(review_cost, 4), "fix_cost_usd": round(fix_cost, 4),
         "turns": turn_log, "reviews": reviews,
     }
