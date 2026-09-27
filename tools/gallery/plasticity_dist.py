@@ -99,6 +99,53 @@ def ratios(results_dir):
     return out
 
 
+
+# Metric families, for the independence caveat. The 169 columns are not 169
+# independent measurements: a top-1 share, an HHI and a Gini over the same
+# distribution are three views of one thing, and CK reports fifteen metrics off
+# one parse. Every metric is assigned to a family by longest-prefix match, the
+# family's median R is taken as its one vote, and the direction-of-effect counts
+# are recomputed over families. Grouping is deliberately coarse: merging two
+# genuinely distinct families understates the evidence, which is the safe
+# direction to err in.
+FAMILY_PREFIXES = [
+    "erosion_handler", "erosion_scoped", "erosion",
+    "ccdist_file", "ccdist_fn", "ccdist_pkg", "cogdist_fn", "cogdist_file",
+    "voldist_file", "wmcdist_class", "cum_change", "change_",
+    "ck_handler", "ck_", "pmd_", "impact_", "container_", "indirection_",
+    "propagation", "halstead", "verbosity", "probe_", "node_", "total_",
+    "duration_", "cache_", "ig_", "wmc_", "hotspot_", "churn_", "diff_",
+    "reedit_", "mi_", "files_", "entry_", "subsystem_", "regr", "true_regr",
+    "clone", "jscpd", "packages_", "input_tokens", "output_tokens", "num_turns",
+    "cost_", "core_", "iso_", "strict_", "build_", "normalized_", "java_",
+]
+
+
+def family(name):
+    """Longest matching prefix wins, so ck_handler beats ck_."""
+    best = None
+    for p in FAMILY_PREFIXES:
+        if name.startswith(p) and (best is None or len(p) > len(best)):
+            best = p
+    return (best or name).rstrip("_")
+
+
+def by_family(R):
+    """One vote per family: the median R of its members."""
+    groups = {}
+    for k, v in R.items():
+        groups.setdefault(family(k), []).append(v)
+    return {g: float(np.median(v)) for g, v in groups.items()}, groups
+
+
+def summarise(R, floor=2.9):
+    v = np.array(sorted(R.values()))
+    return {"n": len(v), "ge_1": int((v >= 1).sum()),
+            "le_inv": int((v <= 1.0 / floor).sum()),
+            "ge_floor": int((v >= floor).sum()),
+            "median": float(np.median(v))}
+
+
 def build(results_dir, out_path):
     R = ratios(results_dir)
     vals = np.array(sorted(R.values()))
@@ -164,7 +211,17 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(_REPO, "blog", "metric-gallery",
                                                   "figs", "plasticity_dist.png"))
     a = ap.parse_args(argv)
-    build(a.results, a.out)
+    R = build(a.results, a.out)
+
+    # The independence caveat, recomputed per family.
+    per_fam, groups = by_family(R)
+    for label, d in (("all metrics", R), ("one vote per family", per_fam)):
+        t = summarise(d)
+        print(f"  {label:20} n={t['n']:3d}  R>=1 {t['ge_1']:3d}"
+              f"  R<=1/2.9 {t['le_inv']:2d}  R>=2.9 {t['ge_floor']:3d}"
+              f"  median {t['median']:.2f}")
+    big = sorted(((len(v), g) for g, v in groups.items()), reverse=True)[:6]
+    print("  largest families: " + ", ".join(f"{g} ({n})" for n, g in big))
     return 0
 
 

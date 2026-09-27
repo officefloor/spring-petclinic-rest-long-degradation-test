@@ -13,7 +13,7 @@ architecture's complexity distribution and not the other's*
 | `figures/strict_pass.png` | Figure 3. |
 | `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
-| `main.pdf` | Last local build, 19 pages. |
+| `main.pdf` | Last local build, 23 pages. |
 | `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
 
 ## Build
@@ -65,7 +65,19 @@ python -m tools.gallery.plasticity_fig
 cp ../blog/metric-gallery/figs/plasticity.png figures/
 ```
 
+The statistics in the tables come from three scripts, each seeded at 0 and each
+taking `--latex` to emit its table rows verbatim:
+
+| Script | Produces |
+|---|---|
+| `tools.gallery.bootstrap_ratio` | Table 3: `S`, `R`, bootstrap intervals, `P(R>1)` |
+| `tools.gallery.floor_effect` | Table 7 (room-normalised) and the floor-effect correlations |
+| `tools.gallery.plasticity_dist` | Figure 2 and the per-family counts |
+
+Run them from the repository root, e.g. `python -m tools.gallery.floor_effect`.
+
 ## Publishing
 
-Submission steps, the Zenodo checklist and the endorsement draft are in
-`~/work-paper-todo/`. Nothing there is needed to build the paper.
+arXiv primary class is `cs.SE`. The Zenodo DOI is reserved and printed under the
+author block in `main.tex` (`\thedoi`). Nothing outside this directory is needed
+to build or submit the paper.

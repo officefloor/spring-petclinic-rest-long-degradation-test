@@ -443,6 +443,36 @@ The per-metric CIs it prints carry **no multiplicity correction** — that is wh
 `summary.md`'s Benjamini-Hochberg column is for, and `index.html` says so where a
 reader will see it. The gallery is for explaining a metric, not for establishing one.
 
+### `tools/gallery/` — the paper's inferential scripts (2026-09)
+
+Three scripts in the same package are **paper-facing and inferential**, which is
+the opposite of `metric_gallery.py`'s descriptive-only line above. They are
+separate files for exactly that reason: the gallery must stay free of intervals,
+and these exist so the paper's statistics do not have to be computed by hand.
+Every table in `paper/main.tex` that is not a cell mean comes from one of them,
+and each accepts `--latex` to emit its table rows verbatim so a number in the
+paper can be checked without reconstructing the aggregation.
+
+| file | responsibility |
+|---|---|
+| `bootstrap_ratio.py` | The intervention spread `S`, the plasticity ratio `R`, the cluster bootstrap over chains, and `P(R>1)`. Three metric lists, `PLACEMENT` / `AMOUNT` / `NONSEPARATING`, are the three groups of the paper's spread table. **The resampling unit is the CHAIN, never the checkpoint** — checkpoints within a chain are successive states of one codebase, and resampling them would treat sixty correlated observations as sixty independent ones. |
+| `floor_effect.py` | The floor-effect rebuttal, which is the main rival explanation for the plasticity gap. Two checks, and **they disagree, which is the point**. Check A correlates `S(spring)` against the arms' control separation under four parameterisations, because "how far apart" has no canonical scale and the answer depends on which is used: absolute gives `r = -0.04`, separation relative to the arm mean (the same normalisation `S` uses, so the consistent choice) gives `r = +0.72`. Check B divides each arm's range by the room it had to the even-distribution limit, and the ratio stays at 2.2 to 6.1 across seven metrics. **Do not report Check A alone at the favourable parameterisation** — that is the error this file exists to prevent. |
+| `plasticity_dist.py` | Figure 2, the distribution of `R` over every metric with a computable ratio, plus the **per-family** counts. `FAMILY_PREFIXES` / `family()` / `by_family()` exist because the 169 columns are nowhere near 169 independent measurements: a top-1 share, an HHI and a Gini over one distribution are three views of one thing, CK reports fifteen metrics off one parse and PMD twelve. The raw count is 116 of 169 with `R >= 1`; per family it is 30 of 46, and an exact sign test drops from `p < 0.001` to `p = 0.054`. **Quote the family figure when the claim is about direction across metrics**, and keep the grouping coarse, since merging two distinct families understates the evidence and that is the safe direction to err in. |
+
+All three take `--results` and default to a **fixed seed of 0**, which is what
+lets the paper say its intervals are reproducible rather than merely repeatable. A
+percentile of a range statistic carries its own resampling noise: `propagation_cost`
+has a 2.5th percentile that moves between roughly 1.0 and 1.1 with the seed, which
+is why `P(R>1)` is reported beside every interval and is the statistic to trust
+when an endpoint sits within a hundredth of a decision boundary.
+
+```bash
+python -m tools.gallery.bootstrap_ratio            # S, R, CIs, P(R>1) for all three groups
+python -m tools.gallery.bootstrap_ratio --latex    # ... as LaTeX table rows
+python -m tools.gallery.floor_effect               # both floor-effect checks
+python -m tools.gallery.plasticity_dist            # Figure 2 + the per-family counts
+```
+
 ## The checkpoint lifecycle (current design)
 
 Per chain, `make_worktree` cuts a fresh branch **`evolve/<run_id>/<strategy>/<arm>/chain<n>`**

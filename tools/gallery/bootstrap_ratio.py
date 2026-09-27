@@ -44,6 +44,9 @@ PLACEMENT = ["cum_change_top1", "cum_change_entropy_norm", "cum_change_hhi",
              "propagation_cost"]
 AMOUNT = ["halstead_volume", "java_loc", "total_fns", "pmd_cognitive_total",
           "ck_wmc_total", "total_cc"]
+# Arrangement metrics that do not separate the architectures. Reported in the
+# paper's spread table as a third group, so they go through the same bootstrap.
+NONSEPARATING = ["ck_lcom_mean", "ccdist_fn_gini", "cogdist_fn_gini"]
 
 
 def _f(v):
@@ -116,14 +119,18 @@ def main(argv=None):
     a = ap.parse_args(argv)
     data = load(a.results)
 
-    for name, fields in (("PLACEMENT", PLACEMENT), ("AMOUNT", AMOUNT)):
+    for name, fields in (("PLACEMENT", PLACEMENT), ("AMOUNT", AMOUNT),
+                        ("NON-SEPARATING", NONSEPARATING)):
         print(f"=== {name}")
         excl = 0
         for f_ in fields:
             b = bootstrap(data, f_, a.n_boot, a.seed)
             excl += b["R_lo"] > 1
             if a.latex:
-                print(f"{f_:26s} & {b['R']:.1f} & [{b['R_lo']:.2f}, {b['R_hi']:.2f}] \\\\")
+                print(f"\\texttt{{{f_.replace('_', chr(92) + '_')}}}"
+                      f" & {b['S_spring']*100:.0f}\\% & {b['S_officefloor']*100:.0f}\\%"
+                      f" & {b['R']:.1f} & [{b['R_lo']:.2f}, {b['R_hi']:.2f}]"
+                      f" & {b['P_R_gt_1']*100:.0f}\\% \\\\")
             else:
                 print(f"  {f_:26s} R={b['R']:6.1f}  95% CI [{b['R_lo']:6.2f},{b['R_hi']:7.2f}]"
                       f"  P(R>1)={b['P_R_gt_1']*100:5.1f}%")
