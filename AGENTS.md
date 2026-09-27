@@ -327,12 +327,12 @@ them from fits.
 
 | file | responsibility |
 |---|---|
-| `run_experiment.py` | the driver. `run_chain` walks checkpoints; two commits per checkpoint; the agent-view / measurement-suite / gate / capture flow. Entry point `main`. |
-| `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation). `probe()` is the read-only cold-reader. |
+| `run_experiment.py` | the driver. `run_chain` walks checkpoints; two commits per checkpoint; the agent-view / measurement-suite / gate / capture flow. `_impact_gated_implement` runs the gate loop, `_reviewed_implement` the independent-review + author-resume loop (each dispatched by `_gate_active` / `_review_active`). Entry point `main`. |
+| `agent.py` | wraps headless `claude -p`. `run_agent` streams stream-json events, classifies terminal outcomes (limit / transient / **auth**), and **isolates config per call** (see Isolation); optional caller-owned `config_dir` + `resume_session_id` (`--resume`) let the `reviewed` arm resume the author within a checkpoint (`seed_config_dir`). `probe()` is the read-only cold-reader. |
 | `correctness.py` | parses Surefire XML → raw `{test_id: passed}` map; `score_results` / `outcome_row` derive Strict/ISO/Core, Normalized Change, `regressions`, `true_regressions` (mutative-aware). |
 | `metrics.py` | structural metrics over git commits: `compute_all` is the ONE definition called by both runner and analyze. lizard CC/SLOC, erosion (whole-app + `erosion_scoped` + `handler_scoped_erosion`), hotspot, WMC, blast-radius, change-spread, re-edit coupling, `impact_stats` (structural-impact score); jscpd + ast-grep for verbosity. |
 | `placement.py` | **placement** metrics: where the (conserved) complexity sits and how far change spreads. Concentration indices (Gini/HHI/top-k/entropy) over CC per function/file/package, Halstead + Maintainability Index, indirection depth, MacCormack propagation cost, Hassan change entropy, container-dispatch accounting, and the PMD/CK readers. Called from `compute_all`; **published measures only** — see that module's header for why the bespoke `impact_*` score may not carry this claim. |
-| `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints. |
+| `capture.py` | assembles the raw, irreproducible per-checkpoint record (`checkpoint_record`) and run `provenance`. Carries the `impact_gate` block for gated checkpoints and the `code_review` block for reviewed checkpoints. |
 | `impact_gate.py` | the `impact_gated` strategy's gate. Shells the standalone `impact-gate score --curve` CLI (`score`, optionally `--baseline-file` + `--curve-prior-weight`), decides the fail line (`is_blocked` — grade ≥ block_percentile), builds the symptom-only refactor prompt from the flagged-class LOCATIONS + spec (`refactor_prompt`; `_format_drivers` strips cost figures — design B), and shapes the capture entry per attempt (`attempt_summary`, incl. `quality`/`quality_turns`). No effect on the other strategies. |
 | `quality_gate.py` | design-B code-quality gate on each refactor's ADDED lines: jscpd clones + **PMD** smells over `git diff --cached`, findings rendered as review text (`review`, `summary`). Deterministic; syntactic clones only. Smell detector is PMD when `tools.pmd` is set (`_pmd_lines`, ruleset `pmd-rules/java-wasteful.xml`), else the legacy ast-grep path (`_smell_lines`) — selected from the run's own config snapshot, so an old run replays with the detector it used. `metrics._pattern_lines` routes Verbosity through the SAME choice, so gate and metric never disagree. If one detector cannot run the gate enforces on the other and records `clones_ran`/`smells_ran`; it never stops a run. Reused by `_impact_gated_implement`'s quality sub-loop. Owns `run_pmd`, the single PMD spawn (returncode/parse guards, absolute ruleset paths, `--no-cache`) that `metrics.compute_all` calls once for both rulesets, plus `ruleset_rule_names`/`pmd_lines_from_report` that split a merged report. |
 | `quality_selftest.py` | fail-closed check that the PINNED `jscpd` (tools/package.json) and the configured smell tool — PMD at `tools/pmd-version.txt`, else `@ast-grep/cli` — are at the locked versions AND a golden clone+smell fixture fails the gate. `require()` runs beside `parser_selftest.require` in `run_experiment.main` when the gate is active; standalone `python -m harness.quality_selftest --config config.yaml`. |
@@ -524,9 +524,9 @@ table on the branch. `analyze` recomputes every metric, and derives the checkpoi
 map from the per-checkpoint capture records' `commit_sha` (which encodes a no-op turn as `""`),
 **not** from provenance.
 
-## The four-condition intervention study (2026-09)
+## The five-condition intervention study (2026-09)
 
-The experiment compares FOUR conditions, each a full (arm × chain) sweep, each changing exactly
+The experiment compares FIVE conditions, each a full (arm × chain) sweep, each changing exactly
 ONE lever so the per-checkpoint impact trajectory vs the control isolates what reduces decay:
 
 1. **`just-solve`** — CONTROL. Plain "implement it" prompt, ungated. Baseline decay. **Unchanged.**
@@ -542,10 +542,19 @@ ONE lever so the per-checkpoint impact trajectory vs the control isolates what r
    **Retained for reproducibility only** — it is Goodhart-gamed (dispersal + duplication), now with
    a full 10-chain measurement behind that claim (next section). Run it from the archived design-A
    code or `--strategy metric-in-prompt`; it is not this repo's default.
+5. **`reviewed`** — the **REVIEW** lever (2026-09-27). Neutral implement prompt, then an INDEPENDENT
+   read-only AI reviewer critiques the change for coherent/additive structure and the ORIGINAL author
+   is *resumed* (with full context of its own change) to act on the findings. Advisory: never stops
+   the chain. Delta vs just-solve = the effect of an independent review loop; delta vs impact_gated =
+   the model's own judgment vs a metric-driven gate. See "The AI-review pipeline" below.
 
-Conditions 3 and 4 differ deliberately: 4 tells the AI the metric (and it games it); 3 never does —
-the AI only ever sees the spec and, on a refactor, the symptom locations. The prompts live in
-`config.yaml: prompt_strategies`; the header there is the canonical statement of the four conditions.
+Conditions 1–4 all supply an EXOGENOUS quality signal (nothing / prose / a metric formula / a metric
+tool); condition 5 adds an ENDOGENOUS one — the model reviewing the change. Conditions 3 and 4 differ
+deliberately: 4 tells the AI the metric (and it games it); 3 never does — the AI only ever sees the
+spec and, on a refactor, the symptom locations. Condition 5's reviewer is kept QUALITATIVE and
+metric-free on purpose, so it does not re-import the Goodhart gaming condition 4 showed. The prompts
+live in `config.yaml: prompt_strategies` (+ the `code_review` section); the headers there are the
+canonical statement of the five conditions.
 
 ### Condition 4 measured — `blind-202609010045` (the formula in the prompt)
 
@@ -819,6 +828,63 @@ acceptance dir is excluded from the mirror-back, non-Java is ignored by lizard).
 still enforced exactly where it was (the final accepted implementation's gate); refactors are
 measured, never enforced. Keep the ungated strategies byte-for-byte unchanged.
 
+## The AI-review pipeline (`reviewed` strategy)
+
+Added 2026-09-27 (condition 5). Like the gate, it replaces the single implement turn with a loop and
+is activated only when the active strategy equals `code_review.strategy` (`_review_active` in
+`run_experiment.py`); every other strategy runs the unchanged flow, so it is a clean superset. Models
+real PR review: an **independent** reviewer critiques the author's change, and the **original author**
+acts on the review with full context of what it built. Advisory by construction — it never stops the
+chain.
+
+**Where it hooks.** In `run_chain`, when `_review_active`, lifecycle steps 2–3 are replaced by
+`_reviewed_implement(...)`; the implement template is the NEUTRAL `code_review.implement_strategy`
+(default `just-solve`), so coherence pressure comes from the review, not the wording. Everything
+downstream (tamper → COMMIT 1 → measurement → gate → COMMIT 2 → capture) is unchanged and runs on the
+author's FINAL post-fix change. The helper returns `(ar, author_attempts, review_block, base_for_cp,
+False)` with the worktree already mirrored + `git add -A` staged. `base_for_cp` is unchanged — unlike
+the gate there are NO intermediate commits; COMMIT 1 is the final change.
+
+**The loop** (`code_review.rounds`, default 1):
+1. **Author** implements via the existing `_run_agent_turn` (fresh, blind sandbox rebuilt from the
+   wt), but under a config dir this helper OWNS (`agent.seed_config_dir()`) so the session can be
+   resumed. Retries on quota/transient limits like every other arm.
+2. Each round: `mirror_source(sandbox→wt)` + `git add -A` + `git diff --cached base_for_cp` gives the
+   production-only diff. The **reviewer** runs as a SEPARATE `agent.run_agent` — fresh session,
+   read-only tools (`code_review.review_tools`, default `Read,Grep,Glob`; **no Bash**, so it cannot
+   mutate the sandbox the author will resume into), same Landlock `confine`, same sandbox cwd (so it
+   can read surrounding code). It never writes; it returns findings text, echoed VERBATIM to the
+   console between the author and fix turns.
+3. If the verdict contains `satisfied_token` (default `LGTM`) or is empty → done, no fix. Otherwise
+   the **author is `--resume`'d** (same session, same config dir, same sandbox — NOT rebuilt, so its
+   own change is on disk and its memory of writing it is replayed) with the findings as its next
+   message; it tidies up (or pushes back, as `fix_prompt` invites). Only the findings TEXT crosses to
+   the author; the two never share a session.
+4. Multi-round only: the reviewer FOLLOWS UP on its own prior review by default
+   (`code_review.review_follow_up`, resumed across rounds under a SECOND owned config dir, so it
+   judges whether its findings were resolved); set false for a fresh reviewer each round. The author
+   always resumes. Both owned config dirs are torn down in `finally` at the checkpoint boundary.
+
+**Capture.** `checkpoint_record(..., code_review=review_block)` adds a `code_review` block:
+`{enabled, rounds, turns_run, review_model, review_tools, review_follow_up, final_verdict,
+review_cost_usd, fix_cost_usd, turns:[...], reviews:[{round, ok, session_id, resumed, cost_usd,
+findings}]}`. Turn streams land as `cpNN.agent.jsonl`, `cpNN.reviewR.jsonl`, `cpNN.fixR.jsonl`. Only
+present for the reviewed strategy.
+
+**analyze columns.** `recompute_rows` reads the block into `review_rounds`, `review_turns_run`,
+`review_final_verdict` (compact one line), `review_cost_usd` (reviewer side), `review_fix_cost_usd`
+(resumed-author side, beyond the first author turn already in `cost_usd`) — all in `CSV_FIELDS`, blank
+for the other strategies. `main` renders an **AI review pipeline** table (reached-final rate,
+checkpoints reviewed, mean review turns/cp, checkpoints revised = a fix ran, clean-on-1st-review,
+review $ / fix $), shown only when a group has review data.
+
+**Do not regress.** The reviewer reuses the SAME isolation as the author (history-less sandbox, blind
+agent view, Landlock confine) and is read-only. The retained author context lives strictly WITHIN one
+checkpoint and is discarded at its boundary, so pillar 2's cross-checkpoint invariant holds (see the
+note there). Review/fix turns are NOT retried on quota limits (only the author turn is) — matching the
+gate's refactor-turn pattern. Smoke-tested 2026-09-27 on spring cp01–03 (both findings→fix and
+LGTM→no-fix paths). Keep the other strategies byte-for-byte unchanged.
+
 ## The two design pillars added 2026-08 (do not regress these)
 
 ### 1. Blind-agent regression measurement
@@ -855,6 +921,15 @@ checkpoints (breaking the no-context condition) and, asymmetrically, between
 arms. A fresh login-only config dir per call guarantees a pristine, stateless
 Claude; the real `~/.claude` is never read or written. **If you touch `run_agent`,
 preserve this.**
+
+**The `reviewed` strategy's scoped relaxation (2026-09-27) — not a regression.** `run_agent` gained
+`config_dir` (a caller-OWNED dir, neither seeded nor deleted here) and `resume_session_id` (`--resume`)
+so `_reviewed_implement` can resume the author to act on a review. This is deliberate and does NOT break
+the pillar: the pillar is about isolation ACROSS checkpoints, and the retained session lives strictly
+within ONE checkpoint and is `shutil.rmtree`'d at its boundary, so checkpoint N+1 still starts pristine.
+Every other call still passes no `config_dir` and gets the throwaway-seeded-and-deleted behaviour
+unchanged. If you touch `run_agent`, keep BOTH: the default stateless path, and the owned-dir path that
+never deletes what it did not seed (the `own_cfg_dir` guard on every cleanup site).
 
 ### 3. History-less, sequence-blind sandbox (the agent can't tell it's checkpoint N)
 The agent does NOT run in the git worktree. Per checkpoint, `run_chain` builds a
@@ -1223,6 +1298,17 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   in the separate `metric-in-prompt` strategy (condition 4, kept for reproducibility). It lives in
   three places — the `metric-in-prompt` prompt, the design-A archived prompt, and `impact_stats` in
   `metrics.py` — keep them in sync if the measure ever changes.
+- `code_review.*` (the `reviewed` strategy only): `strategy` (the activating strategy name),
+  `implement_strategy` (which `prompt_strategies` entry the AUTHOR turn uses — `just-solve`, NEUTRAL),
+  `rounds` (review→fix passes; **omitted → 1**, the single-pass experiment), `review_model` (defaults
+  to the run's `model`; hold it equal to the author's so the delta isolates the review LOOP, not a
+  model difference), `review_tools` (default `Read,Grep,Glob` — READ-ONLY, no Bash), `satisfied_token`
+  (default `LGTM` — a review whose reply contains it, with no findings, ends the loop),
+  `review_follow_up` (multi-round only; default `true` = the same reviewer session is resumed across
+  rounds, false = a fresh reviewer each round), the `review_prompt` (`{spec}`/`{diff}`), `fix_prompt`
+  (`{review}`), and optional `follow_up_prompt` (`{spec}`/`{diff}`, rounds ≥ 2; falls back to
+  `review_prompt`). The reviewer's brief is deliberately QUALITATIVE and metric-free — handing it the
+  cost formula would re-import condition 4's Goodhart gaming. Inert unless `active_strategy: reviewed`.
 
 ## Gotchas / lessons (2026-08, 2026-09)
 
