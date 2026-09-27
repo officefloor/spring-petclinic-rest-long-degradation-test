@@ -73,6 +73,15 @@ def _seed_clean_config_dir() -> Optional[str]:
     return cfg
 
 
+def seed_config_dir() -> Optional[str]:
+    """Public wrapper: seed a throwaway login-only config dir the CALLER owns and must
+    remove. Used by the reviewed arm to keep ONE session store alive across an author
+    turn and its --resume'd fix turns, then torn down at the checkpoint boundary so
+    cross-checkpoint blindness is preserved. Returns None if login can't be seeded (the
+    caller then runs under the inherited config, unisolated -- a loud warning is printed)."""
+    return _seed_clean_config_dir()
+
+
 def invocation_flags(model: str, allowed_tools: Optional[str] = None) -> list[str]:
     """The `claude` flags (excluding the prompt) for one headless turn. Single
     source of truth, so the run and the captured agent-env profile can't drift."""
@@ -230,10 +239,24 @@ def _print_event(ev: dict, prefix: str) -> None:
 def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
               allowed_tools: Optional[str] = None, stream: bool = True,
               label: str = "claude", capture_path: Optional[str] = None,
-              confine: Optional[dict] = None) -> AgentResult:
-    """Run one fresh headless agent turn in `cwd`, streaming events to the
-    console. No session is resumed. Returns the parsed terminal result, or an
-    error result on timeout / missing completion.
+              confine: Optional[dict] = None, config_dir: Optional[str] = None,
+              resume_session_id: Optional[str] = None) -> AgentResult:
+    """Run one headless agent turn in `cwd`, streaming events to the console.
+    Returns the parsed terminal result, or an error result on timeout / missing
+    completion.
+
+    By default the turn is a FRESH, stateless session under a throwaway login-only
+    config dir deleted when the call returns (the context-free condition every arm
+    holds ACROSS checkpoints). Two params relax that only for the reviewed arm, and
+    only WITHIN a single checkpoint:
+
+    - `config_dir`: a login-only config dir the CALLER seeded (see `seed_config_dir`)
+      and OWNS. When given we neither seed nor delete it, so several turns can share
+      one session store; the caller removes it at the checkpoint boundary.
+    - `resume_session_id`: continue that session with `--resume` (the prior turn is
+      replayed and `prompt` is appended as the next user message) so the agent edits
+      with full memory of the change it just made. Requires the SAME `config_dir` and
+      the SAME `cwd` as the turn that created the session.
 
     If `capture_path` is set, every raw stream event is written there verbatim
     (overwritten per call, so a retried checkpoint keeps only the successful
@@ -246,11 +269,21 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     if Landlock is unavailable or the sentinel self-check finds withheld material
     still readable, the turn is refused (no agent runs) rather than run un-blinded."""
     cmd = ["claude", "-p", prompt, *invocation_flags(model, allowed_tools)]
+    if resume_session_id:
+        # Continue the SAME session (same CLAUDE_CONFIG_DIR + same cwd): the prior turn
+        # -- and the agent's memory of the change it made -- is replayed and `prompt` is
+        # appended as the next user message. Only the reviewed arm uses this, and only
+        # within one checkpoint (the session store is torn down at the boundary).
+        cmd += ["--resume", resume_session_id]
 
-    # Isolate Claude's config/memory to a fresh login-only dir for this one call,
-    # so nothing (memory, history, session state) leaks across checkpoints, chains
-    # or arms. Removed in `finally`; the real ~/.claude is untouched.
-    cfg_dir = _seed_clean_config_dir()
+    # Isolate Claude's config/memory to a fresh login-only dir for this one call, so
+    # nothing (memory, history, session state) leaks across checkpoints, chains or arms.
+    # When the CALLER supplies `config_dir` it OWNS it (seeded once, reused across an
+    # author turn and its --resume'd fixes, removed by the caller); we neither seed nor
+    # delete it here. Otherwise we seed one and remove it in `finally`. The real
+    # ~/.claude is untouched either way.
+    own_cfg_dir = config_dir is None
+    cfg_dir = config_dir or _seed_clean_config_dir()
     child_env = os.environ.copy()
     if cfg_dir:
         child_env["CLAUDE_CONFIG_DIR"] = cfg_dir
@@ -260,7 +293,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     preexec = None
     if confine and confine.get("enabled", True):
         if landlock.abi_version() < 1:
-            if cfg_dir:
+            if cfg_dir and own_cfg_dir:
                 shutil.rmtree(cfg_dir, ignore_errors=True)
             return AgentResult(ok=False, error="agent_confinement enabled but Landlock "
                                "unavailable on this host; refusing to run agent unconfined")
@@ -272,12 +305,12 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
             try:
                 leaked = landlock.verify_denied(ro, rw, sentinels)
             except Exception as e:
-                if cfg_dir:
+                if cfg_dir and own_cfg_dir:
                     shutil.rmtree(cfg_dir, ignore_errors=True)
                 return AgentResult(ok=False, error=f"confinement self-check could not run "
                                    f"({e}); refusing to run agent unconfined")
             if leaked:
-                if cfg_dir:
+                if cfg_dir and own_cfg_dir:
                     shutil.rmtree(cfg_dir, ignore_errors=True)
                 return AgentResult(ok=False, error="confinement LEAK — withheld material "
                                    f"still readable, refusing to run: {leaked}")
@@ -289,11 +322,11 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
             stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True,
             env=child_env, preexec_fn=preexec)
     except FileNotFoundError:
-        if cfg_dir:
+        if cfg_dir and own_cfg_dir:
             shutil.rmtree(cfg_dir, ignore_errors=True)
         return AgentResult(ok=False, error="`claude` CLI not found on PATH")
     except Exception as e:
-        if cfg_dir:
+        if cfg_dir and own_cfg_dir:
             shutil.rmtree(cfg_dir, ignore_errors=True)
         return AgentResult(ok=False, error=f"failed to launch confined agent: {e}")
 
@@ -350,7 +383,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
         drain.join(timeout=2)
         if cap_fh:
             cap_fh.close()
-        if cfg_dir:
+        if cfg_dir and own_cfg_dir:
             shutil.rmtree(cfg_dir, ignore_errors=True)
 
     if timed_out["v"]:

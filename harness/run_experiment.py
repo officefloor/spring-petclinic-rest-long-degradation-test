@@ -115,6 +115,15 @@ CSV_FIELDS = [
     # ended clean, the clone/smell finding lines it stopped on, and the review turns' cost.
     "ig_quality_review_turns", "ig_quality_passed",
     "ig_quality_clone_lines", "ig_quality_smell_lines", "ig_quality_cost_usd",
+    # reviewed pipeline (blank for the other strategies): an INDEPENDENT reviewer critiques
+    # the author's change for coherent/additive structure, then the ORIGINAL author is
+    # --resume'd (full context of its own change) to act on the findings, up to `rounds`
+    # times. `review_rounds`/`review_turns_run` = configured vs actually run; the reviewer's
+    # last verdict; and the review-side vs author-fix-side cost (author-fix cost is the
+    # spend BEYOND the first author turn, so review_fix_cost minus the row's cost_usd is 0
+    # by construction — see the record for per-turn detail).
+    "review_rounds", "review_turns_run", "review_final_verdict",
+    "review_cost_usd", "review_fix_cost_usd",
     # probe (nullable)
     "probe_cost_usd", "probe_input_tokens", "probe_cache_read_tokens", "probe_recall",
     "pinned_touched",  # comma-separated pinned files the agent edited (blank = none)
@@ -579,7 +588,8 @@ def commit_chain_results(wt: str, branch: str, run_id: str, arm: str, strategy: 
 
 
 def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prompt: str,
-                    cap_dir: str, stream_file: str, checkpoints: list[dict]):
+                    cap_dir: str, stream_file: str, checkpoints: list[dict],
+                    config_dir: str | None = None, label: str = "claude"):
     """Run the agent for one checkpoint IN THE SANDBOX, retrying on a token/session
     limit or a transient failure. Each attempt rebuilds the sandbox fresh: a history-less
     copy of the worktree (no `.git`, no `target/`) whose ONLY acceptance test is the
@@ -595,7 +605,8 @@ def _run_agent_turn(cfg: dict, wt: str, sandbox: str, cp: dict, model: str, prom
         ar = agent.run_agent(prompt, cwd=sandbox, model=model,
                              timeout=cfg.get("agent_timeout", 3600),
                              capture_path=os.path.join(cap_dir, stream_file),
-                             confine=_confine_config(cfg))
+                             confine=_confine_config(cfg),
+                             config_dir=config_dir, label=label)
         att = {"ok": ar.ok, "limit_reached": ar.limit_reached, "retryable": ar.retryable,
                "cost_usd": ar.cost_usd, "input_tokens": ar.input_tokens,
                "output_tokens": ar.output_tokens, "cache_read_tokens": ar.cache_read_tokens,
@@ -684,6 +695,14 @@ def _gate_active(cfg: dict, strategy: str) -> bool:
     has an `impact_gate` section whose `strategy` name matches the active strategy."""
     igc = cfg.get("impact_gate") or {}
     return bool(igc) and igc.get("strategy") == strategy
+
+
+def _review_active(cfg: dict, strategy: str) -> bool:
+    """True when the reviewed pipeline (independent review -> author resume-and-fix) should
+    run for this strategy: the config has a `code_review` section whose `strategy` name
+    matches. Mutually exclusive with `_gate_active` (a strategy is one or the other)."""
+    rc = cfg.get("code_review") or {}
+    return bool(rc) and rc.get("strategy") == strategy
 
 
 def _refactor_correctness(sandbox: str, cfg: dict, checkpoints: list[dict], k: int,
@@ -904,6 +923,180 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                 base_for_cp, True
 
 
+def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
+                        template: str, cap_dir: str, checkpoints: list[dict],
+                        arm_cfg: dict, base_for_cp: str):
+    """The reviewed implement -> independent-review -> author-resume-and-fix loop for one
+    checkpoint.
+
+    The author writes the change (NEUTRAL prompt, spec only) in the history-less sandbox as a
+    normal fresh session, but under a config dir this function OWNS so the session can later be
+    resumed. An INDEPENDENT reviewer -- a separate, fresh, read-only, identically-confined
+    session that never writes -- then critiques the change for coherent, additive, idiomatic
+    structure. The ORIGINAL author is `--resume`'d (so it edits with full memory of the change
+    it just made) and handed the reviewer's findings as its next turn. Up to `code_review.rounds`
+    review->fix passes run; an early satisfied verdict (`satisfied_token`, default "LGTM") ends
+    it sooner. Only the reviewer's findings TEXT crosses to the author; the two never share a
+    session, and the author never sees the reviewer's tools or context.
+
+    `rounds` defaults to 1 (a single review + fix, no flag needed). For multi-round, the reviewer
+    FOLLOWS UP on its own prior review by default (`review_follow_up`, resumed across rounds so it
+    judges whether its findings were resolved rather than re-deriving them cold); set it false for
+    a fresh independent reviewer each round. The author is always resumed across rounds.
+
+    Nothing here stops the chain (advisory by construction; the reviewer is a coach, not a gate).
+    The whole session store is torn down in `finally`, so the ONLY thing that survives to the
+    next checkpoint is the code on disk -- the cross-checkpoint blind-agent condition is intact;
+    the retained context lives strictly WITHIN this checkpoint. Returns
+    (final_author_ar, author_attempts, review_block, base_for_cp, False); on return the worktree
+    is mirrored + `git add -A` staged with the author's FINAL post-fix change, ready for the
+    caller's COMMIT 1.
+    """
+    rc = cfg["code_review"]
+    rounds = int(rc.get("rounds", 1))
+    review_model = rc.get("review_model", model)
+    # The reviewer is READ-ONLY by construction (no Bash), so it cannot mutate the sandbox the
+    # author will resume into; its judgement must come from reading the code, not running it.
+    review_tools = rc.get("review_tools", "Read,Grep,Glob")
+    review_tmpl = rc["review_prompt"]     # {spec}, {diff}
+    fix_tmpl = rc["fix_prompt"]           # {review}
+    # Multi-round only: whether the SAME reviewer session follows up across rounds (default) or a
+    # fresh independent reviewer looks at each round. Following up is the realistic PR loop -- the
+    # reviewer sees its earlier comments and the author's response, so it judges whether findings
+    # were actually resolved instead of re-deriving them cold. `follow_up_prompt` (optional; {spec},
+    # {diff}) is what the resumed reviewer gets on rounds >= 2; it falls back to `review_prompt`.
+    review_follow_up = bool(rc.get("review_follow_up", True))
+    follow_up_tmpl = rc.get("follow_up_prompt") or review_tmpl
+    satisfied_token = (rc.get("satisfied_token") or "LGTM").strip().lower()
+    timeout = cfg.get("agent_timeout", 3600)
+    acc_excl = (cfg["acceptance"]["dest_subpath"].rstrip("/") + "/",)
+    k = cp["n"]
+    turn_log: list[dict] = []
+    reviews: list[dict] = []
+    verdict = None
+    review_cost = fix_cost = 0.0
+    turns_run = 0
+
+    def _log_turn(role: str, a) -> None:
+        turn_log.append({"role": role, "ok": a.ok, "session_id": a.session_id,
+                         "cost_usd": a.cost_usd, "input_tokens": a.input_tokens,
+                         "output_tokens": a.output_tokens, "cache_read_tokens": a.cache_read_tokens,
+                         "num_turns": a.num_turns, "duration_ms": a.duration_ms,
+                         "duration_api_ms": a.duration_api_ms, "error": (a.error or "")[:500]})
+
+    def _staged_diff() -> str:
+        # Stage the author's CURRENT change on the worktree so the reviewer gets a focused
+        # production-only diff (the sandbox is history-less; the diff must come from the wt).
+        mirror_source(sandbox, wt, extra_excludes=acc_excl)
+        git(["-C", wt, "add", "-A"])
+        return subprocess.run(["git", "-C", wt, "diff", "--cached", base_for_cp],
+                              capture_output=True, text=True).stdout
+
+    # ONE login-only config dir kept alive across the author turn and its resumed fixes, so the
+    # author can be `--resume`'d. Owned here; removed in `finally` at the checkpoint boundary.
+    cfg_dir = agent.seed_config_dir()
+    # A SECOND owned config dir for the reviewer, kept alive so it can be `--resume`'d across rounds
+    # (the follow-up default). Seeded only when it can actually be used (multi-round + follow-up);
+    # for the single-round default it stays None and each reviewer turn uses its own throwaway,
+    # exactly as before. Torn down in `finally` alongside the author's.
+    rev_cfg_dir = agent.seed_config_dir() if (review_follow_up and rounds > 1) else None
+    rev_session_id = None
+    try:
+        # AUTHOR turn: fresh session in the history-less sandbox (rebuilt fresh, like every other
+        # arm's implement turn), but under the owned config dir so it can be resumed. Retries on a
+        # quota/transient limit exactly like the other arms (via _run_agent_turn).
+        ar, author_attempts = _run_agent_turn(
+            cfg, wt, sandbox, cp, model, build_prompt(template, cp["spec"]), cap_dir,
+            f"cp{k:02d}.agent.jsonl", checkpoints, config_dir=cfg_dir, label="author")
+        _log_turn("author", ar)
+        session_id = ar.session_id
+
+        for r in range(1, rounds + 1):
+            # A session can only be resumed if the author turn actually started one; a failed
+            # author turn (or a CLI that emitted no session id) means no review this checkpoint
+            # -- the author state is recorded as-is, like just-solve.
+            if not (ar.ok and session_id):
+                if ar.ok and not session_id:
+                    print("    review: author turn produced no session id; skipping review "
+                          "(recorded as un-reviewed)", flush=True)
+                break
+
+            diff = _staged_diff()
+            if not diff.strip():
+                print("    review: author made no production change; nothing to review", flush=True)
+                break
+
+            # REVIEW turn: independent of the AUTHOR (separate session, read-only -- no Bash so it
+            # cannot mutate the sandbox the author resumes into -- same Landlock confinement, same
+            # sandbox cwd so it can read surrounding code for context). Emits findings text only.
+            # Across ROUNDS it follows up on ITS OWN prior review by default: `--resume`'d under its
+            # own owned config dir so round >= 2 sees its earlier comments and the author's response.
+            # When follow-up is off (or on round 1) it is a fresh session; a None rev_cfg_dir makes
+            # each turn use its own throwaway, deleted on return.
+            resume_review = rev_session_id if (r > 1 and review_follow_up and rev_session_id) else None
+            tmpl = follow_up_tmpl if resume_review else review_tmpl
+            rev_prompt = tmpl.replace("{spec}", cp["spec"]).replace("{diff}", diff)
+            rev = agent.run_agent(rev_prompt, cwd=sandbox, model=review_model, timeout=timeout,
+                                  allowed_tools=review_tools, label=f"review{r}",
+                                  capture_path=os.path.join(cap_dir, f"cp{k:02d}.review{r}.jsonl"),
+                                  confine=_confine_config(cfg), config_dir=rev_cfg_dir,
+                                  resume_session_id=resume_review)
+            _log_turn(f"review{r}", rev)
+            review_cost += rev.cost_usd
+            turns_run = r
+            rev_session_id = rev.session_id or rev_session_id   # stable across --resume
+            verdict = (rev.result_text or "").strip()
+            reviews.append({"round": r, "ok": rev.ok, "session_id": rev.session_id,
+                            "resumed": bool(resume_review), "cost_usd": rev.cost_usd,
+                            "findings": verdict[:8000]})
+            satisfied = (not verdict) or (satisfied_token in verdict.lower()[:200])
+            print(f"    review {r}/{rounds}: "
+                  f"{'CLEAN (' + satisfied_token + ')' if satisfied else 'findings raised'}"
+                  f"  cost=${rev.cost_usd:.4f}", flush=True)
+            # Echo the reviewer's FULL findings to the console so the loop is legible end to end:
+            # author -> THESE findings -> fix. This is exactly the text the resumed author receives
+            # below (the per-event stream only shows a truncated first line of each message).
+            if verdict:
+                print(f"    ---- review {r} findings (verbatim, sent to author) ----", flush=True)
+                for ln in verdict.splitlines():
+                    print(f"      | {ln}", flush=True)
+                print("    " + "-" * 54, flush=True)
+            if satisfied or not rev.ok:
+                break
+
+            # FIX turn: RESUME the author (same session, same config dir, same sandbox) with the
+            # review as its next message. It edits the sandbox it left; we do NOT rebuild it, so
+            # its own change is on disk and its memory of writing it is replayed.
+            fprompt = fix_tmpl.replace("{review}", verdict)
+            ar = agent.run_agent(fprompt, cwd=sandbox, model=model, timeout=timeout,
+                                 label=f"fix{r}",
+                                 capture_path=os.path.join(cap_dir, f"cp{k:02d}.fix{r}.jsonl"),
+                                 confine=_confine_config(cfg), config_dir=cfg_dir,
+                                 resume_session_id=session_id)
+            _log_turn(f"fix{r}", ar)
+            fix_cost += ar.cost_usd
+            session_id = ar.session_id or session_id   # stable across --resume
+
+        # Mirror the author's FINAL state (post last fix, or the original author turn if no fix
+        # ran) onto the worktree + stage, so the caller's COMMIT 1 is exactly the agent's change.
+        mirror_source(sandbox, wt, extra_excludes=acc_excl)
+        git(["-C", wt, "add", "-A"])
+    finally:
+        for d in (cfg_dir, rev_cfg_dir):
+            if d:
+                shutil.rmtree(d, ignore_errors=True)
+
+    review_block = {
+        "enabled": True, "rounds": rounds, "turns_run": turns_run,
+        "review_model": review_model, "review_tools": review_tools,
+        "review_follow_up": review_follow_up,
+        "final_verdict": (verdict or "")[:2000],
+        "review_cost_usd": round(review_cost, 4), "fix_cost_usd": round(fix_cost, 4),
+        "turns": turn_log, "reviews": reviews,
+    }
+    return ar, author_attempts, review_block, base_for_cp, False
+
+
 def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
               checkpoints: list[dict], dry_run: bool, max_cp: int | None) -> None:
     arm_cfg = cfg["arms"][arm]
@@ -914,6 +1107,11 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # Design B: the IMPLEMENT turn uses a NEUTRAL prompt (spec only, no impact formula) so
         # the AI optimises the real task, not the proxy it is graded on. The gate still runs.
         impl = (cfg["impact_gate"].get("implement_strategy") or "just-solve")
+        template = cfg["prompt_strategies"][impl]
+    elif _review_active(cfg, strategy):
+        # The AUTHOR writes under a NEUTRAL prompt (spec only); the coherence pressure comes
+        # from the independent review + resumed fix, not from the implement wording.
+        impl = (cfg["code_review"].get("implement_strategy") or "just-solve")
         template = cfg["prompt_strategies"][impl]
     branch_preview = f"evolve/{run_id}/{strategy}/{arm}/chain{chain}"
 
@@ -1011,6 +1209,7 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         stream_file = f"cp{k:02d}.agent.jsonl"
         prompt = build_prompt(template, cp["spec"])   # the implement prompt (recorded either way)
         ig_block = None
+        review_block = None
         stopped = False
         if _gate_active(cfg, strategy):
             # impact_gated pipeline: implement -> ImpactGate -> discard+refactor -> re-implement,
@@ -1018,6 +1217,13 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             # the worktree already mirrored + staged; base_for_cp advances past any refactor commit
             # so COMMIT 1's parent and the metrics base are the refactored code.
             ar, attempt_log, ig_block, base_for_cp, stopped = _impact_gated_implement(
+                cfg, wt, sandbox, cp, model, template, cap_dir, checkpoints, arm_cfg, base_for_cp)
+        elif _review_active(cfg, strategy):
+            # reviewed pipeline: author implements -> INDEPENDENT reviewer critiques -> the author
+            # is --resume'd (full context) and tidies up on the findings, up to `rounds`. Returns
+            # the final author turn with the worktree already mirrored + staged; never stops the
+            # chain. base_for_cp is unchanged (no intermediate commits; COMMIT 1 is the final change).
+            ar, attempt_log, review_block, base_for_cp, stopped = _reviewed_implement(
                 cfg, wt, sandbox, cp, model, template, cap_dir, checkpoints, arm_cfg, base_for_cp)
         else:
             ar, attempt_log = _run_agent_turn(cfg, wt, sandbox, cp, model, prompt, cap_dir,
@@ -1148,7 +1354,8 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
             ar, outcome, probe_record, touched_pins, acceptance_touched,
             stream_file, diff_file, build_log_file=build_log_file,
             attempts=attempt_log, spec=cp["spec"], prompt=prompt,
-            ckpt_type=cp.get("type", "additive"), mutates=mutated, impact_gate=ig_block)
+            ckpt_type=cp.get("type", "additive"), mutates=mutated, impact_gate=ig_block,
+            code_review=review_block)
         capture.write_json(os.path.join(cap_dir, f"cp{k:02d}.json"), rec)
         wt_cap = os.path.join(wt, "evolve-results", "capture")
         os.makedirs(wt_cap, exist_ok=True)

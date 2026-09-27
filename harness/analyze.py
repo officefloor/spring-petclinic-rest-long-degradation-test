@@ -508,6 +508,31 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                     "ig_quality_smell_lines": last_q.get("smell_finding_lines"),
                     "ig_quality_cost_usd": round(q_cost, 4),
                 })
+
+            # reviewed pipeline ephemera (irreproducible: the review + resumed-fix agent turns).
+            # `review_cost_usd` sums every reviewer turn; `review_fix_cost_usd` every resumed author
+            # fix turn (the spend BEYOND the first author turn, which is already in `cost_usd`).
+            # The full findings text per round lives in the capture's `reviews`; the CSV keeps only a
+            # compact one-line verdict. Blank for the non-reviewed strategies.
+            cr = cap.get("code_review")
+            if cr:
+                revs = cr.get("reviews", [])
+                fixes = [t for t in cr.get("turns", []) if str(t.get("role", "")).startswith("fix")]
+                rev_cost = cr.get("review_cost_usd")
+                if rev_cost is None:
+                    rev_cost = round(sum((rv.get("cost_usd") or 0) for rv in revs), 4)
+                fix_cost = cr.get("fix_cost_usd")
+                if fix_cost is None:
+                    fix_cost = round(sum((t.get("cost_usd") or 0) for t in fixes), 4)
+                verdict = (cr.get("final_verdict")
+                           or (revs[-1].get("findings") if revs else "") or "")
+                row.update({
+                    "review_rounds": cr.get("rounds"),
+                    "review_turns_run": cr.get("turns_run", len(revs)),
+                    "review_final_verdict": verdict.replace("\n", " ").strip()[:300],
+                    "review_cost_usd": rev_cost,
+                    "review_fix_cost_usd": fix_cost,
+                })
             rows.append(row)
         print(f"  recomputed {branch}: {n} checkpoints"
               + (f" ({n_noop} no-op)" if n_noop else "")
@@ -1476,6 +1501,48 @@ def main() -> int:
                          f"{stop_impact}/{stop_quality} | {with_ref}/{len(gated)} | "
                          f"{mean_ref:.2f} | {impact_cell} | {qturns} | ${rcost:.2f} | "
                          f"{'—' if math.isnan(mean_grade) else f'p{mean_grade:.1f}'} |")
+        lines.append("")
+
+    # AI review pipeline (reviewed strategy only) — how much did the independent review + resumed
+    # fix loop engage: how often the reviewer raised findings the author acted on, how often it
+    # passed on the first look, and the review vs author-fix cost. Rendered only for groups carrying
+    # review data (a non-blank review_turns_run), so other strategies are unaffected.
+    def _has_review(grp):
+        return any(str(r.get("review_turns_run", "")) != "" for r in grp)
+    review_groups = {gk: grp for gk, grp in groups.items() if _has_review(grp)}
+    if review_groups:
+        n_cp = max((int(r["checkpoint"]) for grp in review_groups.values() for r in grp), default=0)
+        lines.append("## AI review pipeline (reviewed)\n")
+        lines.append("Per (arm, chain-pooled): whether the reviewed chains reached the final "
+                     f"checkpoint (cp{n_cp:02d}), how many checkpoints were reviewed, the mean review "
+                     "turns per checkpoint, how often the author actually revised on the review (a "
+                     "resumed fix turn ran), how often the reviewer passed the change on its first "
+                     "look (no fix), and the reviewer vs author-fix cost. The reviewer is an "
+                     "INDEPENDENT session; only its findings text reaches the author, who is resumed "
+                     "with full context of its own change to act on them. Nothing here stops the "
+                     "chain (advisory by construction).\n")
+        lines.append("| arm/strategy | chains reached final | checkpoints reviewed | "
+                     "mean review turns/cp | checkpoints revised | clean on 1st review | "
+                     "review $ (sum) | fix $ (sum) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for gk, grp in sorted(review_groups.items()):
+            revd = [r for r in grp if str(r.get("review_turns_run", "")) != ""]
+            chains = sorted({int(r["chain"]) for r in revd})
+            reached = sum(1 for ch in chains
+                          if max(int(r["checkpoint"]) for r in revd if int(r["chain"]) == ch) >= n_cp)
+            turns = [int(_f(r.get("review_turns_run", "")) or 0) for r in revd]
+            mean_turns = (sum(turns) / len(turns)) if turns else 0.0
+            revised = sum(1 for r in revd if (_f(r.get("review_fix_cost_usd", "")) or 0) > 0)
+            clean_first = sum(1 for r in revd
+                              if int(_f(r.get("review_turns_run", "")) or 0) >= 1
+                              and not ((_f(r.get("review_fix_cost_usd", "")) or 0) > 0))
+            rcost = sum(_f(r.get("review_cost_usd", "")) or 0 for r in revd
+                        if not math.isnan(_f(r.get("review_cost_usd", ""))))
+            fcost = sum(_f(r.get("review_fix_cost_usd", "")) or 0 for r in revd
+                        if not math.isnan(_f(r.get("review_fix_cost_usd", ""))))
+            lines.append(f"| {gk[0]}/{gk[1]} | {reached}/{len(chains)} | {len(revd)} | "
+                         f"{mean_turns:.2f} | {revised}/{len(revd)} | {clean_first}/{len(revd)} | "
+                         f"${rcost:.2f} | ${fcost:.2f} |")
         lines.append("")
 
     # Difference of slopes — the PAIRED test (per-arm CIs vs zero are not a between-arm test)

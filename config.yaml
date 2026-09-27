@@ -102,8 +102,16 @@ arms:
 #   4. metric-in-prompt— design-A prompt that hands the AI the cost FORMULA as its objective.
 #                        RETAINED FOR REPRODUCIBILITY ONLY (it was Goodhart-gamed); run from the
 #                        archived design-A code or `--strategy metric-in-prompt`.
+#   5. reviewed        — REVIEW lever. Neutral author prompt, then an INDEPENDENT AI reviewer
+#                        critiques the change for coherent/additive structure and the ORIGINAL
+#                        author is resumed (with full context of its own change) to tidy up on the
+#                        findings. Advisory: never stops the chain. Like impact_gated it only runs
+#                        when explicitly selected (`active_strategy: reviewed`); otherwise inert.
+#                        Delta vs just-solve = the effect of an independent review loop; delta vs
+#                        impact_gated = the model's own judgment vs a metric-driven gate.
 # Conditions 3 and 4 differ deliberately: 4 tells the AI the metric (and it games it); 3 never
-# does — the AI is only ever given the spec and, on a refactor, the symptom locations.
+# does — the AI is only ever given the spec and, on a refactor, the symptom locations. Condition 5
+# adds an ENDOGENOUS signal (the model reviewing the change) where 1-4 use exogenous ones.
 prompt_strategies:
   just-solve: |
     Implement the following change to the application so that it fully satisfies
@@ -180,6 +188,16 @@ prompt_strategies:
   # (= "quality"). Selected by impact_gate.implement_strategy; kept here only as the fallback
   # body if that key is ever removed. Keep this identical to just-solve.
   impact_gated: |
+    Implement the following change to the application so that it fully satisfies
+    the specification and all existing and new tests pass. Run the test suite and
+    make it green before finishing.
+
+    {spec}
+  # CONDITION 5: the reviewed pipeline (see code_review below). Like impact_gated, the AUTHOR gets
+  # a NEUTRAL implement prompt (code_review.implement_strategy, default just-solve); this body is
+  # only the branch label + the fallback if that key is removed. Keep it identical to just-solve —
+  # the coherence pressure comes from the independent review + resumed fix, never from the wording.
+  reviewed: |
     Implement the following change to the application so that it fully satisfies
     the specification and all existing and new tests pass. Run the test suite and
     make it green before finishing.
@@ -307,6 +325,56 @@ impact_gate:
 
     Restructure in whatever way is most natural here. Preserve all existing behaviour exactly,
     and keep every current test passing. Run the tests and make them green before finishing.
+
+# --- AI review pipeline (the reviewed strategy) -------------------------------------
+# When the active strategy == code_review.strategy, each checkpoint runs: the AUTHOR implements the
+# change (neutral prompt) in a session this harness OWNS so it can be resumed; an INDEPENDENT
+# reviewer (a separate, fresh, read-only, identically-confined session — it never writes and never
+# sees the withheld tests) critiques the change for coherent, additive, idiomatic structure; then
+# the ORIGINAL author is `--resume`'d, with full memory of its own change, and given the reviewer's
+# findings to tidy up on. Advisory by construction: nothing here stops the chain. The retained
+# context lives only WITHIN a checkpoint and is torn down at its boundary, so the cross-checkpoint
+# blind condition every other arm holds is preserved. This section is INERT unless
+# `active_strategy: reviewed` (exactly like impact_gate for impact_gated).
+code_review:
+  strategy: reviewed          # the prompt-strategy name that activates this pipeline
+  implement_strategy: just-solve   # the NEUTRAL prompt the author actually gets (never a formula)
+  # rounds: review->fix passes per checkpoint. OMITTED here so it defaults to 1 — a single review +
+  # a single resumed fix, the clean experiment. Raise it for iterate-to-convergence (an early
+  # "LGTM" verdict ends it sooner regardless).
+  # rounds: 1
+  # review_follow_up: multi-round only. Default true = the SAME reviewer session is resumed across
+  # rounds, so it judges whether ITS findings were resolved instead of re-deriving them cold. Set
+  # false for a fresh independent reviewer each round. No effect at rounds: 1.
+  # review_follow_up: true
+  # review_model: <defaults to the run's model>. Hold it equal to the author's model so the delta
+  # isolates the REVIEW LOOP, not a model difference.
+  review_tools: "Read,Grep,Glob"   # reviewer is READ-ONLY (no Bash): it cannot mutate the sandbox
+  satisfied_token: "LGTM"          # a review whose reply contains this (and no findings) ends the loop
+  # The reviewer's brief. Deliberately QUALITATIVE and metric-free (handing it the cost formula
+  # would re-import the Goodhart gaming that condition 4 showed). {spec} the change; {diff} the
+  # author's staged production diff.
+  review_prompt: |
+    You are an independent reviewer. Another engineer made the change below to satisfy the spec.
+    Review ONLY for coherent, additive, idiomatic structure: is logic in the right unit, is
+    anything duplicated, is a class or method becoming a catch-all, would a maintainer of this
+    codebase find it natural? Do NOT run tests or judge correctness. List concrete, actionable
+    findings, or reply exactly "LGTM" if the structure is already clean.
+
+    Spec: {spec}
+
+    Change under review (production diff):
+    {diff}
+  # Handed to the RESUMED author (it still has full context of the change it just made). {review}
+  # is the reviewer's findings text.
+  fix_prompt: |
+    An independent code review of the change you just made returned the findings below. Address
+    them by tidying the structure where you agree; if a finding is wrong, briefly say why and leave
+    it. Keep all acceptance behaviour intact; run the tests and make them green before finishing.
+
+    {review}
+  # follow_up_prompt: optional; what the RESUMED reviewer gets on rounds >= 2 (falls back to
+  # review_prompt). Only relevant when rounds > 1 and review_follow_up is true.
 
 build:
   # Compile step used as the build gate (fast; tests run separately by tag).
