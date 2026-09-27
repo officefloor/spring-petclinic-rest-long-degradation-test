@@ -9,3 +9,10 @@ __pycache__/
 # branch in the arm repo instead, so every branch is a self-contained record.
 /results-backup-*/
 /paper/arxiv.tar.gz
+# pdflatex leaves these next to main.tex. Tectonic never did, because it
+# compiles in a temp dir, so they only started appearing once pdflatex was the
+# engine in use. main.pdf is NOT here: it is tracked on purpose.
+/paper/main.aux
+/paper/main.log
+/paper/main.out
+/paper/main.toc

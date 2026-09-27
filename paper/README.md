@@ -11,6 +11,7 @@ architecture's complexity distribution and not the other's*
 | `figures/plasticity.png` | Figure 1. |
 | `figures/plasticity_dist.png` | Figure 2. |
 | `figures/strict_pass.png` | Figure 3. |
+| `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | Last local build, 19 pages. |
 | `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
@@ -18,8 +19,16 @@ architecture's complexity distribution and not the other's*
 ## Build
 
 ```
+./setup.sh     # once: installs the engines and packages
 ./build.sh
 ```
+
+`setup.sh` installs TeX Live (`pdflatex`) from apt and Tectonic as a pinned
+static binary under `~/.local/bin`, then checks every `\usepackage` in
+`main.tex` resolves. Only the apt half needs root. It is idempotent, and
+`SKIP_TEXLIVE=1` skips the part that does, leaving a tectonic-only setup that
+builds the paper without root but carries the caveat below. If you already have
+a TeX distribution, skip `setup.sh` entirely.
 
 `pdflatex main.tex` twice also works, and is exactly what arXiv does, but it
 will not repack `arxiv.tar.gz`. Use `build.sh` and both artifacts stay in step.
