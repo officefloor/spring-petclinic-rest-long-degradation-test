@@ -62,10 +62,12 @@ the prompt.
 Across all eight cells the amount of complexity in the finished system varies
 by 7\% on total Halstead volume and 15\% on total cyclomatic complexity, and
 the complexity \emph{added} by the sixty rules varies by 21\% to 29\% within an
-architecture. Placement does not behave this way. This paper defines a per
-metric
-\emph{intervention spread}, the range across the four conditions divided by
-their mean, and reports the ratio of the two architectures' spreads. On amount
+architecture. Placement does not behave this way. Placement is measured with a
+per metric
+\emph{intervention spread}, the relative range across the four conditions:
+prompt sensitivity analysis, an established practice, applied to structural
+metrics rather than to task accuracy. This paper reports the ratio of the two
+architectures' spreads. On amount
 metrics that ratio is near 1 and no confidence interval excludes 1: both
 architectures are equally immovable. On eleven placement metrics it runs from
 2.9 to 10.0, and every interval lies entirely above 1, entirely because the
@@ -123,10 +125,14 @@ This paper contributes:
 \item A four way measurement of Tesler conservation under a fixed task, with
   four independent operationalisations of ``amount'', reported both as finished
   totals and as the complexity the change requests added.
-\item A statistic, the \emph{intervention spread}, that separates metrics
-  measuring amount from metrics measuring arrangement by how far an
-  intervention can move them, and a ratio between architectures that is
-  approximately 1 on the former and 3 to 10 on the latter.
+\item The application of prompt sensitivity analysis to the structure of the
+  produced artefact rather than to a model's task accuracy. The instrument is a
+  relative range over the four conditions, called the \emph{intervention
+  spread} here for brevity; neither it nor the practice of reporting a spread
+  over prompt variants is new, and Section~\ref{sec:related} gives the lineage
+  of both. The result is that this spread separates metrics of amount from
+  metrics of arrangement, with a ratio between architectures near 1 on the
+  former and 3 to 10 on the latter.
 \item The finding that the mutative architecture's placement under its
   strongest intervention converges on the additive architecture's placement
   under no intervention.
@@ -137,6 +143,7 @@ This paper contributes:
 \end{enumerate}
 
 \section{Background and related work}
+\label{sec:related}
 
 \paragraph{Complexity as a conserved quantity.} Tesler's law is normally
 invoked in interface design, where the question is whether the user or the
@@ -153,14 +160,47 @@ weighted methods per class from the Chidamber and Kemerer suite
 \cite{ck1994}, and PMD's cognitive complexity over nesting.
 
 \paragraph{Measuring arrangement.} Concentration is measured with the
-Herfindahl-Hirschman index and the Gini coefficient over per file and per class
+Herfindahl-Hirschman index \cite{hirschman1964} and the Gini coefficient
+\cite{ceriani2012} over per file and per class
 complexity shares, which answer ``how unequally is this spread'' while staying
-silent on the total. Change is measured with Hassan's change entropy
+silent on the total. Neither instrument is new here, and applying them to
+software is not new either: Vasa et al.\ measured the distribution of metrics
+across evolving systems with the Gini coefficient and found the values
+remarkably stable as a project grows \cite{vasa2009}, which is the stability
+this study perturbs deliberately. Change is measured with Hassan's change entropy
 \cite{hassan2009}, applied cumulatively over the whole run rather than per
 commit. Coupling is measured with CK's coupling between objects \cite{ck1994}
 and with MacCormack's propagation cost \cite{maccormack2006}. The
 Maintainability Index \cite{oman1992} is computed per file and averaged.
 Cohesion is measured with LCOM \cite{ck1994, hs1996}.
+
+\paragraph{Sensitivity analysis, and which side is held fixed.} Asking how far
+a measured output moves when an input is perturbed is sensitivity analysis, with
+a long history as a general method \cite{saltelli2008} and a long one in
+software engineering in particular, where the perturbed input is a change to the
+code and the output is a measure of how far its consequences travel: Yau and
+Collofello's design stability and ripple effect measures \cite{yau1985} and the
+change impact analysis literature that followed them \cite{bohner1996}. This
+study swaps which side is held fixed. The change requests are frozen and
+identical across all eight cells, and what varies is the instruction given to
+the agent implementing them. The intervention spread is therefore a sensitivity
+analysis carried out in prompt space over structural outputs. What is
+substituted is the perturbed input, not the method.
+
+\paragraph{Prompt sensitivity is already a measured quantity.} That models are
+sensitive to prompt variation, and that the honest report of a prompted result
+is a range rather than a point, is established. Sclar et al.\ find accuracy
+differences of tens of points across semantically equivalent prompt
+formats and argue for reporting the spread over plausible formats instead of a
+single number \cite{formatspread}; POSIX packages prompt sensitivity as a
+published index \cite{posix}. The intervention spread stands in that line and
+claims no more than a place in it. Two things differ, and they are what make the
+statistic answer an architectural question rather than a model one. The
+perturbations here are deliberate engineering instructions of different kinds,
+not equivalent paraphrases or formatting noise, so the spread is not a
+robustness measure of a model. And the measured output is the structure of the
+artefact the model produced rather than the model's score on a task, which is
+what allows the same four perturbations to be compared across two architectures.
 
 \paragraph{Measurement under optimisation pressure.} Goodhart's law, in
 Strathern's formulation, holds that a measure which becomes a target ceases to
@@ -169,6 +209,21 @@ conditions apply deliberate optimisation pressure, and one applies it to a
 disclosed formula. Which metrics survived that pressure and which did not is
 therefore reported, and the optimised score itself is excluded from every
 claim.
+
+\paragraph{Architecture erosion and drift.} That structure degrades under
+successive change, and that the degradation is worth measuring, is among the
+oldest topics in the field. Perry and Wolf separate \emph{erosion}, the
+violation of architectural principle, from \emph{drift}, insensitivity to it
+\cite{perry1992}; de Silva and Balasubramaniam survey the approaches for
+controlling both \cite{desilva2012} and Li et al.\ map the empirical literature
+\cite{li2022}. No new account of degradation is offered here. What is measured
+is one architecture's resistance to having its arrangement set from outside
+itself, which in that vocabulary is closest to susceptibility to drift, and the
+claim is comparative between two arms rather than a theory of decay. One
+terminological warning follows from this paragraph: \emph{erosion} in
+Section~\ref{sec:erosion} means the complexity mass measure that SlopCodeBench
+defines \cite{slopcodebench}, not erosion in Perry and Wolf's sense. They are
+unrelated instruments sharing a word.
 
 \paragraph{Agentic degradation benchmarks.} Two recent benchmarks shape this
 design. The verbosity measure, and the practice of contrasting prompt arms
@@ -181,7 +236,20 @@ harness records a wider set of measures from both benchmarks, including
 degradation slope, normalized change and zero regression rate; those are not
 used here.
 
+\paragraph{Agents as architectural decision makers.} That prompts shape
+architecture is already claimed in the literature this paper joins, and is not
+offered here as a discovery. Konrad et al.\ document the mechanisms by which
+coding agents make architectural decisions that nobody reviews as such, name the
+phenomenon \emph{vibe architecting}, and demonstrate that prompt wording alone
+produces structurally different systems for the same task \cite{vibearch}. This
+paper measures that effect rather than reporting it: how large it is on eleven
+structural metrics under four instruction conditions, and, which is the part not
+already in that work, that its size is a property of the architecture receiving
+the change rather than a constant of the agent. One of the two architectures
+here absorbs almost all of it.
+
 \section{The question and the statistic}
+\label{sec:statistic}
 
 Suppose the amount of complexity is fixed by the problem. Then two
 architectures that solve it differ only in arrangement, and the arrangement of
@@ -192,7 +260,8 @@ things is one whose structure is only as durable as the discipline applying
 them. An architecture whose arrangement is determined by its own composition is
 not.
 
-That is an empirical question, and it needs a statistic. For a metric $m$ and
+That is an empirical question, and it needs a statistic. A standard one
+suffices. For a metric $m$ and
 an architecture $a$, let $\mu_{c}(m,a)$ be the mean over ten runs of the
 per run mean of $m$ over the final phase, under condition $c$. The
 \textbf{intervention spread} is
@@ -215,9 +284,30 @@ equally. Under Tesler conservation, amount metrics should have small $S$ for
 both architectures, and therefore $R \approx 1$. The thesis of this paper is
 that placement metrics have $R \gg 1$.
 
+Neither quantity is new arithmetic, and neither is offered as a contribution.
+$S$ is a relative range: a range divided by a measure of level so that the
+result is dimensionless, which is the standard construction of a relative
+measure of dispersion \cite{yule1968} and the same normalisation as the relative
+range used as a dispersion estimator in statistical process control
+\cite{montgomery2013}. The coefficient of variation is its familiar sibling,
+with the standard deviation in place of the range, and the classical coefficient
+of range is the same idea normalised by $\max + \min$ rather than by the mean.
+The mean is used here because the question is how far a metric moved relative to
+its own operating level, and because the metrics in this study span five orders
+of magnitude, from a Gini coefficient to a Halstead volume in the hundreds of
+thousands. $R$ is then a ratio of two relative dispersions, in the spirit of a
+variance ratio, and it is reported beside both of its inputs because a ratio of
+dispersions is uninformative alone. The names \emph{intervention spread} and
+\emph{plasticity ratio} are labels for readability in a paper that uses both
+several dozen times, not claims to new statistics. What is new is only what the
+instruments are pointed at: structural metrics of a produced artefact, under
+prompt perturbation, compared across two architectures that met the identical
+perturbations.
+
 Both are computed over four condition means, each itself a mean over ten runs,
 so both carry sampling error. An interval is attached by a \textbf{cluster
-bootstrap over chains}: within each of the eight cells the ten chains are
+bootstrap over chains} \cite{davison1997, field2007}: within each of the eight
+cells the ten chains are
 resampled with replacement, the cell mean recomputed, and $S$ and $R$ recomputed
 from the resampled means, 10{,}000 times. The reported interval is the 2.5th to
 97.5th percentile of that distribution.
@@ -695,7 +785,10 @@ is holding them, on every change, indefinitely. With an agent making the change
 sixty times over, the structure is whatever someone remembered to ask for. A
 structure that is a property of the composition holds when nobody is watching.
 Both architectures in this study reached a good placement under the right
-conditions. Only one of them reached it without being told.
+conditions. Only one of them reached it without being told. That prompts
+shape architecture is the observation this study inherits \cite{vibearch}; what it adds
+is a quantity, and the finding that the quantity is not the same for every
+architecture.
 
 That is as far as the evidence goes, and it is worth being blunt about how far
 that is not. Section~\ref{sec:nopredict} shows the placement result failing to
@@ -722,7 +815,10 @@ longer horizon or a human study, and neither is here.
 \paragraph{The statistic is exploratory and was not preregistered.} $S$ and $R$
 were defined after the four runs existed, so the intervals in
 Table~\ref{tab:spread} quantify sampling error and nothing else. They give no
-protection against a statistic chosen with the data already in view. $S$ is also
+protection against a statistic chosen with the data already in view. The
+arithmetic itself is standard and borrowed (Section~\ref{sec:statistic}), so
+what is exposed to that criticism is the choice of metrics and of conditions,
+not the choice of formula. $S$ is also
 a range over four points, so it is sensitive to a single outlying condition by
 construction, and a range is less well behaved under the bootstrap than a mean
 because extrema are not smooth; the intervals are therefore indicative rather
@@ -937,8 +1033,8 @@ not find that here.
 
 What is left is smaller, and still worth having. One of these two
 structures is negotiable and the other is not. Whether a structure is negotiable
-is a measurable property, it is not the same property as whether the structure
-is good, and it is worth knowing before an agent writes sixty changes into it.
+is a measurable property, measurable with instruments that already exist, it is
+not the same property as whether the structure is good, and it is worth knowing before an agent writes sixty changes into it.
 
 \section*{Competing interests}
 
@@ -1012,9 +1108,22 @@ personally.
   ``Java code metrics calculator (CK),'' 2015.
   \url{https://github.com/mauricioaniche/ck}
 
+\bibitem{bohner1996} S.~A. Bohner and R.~S. Arnold,
+  \emph{Software Change Impact Analysis}. IEEE Computer Society Press, 1996.
+
 \bibitem{brooks1987} F.~P. Brooks Jr.,
   ``No Silver Bullet: Essence and Accidents of Software Engineering,''
   \emph{IEEE Computer}, vol.~20, no.~4, pp.~10--19, 1987.
+
+\bibitem{ceriani2012} L.~Ceriani and P.~Verme,
+  ``The origins of the Gini index: extracts from \emph{Variabilit\`a e
+  Mutabilit\`a} (1912) by Corrado Gini,''
+  \emph{Journal of Economic Inequality}, vol.~10, no.~3, pp.~421--443, 2012.
+
+\bibitem{posix} A.~Chatterjee, H.~S.~V.~N.~S.~K. Renduchintala, S.~Bhatia and
+  T.~Chakraborty,
+  ``POSIX: A Prompt Sensitivity Index for Large Language Models,''
+  arXiv:2410.02185, 2024.
 
 \bibitem{sweci} J.~Chen, X.~Xu, H.~Wei, C.~Chen and B.~Zhao,
   ``SWE-CI: Evaluating Agent Capabilities in Maintaining Codebases via
@@ -1024,6 +1133,19 @@ personally.
   ``A Metrics Suite for Object Oriented Design,''
   \emph{IEEE Transactions on Software Engineering}, vol.~20, no.~6,
   pp.~476--493, 1994.
+
+\bibitem{davison1997} A.~C. Davison and D.~V. Hinkley,
+  \emph{Bootstrap Methods and Their Application}. Cambridge University Press,
+  1997.
+
+\bibitem{desilva2012} L.~de~Silva and D.~Balasubramaniam,
+  ``Controlling software architecture erosion: A survey,''
+  \emph{Journal of Systems and Software}, vol.~85, no.~1, pp.~132--151, 2012.
+
+\bibitem{field2007} C.~A. Field and A.~H. Welsh,
+  ``Bootstrapping clustered data,''
+  \emph{Journal of the Royal Statistical Society: Series B (Statistical
+  Methodology)}, vol.~69, no.~3, pp.~369--390, 2007.
 
 \bibitem{goodhart1975} C.~A.~E. Goodhart,
   ``Problems of Monetary Management: The U.K. Experience,''
@@ -1040,6 +1162,19 @@ personally.
 \bibitem{hs1996} B.~Henderson-Sellers,
   \emph{Object-Oriented Metrics: Measures of Complexity}. Prentice Hall, 1996.
 
+\bibitem{hirschman1964} A.~O. Hirschman,
+  ``The Paternity of an Index,''
+  \emph{American Economic Review}, vol.~54, no.~5, pp.~761--762, 1964.
+
+\bibitem{vibearch} P.~M. Konrad, T.~L. Adam, R.~Terrenzi and S.~Ayvaz,
+  ``Architecture Without Architects: How AI Coding Agents Shape Software
+  Architecture,'' arXiv:2604.04990, 2026.
+
+\bibitem{li2022} R.~Li, P.~Liang, M.~Soliman and P.~Avgeriou,
+  ``Understanding software architecture erosion: A systematic mapping study,''
+  \emph{Journal of Software: Evolution and Process}, vol.~34, no.~3, e2423,
+  2022.
+
 \bibitem{maccormack2006} A.~MacCormack, J.~Rusnak and C.~Y. Baldwin,
   ``Exploring the Structure of Complex Software Designs: An Empirical Study of
   Open Source and Proprietary Code,''
@@ -1049,6 +1184,10 @@ personally.
   ``A Complexity Measure,''
   \emph{IEEE Transactions on Software Engineering}, vol.~SE-2, no.~4,
   pp.~308--320, 1976.
+
+\bibitem{montgomery2013} D.~C. Montgomery,
+  \emph{Introduction to Statistical Quality Control}, 7th ed. Wiley, 2012.
+  The relative range $W = R/\sigma$, and the range as a dispersion estimator.
 
 \bibitem{norman2010} D.~A. Norman,
   \emph{Living with Complexity}. MIT Press, 2010.
@@ -1062,6 +1201,11 @@ personally.
   D.~Adila, N.~Roberts, F.~Sala and A.~Albarghouthi,
   ``SlopCodeBench: Benchmarking How Coding Agents Degrade Over Long-Horizon
   Iterative Tasks,'' arXiv:2603.24755, 2026.
+
+\bibitem{perry1992} D.~E. Perry and A.~L. Wolf,
+  ``Foundations for the Study of Software Architecture,''
+  \emph{ACM SIGSOFT Software Engineering Notes}, vol.~17, no.~4, pp.~40--52,
+  1992.
 
 \bibitem{repo} D.~Sagenschneider,
   ``PetClinic-Evolve harness,'' 2026.
@@ -1087,6 +1231,16 @@ personally.
   in \emph{Proc. 18th European Conference on Pattern Languages of Programs
   (EuroPLoP)}, ACM, pp.~1--27, 2013. \url{https://doi.org/10.1145/2739011.2739013}
 
+\bibitem{saltelli2008} A.~Saltelli, M.~Ratto, T.~Andres, F.~Campolongo,
+  J.~Cariboni, D.~Gatelli, M.~Saisana and S.~Tarantola,
+  \emph{Global Sensitivity Analysis: The Primer}. Wiley, 2008.
+
+\bibitem{formatspread} M.~Sclar, Y.~Choi, Y.~Tsvetkov and A.~Suhr,
+  ``Quantifying Language Models' Sensitivity to Spurious Features in Prompt
+  Design, or: How I Learned to Start Worrying About Prompt Formatting,''
+  in \emph{Proc. International Conference on Learning Representations (ICLR)},
+  2024. arXiv:2310.11324.
+
 \bibitem{spring} Spring Framework, VMware.
   \url{https://spring.io/projects/spring-framework}
 
@@ -1098,6 +1252,20 @@ personally.
   ``The Law of Conservation of Complexity,'' c.~1984.
   \url{http://www.nomodes.com/larry-tesler-consulting/complexity-law}
   The law has no journal publication; this is the author's own statement of it.
+
+\bibitem{vasa2009} R.~Vasa, M.~Lumpe, P.~Branch and O.~Nierstrasz,
+  ``Comparative Analysis of Evolving Software Systems Using the Gini
+  Coefficient,'' in \emph{Proc. IEEE International Conference on Software
+  Maintenance (ICSM)}, pp.~179--188, 2009.
+
+\bibitem{yau1985} S.~S. Yau and J.~S. Collofello,
+  ``Design Stability Measures for Software Maintenance,''
+  \emph{IEEE Transactions on Software Engineering}, vol.~SE-11, no.~9,
+  pp.~849--856, 1985.
+
+\bibitem{yule1968} G.~U. Yule and M.~G. Kendall,
+  \emph{An Introduction to the Theory of Statistics}, 14th ed. Griffin, 1968.
+  Standard treatment of relative measures of dispersion.
 \end{thebibliography}
 
 \end{document}

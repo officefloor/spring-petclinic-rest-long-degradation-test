@@ -12,7 +12,7 @@ architecture's complexity distribution and not the other's*
 | `figures/plasticity_dist.png` | Figure 2. |
 | `figures/strict_pass.png` | Figure 3. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
-| `main.pdf` | Last local build, 17 pages. |
+| `main.pdf` | Last local build, 19 pages. |
 | `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
 
 ## Build
