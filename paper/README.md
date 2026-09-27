@@ -13,7 +13,7 @@ architecture's complexity distribution and not the other's*
 | `figures/strict_pass.png` | Figure 3. |
 | `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
-| `main.pdf` | Last local build, 23 pages. |
+| `main.pdf` | The built paper, 23 pages. Written by `build.sh` and **gitignored**, for the same reason as `arxiv.tar.gz` below: it is derivable from `main.tex` and `figures/`. |
 | `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
 
 ## Build
