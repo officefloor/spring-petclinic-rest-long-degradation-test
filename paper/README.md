@@ -15,6 +15,7 @@ architecture's complexity distribution and not the other's*
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | The built paper, 23 pages. Written by `build.sh` and **gitignored**, for the same reason as `arxiv.tar.gz` below: it is derivable from `main.tex` and `figures/`. |
 | `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
+| `abstract.txt` | The abstract as plain text, for pasting into the arXiv abstract field and the Zenodo description. Written by `build.sh` on every build from `main.tex`'s `abstract` environment, and **gitignored** for the same reason as the two above. Each paragraph is **one unwrapped line**, blank-line separated, because both fields take text that way and 79-column source wrapping pastes into Zenodo as ragged mid-sentence breaks. The build prints the character count and warns past arXiv's 1920 limit. Regenerated before the compile and needs no TeX, so `./build.sh` refreshes it even with no LaTeX installed. |
 
 ## Build
 

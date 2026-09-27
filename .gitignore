@@ -14,6 +14,11 @@ __pycache__/
 # arxiv.tar.gz; main.pdf now follows it.
 /paper/arxiv.tar.gz
 /paper/main.pdf
+# The plain-text abstract, for pasting into the arXiv and Zenodo forms. Written
+# by build.sh out of main.tex's abstract environment, so it is derived like the
+# two above and is gitignored for the same reason: the hand-maintained copy
+# drifted from the paper.
+/paper/abstract.txt
 # The aux files pdflatex leaves next to main.tex. Tectonic never did, because
 # it compiles in a temp dir, so these only started appearing once pdflatex was
 # the engine in use.

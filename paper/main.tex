@@ -46,34 +46,32 @@ distribution and not the other's}
 \begin{abstract}
 \noindent
 Tesler's conservation law holds that a problem carries an irreducible amount of
-complexity, and Brooks separates that essential part from the accidental part a
+complexity; Brooks separates that essential part from the accidental part a
 solution adds. If the essential part is fixed, architecture is a question of
-placement rather than quantity. This paper tests both halves on a controlled
-experiment: an AI coding agent implements sixty accumulating change requests
-against one REST endpoint, under two architectures and four instruction
-conditions, ten independent runs per cell, with the model held fixed. The
-architectures are a mutative \sprg{} controller and an additive \offl{} composed
-pipeline; the instructions run from a bare change request to the structural cost
-function itself pasted into the prompt.
+placement rather than quantity. This paper tests both halves: an AI coding agent
+implements sixty accumulating change requests against one REST endpoint under two
+architectures and four instruction conditions, ten independent runs per cell,
+model fixed. The architectures are a mutative \sprg{} controller and an additive
+\offl{} pipeline; the instructions run from a bare change request to the
+structural cost function pasted into the prompt.
 
-Amount is steady. Across all eight cells the finished system's complexity varies
-by 7\% to 20\% across four operationalisations, and the complexity \emph{added}
-by the sixty rules by 21\% to 29\% within an architecture. Placement is not.
-Measured by the relative range over the four conditions, and reported as the
-ratio of the two architectures' ranges, the result is near 1 on six amount
-metrics, with five of the six intervals containing 1, against 2.9 to 10.0 on
-eleven placement metrics, every one of those intervals lying above 1, because the
-mutative architecture moves and the additive one largely does not. Under the
-disclosed cost function the mutative arm reaches the placement the additive arm
-occupies untouched, indistinguishably so on four of five metrics.
+Amount is steady: across all eight cells the finished system's complexity varies
+by 7\% to 20\% over four operationalisations, and the complexity the sixty rules
+\emph{added} by 21\% to 29\% within an architecture. Placement is not. The ratio
+of the two architectures' relative ranges over the four conditions is near 1 on
+six amount metrics, five of six intervals containing 1, against 2.9 to 10.0 on
+eleven placement metrics, every interval above 1: the mutative architecture moves,
+the additive one largely does not. Under the disclosed cost function the mutative
+arm reaches the placement the additive arm occupies untouched, indistinguishably
+on four of five metrics.
 
-The price is reported in full. Strict correctness fell in five of the six
+The price is reported in full. Strict correctness fell in five of six
 architecture-by-intervention comparisons, though each rule was itself implemented
-correctly in over 99\% of checkpoints, so what was lost was the interaction
-between rules. Three arrangement metrics fail to separate the arms, and all three
-outcome measures favour the \emph{concentrated} codebase: a cold reader recovered
-more of its rules, and it was cheaper and faster to change. The contribution is a
-measurable property of an architecture, not evidence that either is better.
+correctly in over 99\% of checkpoints: what was lost was the interaction between
+rules. Three arrangement metrics fail to separate the arms, and all three outcome
+measures favour the \emph{concentrated} codebase: a cold reader recovered it
+better, and it was cheaper and faster to change. The contribution is a measurable
+property of an architecture, not evidence that either is better.
 \end{abstract}
 
 \section{Introduction}
@@ -626,10 +624,20 @@ One family of measures from the benchmarks this design borrows from fails to
 support the result, and it is reported here rather than left out.
 SlopCodeBench's whole-application \emph{erosion} is the share of total
 complexity mass held by functions above a cyclomatic threshold. Its companion
-count is the number of such functions.
+count is the number of such functions. Table~\ref{tab:erosion} gives both, over
+the same runs and the same final phase as everything else in this section.
 
-\begin{center}
-\small
+\begin{table}[t]
+\centering
+\caption{The borrowed erosion family, final phase, mean (SD) over ten runs.
+\texttt{erosion} is the share of total complexity mass held by functions above a
+cyclomatic threshold; \texttt{erosion\_hot\_fns} is the count of those functions.
+Lower is better on both, so a positive difference is the additive arm scoring
+worse. The interval is a percentile bootstrap over chains on the between-arm
+difference, 20{,}000 resamples, and ``separates'' says whether it excludes zero.}
+\label{tab:erosion}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
 \begin{tabular}{lrrrl}
 \toprule
 Condition & \sprg{} & \offl{} & 95\% CI for \offl{} $-$ \sprg{} & separates \\
@@ -647,10 +655,9 @@ Condition & \sprg{} & \offl{} & 95\% CI for \offl{} $-$ \sprg{} & separates \\
 \texttt{formula-provided} & 0.23 (0.38) & 0.68 (0.87) & $[-0.08, +1.03]$ & no \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
-\noindent Mean (SD) over ten runs; the interval is a percentile bootstrap on the
-between-arm difference, 20{,}000 resamples over chains. The erosion mass measure
+The erosion mass measure
 numerically ranks the additive arm worse in three of the four conditions, and
 that reads at first as a contrary result. It is not one. Not a
 single one of the four differences separates the arms: every interval straddles
@@ -701,22 +708,22 @@ control condition, not against either arm's starting commit.
 \texttt{formula-provided}, its strongest single intervention, against the
 additive arm under no intervention at all. The interval is a percentile bootstrap
 over chains on that difference, 20{,}000 resamples, and ``verdict'' reads it:
-\emph{tie} means the interval contains zero. ``\sprg{} best of 3'' is the best
-the mutative arm reached under any of the three interventions, shown so that the
-selected maximum can be compared against the pre-specified condition; it differs
-from the formula column on one row only.}
+\emph{tie} means the interval contains zero. Taking instead the best the mutative
+arm reached under \emph{any} of the three interventions changes one row only,
+\texttt{cum\_change\_top1}, to 0.110 under the cohesion prompt, and that row is a
+tie either way.}
 \label{tab:convergence}
-\footnotesize
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lrrrlrl}
+\scriptsize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrcl}
 \toprule
-Metric & \sprg{} ctl & \sprg{} formula & \offl{} \emph{ctl} & 95\% CI of difference & verdict & \sprg{} best of 3 \\
+Metric & \sprg{} ctl & \sprg{} formula & \offl{} \emph{ctl} & 95\% CI of difference & verdict \\
 \midrule
-\texttt{cum\_change\_top1}          & 0.344 & 0.122 & 0.106 & $[-0.003, +0.034]$ & tie & 0.110 (cohesion) \\
-\texttt{ccdist\_file\_top1}         & 0.197 & 0.078 & 0.086 & $[-0.020, +0.003]$ & tie & 0.078 \\
-\texttt{ccdist\_file\_hhi}          & 0.0727 & 0.0232 & 0.0217 & $[-0.001, +0.004]$ & tie & 0.0232 \\
-\texttt{wmcdist\_class\_hhi}        & 0.0554 & 0.0191 & 0.0182 & $[-0.001, +0.003]$ & tie & 0.0191 \\
-\texttt{cum\_change\_entropy\_norm} & 0.721 & 0.921 & 0.886 & $[+0.021, +0.049]$ & \sprg{} ahead & 0.921 \\
+\texttt{cum\_change\_top1}          & 0.344 & 0.122 & 0.106 & $[-0.003, +0.034]$ & tie \\
+\texttt{ccdist\_file\_top1}         & 0.197 & 0.078 & 0.086 & $[-0.020, +0.003]$ & tie \\
+\texttt{ccdist\_file\_hhi}          & 0.0727 & 0.0232 & 0.0217 & $[-0.001, +0.004]$ & tie \\
+\texttt{wmcdist\_class\_hhi}        & 0.0554 & 0.0191 & 0.0182 & $[-0.001, +0.003]$ & tie \\
+\texttt{cum\_change\_entropy\_norm} & 0.721 & 0.921 & 0.886 & $[+0.021, +0.049]$ & \sprg{} ahead \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -728,16 +735,14 @@ mutative arm is ahead. The claim is convergence on the same neighbourhood, and
 the intervals are what licence the word ``convergence'' rather than a reading of
 five point estimates that differ in the third decimal place.
 
-One caveat that an earlier framing of this table needed has been removed, and one
-that matters remains. The removed one is selection: this table is now a single
+One threat this table could have carried does not apply to it, and one that
+matters does. The one avoided is selection: the table reports a single
 pre-specified condition, \texttt{formula-provided}, rather than a per-row maximum
-over three, so there is no upward bias from choosing the winner after the fact.
-The best-of-three column is kept only to show that the choice would have changed
-almost nothing, since it differs from the formula column on
-\texttt{cum\_change\_top1} alone, and that row is a tie either way. That the
-formula condition alone reaches convergence on all five metrics is a stronger
-result than a best-of-three would have been, and it is also the cleaner claim: one
-nameable intervention does this, not an envelope over several.
+over the three interventions, so no row was chosen after the fact. The maximum
+would have changed one row only, as the caption records, and that row is a tie
+either way. Reporting one named condition is both the stronger result and the
+cleaner claim: a single nameable intervention does this, not an envelope over
+several.
 
 The caveat that remains is correctness, and it is sharper now that every row
 comes from one condition, because that condition has the worst strict pass rate
@@ -882,25 +887,28 @@ recover the rules, and higher is better. The other two are lower is better and
 are \emph{per change request}, not per run; a run is sixty of them, and the
 per-run totals are in the money paragraph of Section~\ref{sec:correctness}. The
 last column pools the four conditions: it is the mean over conditions of the
-\sprg{} minus \offl{} difference, with a percentile bootstrap over chains,
-20{,}000 resamples. ``sep'' counts the conditions whose own difference has an
-interval excluding zero, which is the honest denominator for a per-condition
-tally.}
+\sprg{} minus \offl{} difference, with its percentile bootstrap interval over
+chains, 20{,}000 resamples, printed beneath it. All three pooled intervals exclude
+zero. The count of individual conditions whose own difference also excludes zero
+is 1 of 4 for \texttt{probe\_recall} and 3 of 4 for the other two, which is the
+honest denominator for a per-condition tally.
+\texttt{duration\_api\_ms} is shown in seconds rather than in the recorded
+milliseconds, purely to keep the table inside the text block.}
 \label{tab:outcome}
 \scriptsize
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{llrrrrrc}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrrrr}
 \toprule
-Metric & Arch & \texttt{just-solve} & \texttt{cohesion} & \texttt{gated} & \texttt{formula} & pooled \sprg{}$-$\offl{} & sep \\
+Metric & Arch & \texttt{just-solve} & \texttt{cohesion} & \texttt{gated} & \texttt{formula} & pooled diff. \\
 \midrule
-\texttt{probe\_recall} & \sprg{} & 0.639 (0.111) & 0.573 (0.040) & 0.590 (0.055) & 0.688 (0.055) & \multirow{2}{*}{$+0.033$ $[+0.006, +0.057]$} & \multirow{2}{*}{1 of 4} \\
-                       & \offl{} & 0.602 (0.025) & 0.555 (0.060) & 0.589 (0.071) & 0.613 (0.045) & & \\
+\texttt{probe\_recall} & \sprg{} & 0.639 (0.111) & 0.573 (0.040) & 0.590 (0.055) & 0.688 (0.055) & $+0.033$ \\
+                       & \offl{} & 0.602 (0.025) & 0.555 (0.060) & 0.589 (0.071) & 0.613 (0.045) & $[+0.006, +0.057]$ \\
 \addlinespace
-\texttt{cost\_usd} & \sprg{} & 1.64 (0.10) & 2.01 (0.18) & 1.68 (0.19) & 1.51 (0.13) & \multirow{2}{*}{$-0.17$ $[-0.23, -0.10]$} & \multirow{2}{*}{3 of 4} \\
-                   & \offl{} & 1.90 (0.16) & 2.24 (0.21) & 1.87 (0.20) & 1.50 (0.09) & & \\
+\texttt{cost\_usd} & \sprg{} & 1.64 (0.10) & 2.01 (0.18) & 1.68 (0.19) & 1.51 (0.13) & $-0.17$ \\
+                   & \offl{} & 1.90 (0.16) & 2.24 (0.21) & 1.87 (0.20) & 1.50 (0.09) & $[-0.23, -0.10]$ \\
 \addlinespace
-\texttt{duration\_api\_ms} & \sprg{} & 219{,}400 (19{,}300) & 285{,}700 (26{,}500) & 223{,}100 (27{,}300) & 256{,}500 (29{,}900) & \multirow{2}{*}{$-47{,}700$ $[-58{,}400, -37{,}000]$} & \multirow{2}{*}{3 of 4} \\
-                           & \offl{} & 294{,}600 (26{,}900) & 336{,}300 (30{,}700) & 290{,}300 (27{,}500) & 254{,}300 (13{,}700) & & \\
+\texttt{duration\_api\_ms} & \sprg{} & 219.4 (19.3) & 285.7 (26.5) & 223.1 (27.3) & 256.5 (29.9) & $-47.7$ \\
+                           & \offl{} & 294.6 (26.9) & 336.3 (30.7) & 290.3 (27.5) & 254.3 (13.7) & $[-58.4, -37.0]$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1119,11 +1127,13 @@ largest that arm reached across the four conditions, which is the most generous
 reading available to the objection; using each arm's control $n$ instead raises
 every ratio, to 2.3 to 6.6 with a median of 3.7.}
 \label{tab:room}
-\small
+\footnotesize
 \setlength{\tabcolsep}{5pt}
 \begin{tabular}{lrrrrrr}
 \toprule
-Metric & room \sprg{} & room \offl{} & $S_{\text{room}}(\sprg{})$ & $S_{\text{room}}(\offl{})$ & $R_{\text{room}}$ & $R$ \\
+ & \multicolumn{2}{c}{room} & \multicolumn{2}{c}{$S_{\text{room}}$} & & \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Metric & \sprg{} & \offl{} & \sprg{} & \offl{} & $R_{\text{room}}$ & $R$ \\
 \midrule
 \texttt{cum\_change\_top1}          & 0.325 & 0.095 & 72\% & 12\% & 6.1 & 10.0 \\
 \texttt{ccdist\_file\_top1}         & 0.186 & 0.081 & 64\% & 17\% & 3.8 & 5.3 \\
@@ -1194,10 +1204,11 @@ table here. Every metric that is used is either a published definition or a whol
 codebase count.
 
 \paragraph{The erosion family is set aside by an interested party.}
-Section~\ref{sec:erosion} reports that the borrowed whole-application erosion
-measure numerically ranks the additive arm worse in three of four conditions
-while separating the arms in none of them, and that its companion threshold count
-does separate them, against the additive arm, under the control. Two arguments
+Section~\ref{sec:erosion} and Table~\ref{tab:erosion} report that the borrowed
+whole-application erosion measure numerically ranks the additive arm worse in
+three of four conditions while separating the arms in none of them, and that its
+companion threshold count does separate them, against the additive arm, under the
+control. Two arguments
 are given there for not treating either as decisive, and they are of different
 quality. That the mass measure is too noisy at $n = 10$ to rank the arms is a
 fact about the intervals and is independent of who reports it. That the family is

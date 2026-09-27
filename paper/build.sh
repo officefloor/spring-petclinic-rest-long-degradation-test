@@ -28,6 +28,78 @@ pack() {
   echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries)"
 }
 
+# The abstract as plain text, for pasting into the arXiv and Zenodo submission
+# forms. Same reasoning as arxiv.tar.gz and for the same reason it is gitignored:
+# it is derived entirely from main.tex, and the version that was kept by hand
+# drifted from the paper. Regenerating it on every build means the abstract that
+# gets submitted is the abstract that is in the PDF.
+#
+# Each paragraph is written as ONE unwrapped line, separated by a blank line.
+# That is deliberate and is the whole point of the file: both target fields are
+# single-line-per-paragraph text areas, and source-style hard wrapping at 79
+# columns pastes into Zenodo's description as ragged mid-sentence breaks.
+#
+# This runs BEFORE either engine, and does not depend on one. The abstract is a
+# slice of the .tex source, not a product of the compile, so it is still produced
+# on a machine with no TeX installed at all.
+abstract() {
+  local out=abstract.txt sprg offl
+  # Expand the two arm macros from their own \newcommand definitions rather than
+  # hardcoding the names here, so renaming an arm in main.tex cannot leave this
+  # file quietly stale.
+  sprg=$(sed -n 's/^\\newcommand{\\sprg}{\\textsc{\(.*\)}}$/\1/p' main.tex)
+  offl=$(sed -n 's/^\\newcommand{\\offl}{\\textsc{\(.*\)}}$/\1/p' main.tex)
+  if [ -z "$sprg" ] || [ -z "$offl" ]; then
+    echo "WARNING: could not read the \\sprg/\\offl definitions from main.tex;" >&2
+    echo "         $out may contain unexpanded macros." >&2
+  fi
+
+  # Slice the abstract environment, drop its two delimiter lines, then undo the
+  # markup the abstract actually uses. The leftover check below is what catches
+  # anything new that this list does not handle.
+  sed -n '/^\\begin{abstract}$/,/^\\end{abstract}$/p' main.tex \
+    | sed -e '1d' -e '$d' \
+    | sed -E \
+        -e 's/\\noindent//g' \
+        -e "s/\\\\sprg\\{\\}/$sprg/g" \
+        -e "s/\\\\offl\\{\\}/$offl/g" \
+        -e 's/\\(emph|textbf|textit|texttt|textsc)\{([^}]*)\}/\2/g' \
+        -e 's/\{,\}/,/g' \
+        -e 's/``/"/g' -e "s/''/\"/g" \
+        -e 's/\\([%$&_#])/\1/g' \
+        -e 's/~/ /g' \
+    | awk '
+        NF   { para = (para == "" ? $0 : para " " $0); next }
+        para { out = (out == "" ? para : out "\n\n" para); para = "" }
+        END  { if (para != "") out = (out == "" ? para : out "\n\n" para)
+               if (out != "") print out }' \
+    > "$out"
+
+  # Anything still carrying a backslash or a brace is markup this function did
+  # not know about, which would otherwise be pasted into a submission form
+  # verbatim. Warn loudly rather than failing: the PDF is the build's real
+  # output, and a visible warning with the offending lines is more useful than
+  # an aborted build.
+  if grep -n '[\\{}]' "$out" >&2; then
+    echo "WARNING: the lines above still contain LaTeX markup." >&2
+    echo "         Teach abstract() in build.sh about it, or simplify the abstract." >&2
+  fi
+
+  # arXiv's abstract field caps at 1920 characters, so an abstract that grows past
+  # it cannot be submitted as written. Checked on every build because the failure
+  # surfaces at submission time otherwise, which is the worst moment to find it.
+  local words chars
+  words=$(wc -w < "$out" | tr -d ' ')
+  chars=$(wc -c < "$out" | tr -d ' ')
+  echo "Wrote $out ($words words, $chars characters, arXiv limit 1920)"
+  if [ "$chars" -gt 1920 ]; then
+    echo "WARNING: the abstract is $((chars - 1920)) characters over arXiv's 1920 limit." >&2
+    echo "         Trim the abstract environment in main.tex before submitting." >&2
+  fi
+}
+
+abstract
+
 if command -v pdflatex >/dev/null 2>&1; then
   echo "pdflatex found: building the file exactly as submitted."
   pdflatex -interaction=nonstopmode -halt-on-error main.tex
