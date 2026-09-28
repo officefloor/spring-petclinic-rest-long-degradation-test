@@ -855,7 +855,8 @@ the gate there are NO intermediate commits; COMMIT 1 is the final change.
    mutate the sandbox the author will resume into), same Landlock `confine`, same sandbox cwd (so it
    can read surrounding code). It never writes; it returns findings text, echoed VERBATIM to the
    console between the author and fix turns.
-3. If the verdict contains `satisfied_token` (default `LGTM`) or is empty → done, no fix. Otherwise
+3. If the review is empty, or its FIRST line is the verdict tag `VERDICT: <satisfied_token>` (default
+   `VERDICT: LGTM`) → done, no fix (`_review_satisfied`, tag-based and case-insensitive). Otherwise
    the **author is `--resume`'d** (same session, same config dir, same sandbox — NOT rebuilt, so its
    own change is on disk and its memory of writing it is replayed) with the findings as its next
    message; it tidies up (or pushes back, as `fix_prompt` invites). Only the findings TEXT crosses to
@@ -1305,7 +1306,8 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `rounds` (review→fix passes; **omitted → 1**, the single-pass experiment), `review_model` (defaults
   to the run's `model`; hold it equal to the author's so the delta isolates the review LOOP, not a
   model difference), `review_tools` (default `Read,Grep,Glob` — READ-ONLY, no Bash), `satisfied_token`
-  (default `LGTM` — a review whose reply contains it, with no findings, ends the loop),
+  (default `LGTM` — a review whose FIRST line is `VERDICT: <token>` ends the loop; parsed by
+  `_review_satisfied`, not a substring scan, so "not LGTM" no longer false-matches),
   `review_follow_up` (multi-round only; default `true` = the same reviewer session is resumed across
   rounds, false = a fresh reviewer each round), the `review_prompt` (`{spec}`/`{diff}`), `fix_prompt`
   (`{review}`), and optional `follow_up_prompt` (`{spec}`/`{diff}`, rounds ≥ 2; falls back to

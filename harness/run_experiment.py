@@ -923,6 +923,38 @@ def _impact_gated_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: s
                 base_for_cp, True
 
 
+def _review_satisfied(verdict: str, satisfied_token: str) -> bool:
+    """True when the reviewer signalled the change is already clean, so no fix turn runs.
+
+    The reviewer is asked to make its FIRST line an unambiguous verdict tag
+    (`VERDICT: LGTM` clean, `VERDICT: CHANGES REQUESTED` otherwise); we parse that tag
+    rather than substring-scanning the prose. The old check --
+    `satisfied_token in verdict.lower()[:200]` -- misfired both ways on how the model
+    actually replies: a review opening "This is not LGTM" matched the substring and had
+    its real findings DROPPED, while a clean review that reasoned first and put "LGTM"
+    past char 200 was missed and triggered a needless fix (16 of 48 fixes in
+    blind-202609271942/reviewed/spring/chain0 were on already-approved changes).
+
+    An empty review (reviewer produced no output) is clean, as before. If the reviewer
+    omitted the tag, we fall back to the conservative rule "satisfied only if the whole
+    reply IS just the token", so a real review is never silently discarded.
+    """
+    tok = (satisfied_token or "LGTM").strip().upper()
+
+    def _norm(s: str) -> str:
+        # Strip markdown bullet/quote/emphasis and trailing punctuation, uppercase.
+        return s.strip().lstrip("#>*-•").strip().strip("`*_").strip().upper().rstrip(".!").strip()
+
+    v = (verdict or "").strip()
+    if not v:
+        return True
+    first = next((_norm(ln) for ln in v.splitlines() if _norm(ln)), "")
+    if first.startswith("VERDICT:"):
+        return first.split(":", 1)[1].strip().rstrip(".!").strip() == tok
+    # No verdict tag: satisfied only if the ENTIRE reply is just the token.
+    return _norm(v) == tok
+
+
 def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
                         template: str, cap_dir: str, checkpoints: list[dict],
                         arm_cfg: dict, base_for_cp: str):
@@ -967,7 +999,7 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
     # {diff}) is what the resumed reviewer gets on rounds >= 2; it falls back to `review_prompt`.
     review_follow_up = bool(rc.get("review_follow_up", True))
     follow_up_tmpl = rc.get("follow_up_prompt") or review_tmpl
-    satisfied_token = (rc.get("satisfied_token") or "LGTM").strip().lower()
+    satisfied_token = (rc.get("satisfied_token") or "LGTM").strip()  # case-insensitive in _review_satisfied
     timeout = cfg.get("agent_timeout", 3600)
     acc_excl = (cfg["acceptance"]["dest_subpath"].rstrip("/") + "/",)
     k = cp["n"]
@@ -1052,7 +1084,7 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
                             # structured record of exactly what was sent to the author, and
                             # analyze relies on `reviews` holding the complete per-round text.
                             "findings": verdict})
-            satisfied = (not verdict) or (satisfied_token in verdict.lower()[:200])
+            satisfied = _review_satisfied(verdict, satisfied_token)
             print(f"    review {r}/{rounds}: "
                   f"{'CLEAN (' + satisfied_token + ')' if satisfied else 'findings raised'}"
                   f"  cost=${rev.cost_usd:.4f}", flush=True)
