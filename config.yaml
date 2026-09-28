@@ -350,9 +350,11 @@ code_review:
   # review_model: <defaults to the run's model>. Hold it equal to the author's model so the delta
   # isolates the REVIEW LOOP, not a model difference.
   review_tools: "Read,Grep,Glob"   # reviewer is READ-ONLY (no Bash): it cannot mutate the sandbox
-  satisfied_token: "LGTM"          # the reviewer's FIRST line must be `VERDICT: <this>` to end the loop
-                                   # (parsed by _review_satisfied; case-insensitive, tag-based, not a
-                                   # substring scan, so "not LGTM" no longer false-matches).
+  satisfied_token: "LGTM"          # a `VERDICT: <this>` tag ends the loop (parsed by _review_satisfied;
+                                   # case-insensitive, value-based, not a substring scan, so "not LGTM"
+                                   # never false-matches). The prompt asks for the tag on the FIRST line;
+                                   # the parser reads the FIRST tag on ANY line, so a reviewer that
+                                   # reasons before its verdict is still honoured, not needlessly fixed.
   # The reviewer's brief. Deliberately QUALITATIVE and metric-free (handing it the cost formula
   # would re-import the Goodhart gaming that condition 4 showed). {spec} the change; {diff} the
   # author's staged production diff.
@@ -362,11 +364,13 @@ code_review:
     anything duplicated, is a class or method becoming a catch-all, would a maintainer of this
     codebase find it natural? Do NOT run tests or judge correctness.
 
-    Your reply MUST begin with a verdict line, exactly one of:
+    The VERY FIRST line of your reply MUST be the verdict tag, with NOTHING before it: no preamble,
+    no reasoning, no greeting, no restating the task. Exactly one of:
       VERDICT: LGTM               (the structure is already clean; no changes needed)
       VERDICT: CHANGES REQUESTED  (the structure could be improved)
-    If the verdict is CHANGES REQUESTED, list concrete, actionable findings below that line.
-    Do NOT write the word "LGTM" anywhere unless the verdict is LGTM.
+    Put any reasoning AFTER the verdict line, never before it. If the verdict is CHANGES REQUESTED,
+    list concrete, actionable findings below that line. Do NOT write "VERDICT: LGTM" unless the change
+    is clean, and do NOT write the word "LGTM" anywhere unless the verdict is LGTM.
 
     Spec: {spec}
 

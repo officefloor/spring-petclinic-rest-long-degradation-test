@@ -927,17 +927,26 @@ def _review_satisfied(verdict: str, satisfied_token: str) -> bool:
     """True when the reviewer signalled the change is already clean, so no fix turn runs.
 
     The reviewer is asked to make its FIRST line an unambiguous verdict tag
-    (`VERDICT: LGTM` clean, `VERDICT: CHANGES REQUESTED` otherwise); we parse that tag
-    rather than substring-scanning the prose. The old check --
+    (`VERDICT: LGTM` clean, `VERDICT: CHANGES REQUESTED` otherwise). We parse that tag by
+    VALUE rather than substring-scanning the prose. The old check --
     `satisfied_token in verdict.lower()[:200]` -- misfired both ways on how the model
     actually replies: a review opening "This is not LGTM" matched the substring and had
     its real findings DROPPED, while a clean review that reasoned first and put "LGTM"
     past char 200 was missed and triggered a needless fix (16 of 48 fixes in
     blind-202609271942/reviewed/spring/chain0 were on already-approved changes).
 
+    Requiring the tag on the FIRST line fixed the first misfire but not the second: a
+    reviewer that reasons THEN concludes ("This is a minimal change ... VERDICT: LGTM")
+    puts a valid tag off line 1, and 4 of 60 fixes in blind-202609281717/reviewed/spring/
+    chain0 (cp08/20/21/54) ran on already-approved changes for that reason. So we scan
+    every line for a `VERDICT:` tag and judge the FIRST one by VALUE. First, not last, is
+    the fail-safe choice: a stray later "VERDICT: LGTM" inside a change-request review can
+    then never cancel the earlier finding, while comparing the value (not a substring)
+    keeps "This is not LGTM" in prose from ever counting as a tag.
+
     An empty review (reviewer produced no output) is clean, as before. If the reviewer
-    omitted the tag, we fall back to the conservative rule "satisfied only if the whole
-    reply IS just the token", so a real review is never silently discarded.
+    omitted the tag entirely, we fall back to the conservative rule "satisfied only if the
+    whole reply IS just the token", so a real review is never silently discarded.
     """
     tok = (satisfied_token or "LGTM").strip().upper()
 
@@ -945,13 +954,21 @@ def _review_satisfied(verdict: str, satisfied_token: str) -> bool:
         # Strip markdown bullet/quote/emphasis and trailing punctuation, uppercase.
         return s.strip().lstrip("#>*-•").strip().strip("`*_").strip().upper().rstrip(".!").strip()
 
+    def _tag_value(line: str):
+        # The tag VALUE if this line is a `VERDICT:` tag, else None.
+        n = _norm(line)
+        if n.startswith("VERDICT:"):
+            return n.split(":", 1)[1].strip().rstrip(".!").strip()
+        return None
+
     v = (verdict or "").strip()
     if not v:
         return True
-    first = next((_norm(ln) for ln in v.splitlines() if _norm(ln)), "")
-    if first.startswith("VERDICT:"):
-        return first.split(":", 1)[1].strip().rstrip(".!").strip() == tok
-    # No verdict tag: satisfied only if the ENTIRE reply is just the token.
+    tags = [t for t in (_tag_value(ln) for ln in v.splitlines()) if t is not None]
+    if tags:
+        # The FIRST verdict tag decides, wherever it sits in the reply.
+        return tags[0] == tok
+    # No verdict tag anywhere: satisfied only if the ENTIRE reply is just the token.
     return _norm(v) == tok
 
 

@@ -855,8 +855,15 @@ the gate there are NO intermediate commits; COMMIT 1 is the final change.
    mutate the sandbox the author will resume into), same Landlock `confine`, same sandbox cwd (so it
    can read surrounding code). It never writes; it returns findings text, echoed VERBATIM to the
    console between the author and fix turns.
-3. If the review is empty, or its FIRST line is the verdict tag `VERDICT: <satisfied_token>` (default
-   `VERDICT: LGTM`) → done, no fix (`_review_satisfied`, tag-based and case-insensitive). Otherwise
+3. If the review is empty, or its FIRST `VERDICT:` tag (found on ANY line, not only line 1) carries the
+   `<satisfied_token>` value (default `VERDICT: LGTM`) → done, no fix (`_review_satisfied`, tag-based,
+   value-parsed and case-insensitive). Judging the FIRST tag by VALUE is fail-safe in both directions:
+   the value-parse keeps prose like "this is not LGTM" from ever matching (which the old
+   `token in verdict[:200]` substring scan got wrong, dropping real findings), and taking the FIRST tag
+   means a stray later "would be VERDICT: LGTM" inside a change-request review cannot cancel the earlier
+   finding. It replaces an interim FIRST-LINE-only rule that still ran a needless fix whenever the
+   reviewer reasoned before its tag (4 of 60 on `blind-202609281717/reviewed/spring/chain0`, cp08/20/21/54,
+   all `VERDICT: LGTM` past line 1). Covered by `tests/test_review_satisfied.py`. Otherwise
    the **author is `--resume`'d** (same session, same config dir, same sandbox — NOT rebuilt, so its
    own change is on disk and its memory of writing it is replayed) with the findings as its next
    message; it tidies up (or pushes back, as `fix_prompt` invites). Only the findings TEXT crosses to
@@ -1306,8 +1313,9 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `rounds` (review→fix passes; **omitted → 1**, the single-pass experiment), `review_model` (defaults
   to the run's `model`; hold it equal to the author's so the delta isolates the review LOOP, not a
   model difference), `review_tools` (default `Read,Grep,Glob` — READ-ONLY, no Bash), `satisfied_token`
-  (default `LGTM` — a review whose FIRST line is `VERDICT: <token>` ends the loop; parsed by
-  `_review_satisfied`, not a substring scan, so "not LGTM" no longer false-matches),
+  (default `LGTM` — a review whose FIRST `VERDICT:` tag on ANY line carries `<token>` ends the loop;
+  parsed by value in `_review_satisfied`, not a substring scan, so "not LGTM" no longer false-matches
+  and a tag placed after the reviewer's reasoning is still honoured),
   `review_follow_up` (multi-round only; default `true` = the same reviewer session is resumed across
   rounds, false = a fresh reviewer each round), the `review_prompt` (`{spec}`/`{diff}`), `fix_prompt`
   (`{review}`), and optional `follow_up_prompt` (`{spec}`/`{diff}`, rounds ≥ 2; falls back to
