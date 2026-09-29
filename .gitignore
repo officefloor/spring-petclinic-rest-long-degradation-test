@@ -1,4 +1,5 @@
 /.idea/
+*.iml
 /.venv/
 /work/
 /results/
