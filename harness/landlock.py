@@ -64,11 +64,18 @@ def _handled_mask(abi: int) -> int:
     return m
 
 
-def default_allowlist(sandbox: str, cfg_dir: str | None, home: str | None = None):
+def default_allowlist(sandbox: str, cfg_dir: str | None, home: str | None = None,
+                      sandbox_ro: bool = False):
     """(ro, rw) path lists exposing ONLY the sandbox + the toolchain. Everything
     else (harness repo, checkpoints.yaml, pe-work, compare, Trash, the rest of
     $HOME) is absent from both lists and therefore denied. Missing paths are
-    skipped at apply time, so the lists are safe supersets."""
+    skipped at apply time, so the lists are safe supersets.
+
+    `sandbox_ro` puts the sandbox in the READ-ONLY list instead of read-write, so
+    the process (and every child) may read the code for context but the KERNEL denies
+    every write to it. Used for the reviewed arm's independent reviewer, which must
+    not mutate the sandbox the author later resumes into; its own writable needs
+    (cfg dir, /tmp, ~/.cache, ~/.m2, /dev) stay read-write below, so it still runs."""
     home = home or os.path.expanduser("~")
     ro = ["/usr", "/etc", "/opt", "/bin", "/lib", "/lib64", "/sbin", "/proc",
           "/run/systemd/resolve",             # stub-resolv.conf target — DNS for the API/Maven
@@ -78,8 +85,8 @@ def default_allowlist(sandbox: str, cfg_dir: str | None, home: str | None = None
           os.path.join(home, ".sdkman")]
     rw = ["/tmp", "/dev",
           os.path.join(home, ".m2"),
-          os.path.join(home, ".cache"),
-          sandbox]
+          os.path.join(home, ".cache")]
+    (ro if sandbox_ro else rw).append(sandbox)
     if cfg_dir:
         rw.append(cfg_dir)
     return ro, rw

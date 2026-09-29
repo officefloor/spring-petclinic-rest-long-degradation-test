@@ -851,9 +851,11 @@ the gate there are NO intermediate commits; COMMIT 1 is the final change.
    resumed. Retries on quota/transient limits like every other arm.
 2. Each round: `mirror_source(sandbox→wt)` + `git add -A` + `git diff --cached base_for_cp` gives the
    production-only diff. The **reviewer** runs as a SEPARATE `agent.run_agent` — fresh session,
-   read-only tools (`code_review.review_tools`, default `Read,Grep,Glob`; **no Bash**, so it cannot
-   mutate the sandbox the author will resume into), same Landlock `confine`, same sandbox cwd (so it
-   can read surrounding code). It never writes; it returns findings text, echoed VERBATIM to the
+   auto-approved for `code_review.review_tools` (default `Read,Grep,Glob`), same Landlock `confine`
+   but with the sandbox READ-ONLY (`sandbox_ro=True`), same sandbox cwd (so it can read surrounding
+   code). The read-only guarantee is KERNEL-enforced, not tool-scoped: `--allowedTools` does not bind
+   under `--dangerously-skip-permissions`, so a reviewer can still reach for Bash, but Landlock denies
+   every write to the code tree the author resumes into. It returns findings text, echoed VERBATIM to the
    console between the author and fix turns.
 3. If the review is empty, or its FIRST `VERDICT:` tag (found on ANY line, not only line 1) carries the
    `<satisfied_token>` value (default `VERDICT: LGTM`) → done, no fix (`_review_satisfied`, tag-based,
@@ -889,11 +891,17 @@ checkpoints reviewed, mean review turns/cp, checkpoints revised = a fix ran, cle
 review $ / fix $), shown only when a group has review data.
 
 **Do not regress.** The reviewer reuses the SAME isolation as the author (history-less sandbox, blind
-agent view, Landlock confine) and is read-only. The retained author context lives strictly WITHIN one
+agent view, Landlock confine) and is read-only: its turn runs with `sandbox_ro=True`, so the sandbox is
+Landlock read-only and every write to the code tree is kernel-denied (this does NOT rest on the
+tool list, which `--dangerously-skip-permissions` leaves unenforced). The retained author context lives strictly WITHIN one
 checkpoint and is discarded at its boundary, so pillar 2's cross-checkpoint invariant holds (see the
 note there). Review/fix turns are NOT retried on quota limits (only the author turn is) — matching the
 gate's refactor-turn pattern. Smoke-tested 2026-09-27 on spring cp01–03 (both findings→fix and
-LGTM→no-fix paths). Keep the other strategies byte-for-byte unchanged.
+LGTM→no-fix paths). 2026-09-29: the reviewer's read-only guarantee is now KERNEL-enforced
+(Landlock `sandbox_ro`). It replaces the tool-list scoping, which `--dangerously-skip-permissions`
+left unenforced. A reviewer had reached for Bash in 6/60 of blind-202609290016/spring; all reads,
+no mutations, so prior runs stand. Covered by `tests/test_reviewer_sandbox_ro.py`. Keep the other
+strategies byte-for-byte unchanged.
 
 ## The two design pillars added 2026-08 (do not regress these)
 
@@ -1312,7 +1320,9 @@ R.install_measurement_suite(wt, cfg, checkpoints, k)   # then ./mvnw -q -B -Dski
   `implement_strategy` (which `prompt_strategies` entry the AUTHOR turn uses — `just-solve`, NEUTRAL),
   `rounds` (review→fix passes; **omitted → 1**, the single-pass experiment), `review_model` (defaults
   to the run's `model`; hold it equal to the author's so the delta isolates the review LOOP, not a
-  model difference), `review_tools` (default `Read,Grep,Glob` — READ-ONLY, no Bash), `satisfied_token`
+  model difference), `review_tools` (default `Read,Grep,Glob`; these are the reviewer's auto-approved tools, not the
+  read-only mechanism, which is Landlock `sandbox_ro` since `--allowedTools` does not bind under
+  `--dangerously-skip-permissions`), `satisfied_token`
   (default `LGTM` — a review whose FIRST `VERDICT:` tag on ANY line carries `<token>` ends the loop;
   parsed by value in `_review_satisfied`, not a substring scan, so "not LGTM" no longer false-matches
   and a tag placed after the reviewer's reasoning is still honoured),

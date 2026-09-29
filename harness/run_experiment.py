@@ -1004,8 +1004,11 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
     rc = cfg["code_review"]
     rounds = int(rc.get("rounds", 1))
     review_model = rc.get("review_model", model)
-    # The reviewer is READ-ONLY by construction (no Bash), so it cannot mutate the sandbox the
-    # author will resume into; its judgement must come from reading the code, not running it.
+    # The reviewer is READ-ONLY by KERNEL enforcement: its turn runs with sandbox_ro=True, so
+    # Landlock makes the sandbox read-only and every write to the code tree is denied (EACCES) no
+    # matter which tools it reaches for -- it cannot mutate the sandbox the author resumes into.
+    # review_tools still scopes what it is auto-approved to use; the read-only guarantee no longer
+    # rests on it (--allowedTools does not bind under --dangerously-skip-permissions).
     review_tools = rc.get("review_tools", "Read,Grep,Glob")
     review_tmpl = rc["review_prompt"]     # {spec}, {diff}
     fix_tmpl = rc["fix_prompt"]           # {review}
@@ -1075,9 +1078,10 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
                 print("    review: author made no production change; nothing to review", flush=True)
                 break
 
-            # REVIEW turn: independent of the AUTHOR (separate session, read-only -- no Bash so it
-            # cannot mutate the sandbox the author resumes into -- same Landlock confinement, same
-            # sandbox cwd so it can read surrounding code for context). Emits findings text only.
+            # REVIEW turn: independent of the AUTHOR (separate session; the sandbox is Landlock
+            # READ-ONLY for this turn via sandbox_ro=True, so it can read surrounding code for
+            # context but the kernel denies any write to the code tree the author resumes into --
+            # same confinement otherwise). Emits findings text only.
             # Across ROUNDS it follows up on ITS OWN prior review by default: `--resume`'d under its
             # own owned config dir so round >= 2 sees its earlier comments and the author's response.
             # When follow-up is off (or on round 1) it is a fresh session; a None rev_cfg_dir makes
@@ -1089,7 +1093,7 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
                                   allowed_tools=review_tools, label=f"review{r}",
                                   capture_path=os.path.join(cap_dir, f"cp{k:02d}.review{r}.jsonl"),
                                   confine=_confine_config(cfg), config_dir=rev_cfg_dir,
-                                  resume_session_id=resume_review)
+                                  resume_session_id=resume_review, sandbox_ro=True)
             _log_turn(f"review{r}", rev)
             review_cost += rev.cost_usd
             turns_run = r

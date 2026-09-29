@@ -240,7 +240,8 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
               allowed_tools: Optional[str] = None, stream: bool = True,
               label: str = "claude", capture_path: Optional[str] = None,
               confine: Optional[dict] = None, config_dir: Optional[str] = None,
-              resume_session_id: Optional[str] = None) -> AgentResult:
+              resume_session_id: Optional[str] = None,
+              sandbox_ro: bool = False) -> AgentResult:
     """Run one headless agent turn in `cwd`, streaming events to the console.
     Returns the parsed terminal result, or an error result on timeout / missing
     completion.
@@ -267,7 +268,13 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
     every child it spawns — is Landlock-restricted to the sandbox + toolchain, so it
     cannot read the withheld tests/specs anywhere on the filesystem. Fails CLOSED:
     if Landlock is unavailable or the sentinel self-check finds withheld material
-    still readable, the turn is refused (no agent runs) rather than run un-blinded."""
+    still readable, the turn is refused (no agent runs) rather than run un-blinded.
+
+    `sandbox_ro` (confined turns only) puts the sandbox cwd in the READ-ONLY part of
+    the Landlock allowlist, so the KERNEL denies any write to the code tree no matter
+    which tools the model is willing to use (unlike `--allowedTools`, which does not
+    bind under `--dangerously-skip-permissions`). Used for the reviewed arm's
+    independent reviewer; author and fix turns leave it False so they can edit."""
     cmd = ["claude", "-p", prompt, *invocation_flags(model, allowed_tools)]
     if resume_session_id:
         # Continue the SAME session (same CLAUDE_CONFIG_DIR + same cwd): the prior turn
@@ -297,7 +304,7 @@ def run_agent(prompt: str, cwd: str, model: str, timeout: int = 3600,
                 shutil.rmtree(cfg_dir, ignore_errors=True)
             return AgentResult(ok=False, error="agent_confinement enabled but Landlock "
                                "unavailable on this host; refusing to run agent unconfined")
-        ro, rw = landlock.default_allowlist(cwd, cfg_dir)
+        ro, rw = landlock.default_allowlist(cwd, cfg_dir, sandbox_ro=sandbox_ro)
         ro += list(confine.get("ro", []))
         rw += list(confine.get("rw", []))
         sentinels = list(confine.get("sentinels", []))
