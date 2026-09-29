@@ -877,10 +877,12 @@ the gate there are NO intermediate commits; COMMIT 1 is the final change.
 
 **Capture.** `checkpoint_record(..., code_review=review_block)` adds a `code_review` block:
 `{enabled, rounds, turns_run, review_model, review_tools, review_follow_up, final_verdict,
-review_cost_usd, fix_cost_usd, turns:[...], reviews:[{round, ok, session_id, resumed, cost_usd,
+review_cost_usd, fix_cost_usd, author0_diff_file, turns:[...], reviews:[{round, ok, session_id, resumed, cost_usd,
 findings}]}`. `reviews[].findings` and `final_verdict` hold the reviewer's FULL text, untruncated —
 exactly what was echoed to the console and sent to the author (the CSV derives a short one-liner from
-it). Turn streams land as `cpNN.agent.jsonl`, `cpNN.reviewR.jsonl`, `cpNN.fixR.jsonl`. Only
+it). Turn streams land as `cpNN.agent.jsonl`, `cpNN.reviewR.jsonl`, `cpNN.fixR.jsonl`; the author's
+pre-review baseline as `cpNN.author0.diff` (the post-fix result stays in `cpNN.agent.diff`, so their
+difference is the fix's own delta). Only
 present for the reviewed strategy.
 
 **analyze columns.** `recompute_rows` reads the block into `review_rounds`, `review_turns_run`,

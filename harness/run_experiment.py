@@ -1078,6 +1078,14 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
                 print("    review: author made no production change; nothing to review", flush=True)
                 break
 
+            # Persist the author's PRE-REVIEW production diff (round 1): the exact baseline the
+            # reviewer saw. A later analysis isolates the fix's delta (agent.diff minus this) to
+            # measure how much of the review the author acted on. There is no intermediate commit
+            # for this state, so reconstructing it from the author transcript would be brittle.
+            if r == 1:
+                with open(os.path.join(cap_dir, f"cp{k:02d}.author0.diff"), "w") as fh:
+                    fh.write(diff)
+
             # REVIEW turn: independent of the AUTHOR (separate session; the sandbox is Landlock
             # READ-ONLY for this turn via sandbox_ro=True, so it can read surrounding code for
             # context but the kernel denies any write to the code tree the author resumes into --
@@ -1146,6 +1154,9 @@ def _reviewed_implement(cfg: dict, wt: str, sandbox: str, cp: dict, model: str,
         "enabled": True, "rounds": rounds, "turns_run": turns_run,
         "review_model": review_model, "review_tools": review_tools,
         "review_follow_up": review_follow_up,
+        # The author's pre-review production diff (round 1 baseline), for fix-adherence analysis;
+        # blank when no review ran. agent.diff minus this is the fix's own delta.
+        "author0_diff_file": (f"cp{k:02d}.author0.diff" if turns_run else ""),
         # The final round's FULL verdict, untruncated. The complete per-round text is in
         # `reviews`; this mirrors the last one for convenience. CSV derives a short one-liner.
         "final_verdict": (verdict or ""),
