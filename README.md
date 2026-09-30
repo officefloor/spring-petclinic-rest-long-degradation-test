@@ -756,6 +756,23 @@ lines| / LOC` (jscpd duplication ∪ ast-grep anti-patterns); `verbosity_clone_l
 `verbosity_pattern_lines`, `verbosity_union_lines` are the components. `java_loc`,
 `yaml_loc` are the two LOC pools (kept separate).
 
+**Duplication (clone-structure) — `dup_*`** — standalone code-duplication metrics, all
+mechanical and read off the SAME single jscpd run as Verbosity (no second jscpd; no
+semantic interpretation). *Quantity* (Bellon/SonarQube family): `dup_lines` (duplicated
+lines, equals `verbosity_clone_lines`), `dup_density` (`dup_lines / java_loc`),
+`dup_tokens`, `dup_pairs` (clone pairs), `dup_blocks` (distinct fragments), `dup_files`,
+`dup_classes` (clone classes = connected components of the pair graph),
+`dup_largest_lines`, `dup_mean_block_lines`. *Locality / dispersion* (Kapser & Godfrey):
+`dup_same_file_pairs`, `dup_same_package_pairs`, `dup_cross_package_pairs`,
+`dup_cross_layer_pairs` (layer = path segment after `.../petclinic/`), and
+`dup_cross_file_ratio` (cross-file pairs / all pairs — the spread signal). *Change-scoped*:
+`dup_evolved_lines` and `dup_evolved_density` restrict to files changed since the
+pre-feature base, so frozen baseline boilerplate (which dominates the whole-repo number
+equally in both arms) is excluded. All degrade to blank when jscpd is absent. Note jscpd
+is a Type-1/2 token detector: it captures copy-paste and duplicated constants but not
+small semantic dispersion (renamed predicates, inline re-derivations), so read these as a
+floor, not a ceiling.
+
 **Hotspot & function-size (lizard)** — `hotspot_cc` / `hotspot_nloc` / `hotspot_fn`:
 the single highest-CC function in the touched subsystem (CC, size, `File::method`).
 `fn_count`, `fn_nloc_avg`, `fn_nloc_max`, `fn_cc_max`: OfficeFloor's wired-function

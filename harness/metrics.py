@@ -154,7 +154,11 @@ def function_package_stats(root: str, pkg_glob: Optional[str]) -> dict:
 # skipped and a warning surfaced. If BOTH are absent verbosity is NaN.
 # ---------------------------------------------------------------------------
 
-def _clone_lines_jscpd(root: str, src_dirs: list[str], jscpd_bin: str) -> Optional[set[tuple[str, int]]]:
+def _jscpd_report(root: str, src_dirs: list[str], jscpd_bin: str) -> Optional[dict]:
+    """Run jscpd ONCE over src_dirs and return the parsed report, or None if jscpd is
+    absent / produced nothing. Both the Verbosity clone half and the standalone
+    duplication metrics (`clone_metrics`) derive from this single run, so jscpd is never
+    launched twice per checkpoint."""
     out_dir = os.path.join(root, ".jscpd-report")
     cmd = [jscpd_bin, "--mode", "strict", "--reporters", "json",
            "--silent", "--output", out_dir, "--format", "java"] + \
@@ -166,32 +170,142 @@ def _clone_lines_jscpd(root: str, src_dirs: list[str], jscpd_bin: str) -> Option
     report = os.path.join(out_dir, "jscpd-report.json")
     if not os.path.isfile(report):
         return None
-    lines: set[tuple[str, int]] = set()
     try:
         with open(report) as fh:
-            data = json.load(fh)
+            return json.load(fh)
     except (json.JSONDecodeError, OSError):
         return None
-    def _line(fobj, base):
-        # jscpd emits base ('start'/'end') as an int line number and baseLoc as
-        # {line, column, position}; prefer the Loc.line, fall back to the int.
-        loc = fobj.get(base + "Loc")
-        if isinstance(loc, dict) and loc.get("line") is not None:
-            return loc["line"]
-        v = fobj.get(base)
-        return v if isinstance(v, int) else None
 
+
+def _jscpd_line(fobj: dict, base: str):
+    # jscpd emits base ('start'/'end') as an int line number and baseLoc as
+    # {line, column, position}; prefer the Loc.line, fall back to the int.
+    loc = fobj.get(base + "Loc")
+    if isinstance(loc, dict) and loc.get("line") is not None:
+        return loc["line"]
+    v = fobj.get(base)
+    return v if isinstance(v, int) else None
+
+
+def _clone_lines_from_report(data: dict, root: str) -> set[tuple[str, int]]:
+    """{(path, line)} covered by any duplicate fragment. The path key is
+    relpath(name, root), kept EXACTLY as the original _clone_lines_jscpd produced it so
+    Verbosity's clone/pattern union is byte-for-byte unchanged."""
+    lines: set[tuple[str, int]] = set()
     for dup in data.get("duplicates", []):
         for side in ("firstFile", "secondFile"):
             f = dup.get(side, {})
             name = f.get("name")
-            start = _line(f, "start")
-            end = _line(f, "end")
+            start = _jscpd_line(f, "start")
+            end = _jscpd_line(f, "end")
             if name and start and end:
                 rel = os.path.relpath(name, root)
                 for ln in range(int(start), int(end) + 1):
                     lines.add((rel, ln))
     return lines
+
+
+def _clone_lines_jscpd(root: str, src_dirs: list[str], jscpd_bin: str) -> Optional[set[tuple[str, int]]]:
+    data = _jscpd_report(root, src_dirs, jscpd_bin)
+    return None if data is None else _clone_lines_from_report(data, root)
+
+
+# Standalone duplication (clone-structure) metrics. Mechanical, jscpd-only, no semantic
+# interpretation: everything below is read off the SAME single jscpd report as Verbosity.
+# A file's jscpd `name` is package-relative to the scanned src dir (e.g.
+# "org/.../model/Owner.java"); its package is the directory, its layer is the path
+# segment right after ".../petclinic/" (rest, model, mapper, repository, ...).
+CLONE_COLS = [
+    "dup_lines", "dup_density", "dup_tokens", "dup_pairs", "dup_blocks", "dup_files",
+    "dup_classes", "dup_largest_lines", "dup_mean_block_lines",
+    "dup_same_file_pairs", "dup_same_package_pairs", "dup_cross_package_pairs",
+    "dup_cross_layer_pairs", "dup_cross_file_ratio",
+    "dup_evolved_lines", "dup_evolved_density",
+]
+
+
+def _clone_pkg(name: str) -> str:
+    return os.path.dirname(name)
+
+
+def _clone_layer(name: str) -> str:
+    parts = name.split("/")
+    if "petclinic" in parts:
+        i = parts.index("petclinic")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return parts[0] if parts else ""
+
+
+def clone_metrics(data: Optional[dict], loc: int, evolved_loc: int,
+                  evolved_names: set[str]) -> dict:
+    """Mechanical clone-structure metrics from one jscpd report. Quantity (Bellon /
+    SonarQube family), locality/dispersion (Kapser & Godfrey), and a change-scoped slice.
+    Blank on no report, matching Verbosity's graceful degradation. `evolved_names` are the
+    src-dir-relative paths of files changed since the pre-feature base (jscpd `name` space)."""
+    if data is None:
+        return {k: "" for k in CLONE_COLS}
+    parent: dict = {}
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    lines: set[tuple[str, int]] = set()   # (name, line) — clean identity for scoping
+    frags: set = set()
+    files: set = set()
+    spanlens: list[int] = []
+    tokens = 0
+    same_file = same_pkg = cross_pkg = cross_layer = 0
+    for d in data.get("duplicates", []):
+        f1o, f2o = d.get("firstFile", {}), d.get("secondFile", {})
+        n1, n2 = f1o.get("name"), f2o.get("name")
+        s1, e1 = _jscpd_line(f1o, "start"), _jscpd_line(f1o, "end")
+        s2, e2 = _jscpd_line(f2o, "start"), _jscpd_line(f2o, "end")
+        if not (n1 and n2 and s1 and e1 and s2 and e2):
+            continue
+        tokens += int(d.get("tokens") or 0)
+        for (n, s, e) in ((n1, int(s1), int(e1)), (n2, int(s2), int(e2))):
+            frags.add((n, s, e))
+            files.add(n)
+            spanlens.append(e - s + 1)
+            for ln in range(s, e + 1):
+                lines.add((n, ln))
+        union((n1, int(s1), int(e1)), (n2, int(s2), int(e2)))
+        if n1 == n2:
+            same_file += 1
+        elif _clone_pkg(n1) == _clone_pkg(n2):
+            same_pkg += 1
+        else:
+            cross_pkg += 1
+            if _clone_layer(n1) != _clone_layer(n2):
+                cross_layer += 1
+    pairs = same_file + same_pkg + cross_pkg
+    n_lines = len(lines)
+    ev_lines = sum(1 for (n, _l) in lines if n in evolved_names)
+    return {
+        "dup_lines": n_lines,
+        "dup_density": round(n_lines / loc, 4) if loc > 0 else "",
+        "dup_tokens": tokens,
+        "dup_pairs": pairs,
+        "dup_blocks": len(frags),
+        "dup_files": len(files),
+        "dup_classes": len({find(f) for f in frags}),
+        "dup_largest_lines": max(spanlens) if spanlens else 0,
+        "dup_mean_block_lines": round(sum(spanlens) / len(spanlens), 1) if spanlens else 0,
+        "dup_same_file_pairs": same_file,
+        "dup_same_package_pairs": same_pkg,
+        "dup_cross_package_pairs": cross_pkg,
+        "dup_cross_layer_pairs": cross_layer,
+        "dup_cross_file_ratio": round((pairs - same_file) / pairs, 4) if pairs else "",
+        "dup_evolved_lines": ev_lines,
+        "dup_evolved_density": round(ev_lines / evolved_loc, 4) if evolved_loc > 0 else "",
+    }
 
 
 def _pattern_lines_astgrep(root: str, src_dirs: list[str], sg_bin: str,
@@ -235,12 +349,19 @@ def _pattern_lines(root: str, src_dirs: list[str], tools: dict,
                                   tools.get("astgrep_rules", ""))
 
 
+_CLONES_UNSET = object()   # sentinel: "caller did not pre-supply clones" (None means jscpd failed)
+
+
 def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict,
               pmd_report: Optional[dict] = None,
-              pmd_keep: Optional[set[str]] = None) -> tuple[float, dict]:
+              pmd_keep: Optional[set[str]] = None,
+              clones=_CLONES_UNSET) -> tuple[float, dict]:
     if loc <= 0:
         return float("nan"), {"reason": "no LOC"}
-    clones = _clone_lines_jscpd(root, src_dirs, tools.get("jscpd", "jscpd"))
+    # `clones` may be pre-computed by the caller from a shared jscpd report (so jscpd runs
+    # once per checkpoint). Only run jscpd here when the caller did not supply it.
+    if clones is _CLONES_UNSET:
+        clones = _clone_lines_jscpd(root, src_dirs, tools.get("jscpd", "jscpd"))
     patterns = _pattern_lines(root, src_dirs, tools, pmd_report, pmd_keep)
     if clones is None and patterns is None:
         return float("nan"), {"reason": "neither jscpd nor ast-grep produced output"}
@@ -914,8 +1035,22 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
             if pmd_report is not None:
                 pmd_keep_waste, pmd_keep_metrics = waste, mtr
 
+    # ONE jscpd run per checkpoint, shared by Verbosity's clone half and the standalone
+    # duplication metrics below.
+    jrep = _jscpd_report(worktree, src_dirs, tools.get("jscpd", "jscpd"))
+    jclones = None if jrep is None else _clone_lines_from_report(jrep, worktree)
     vscore, vdetail = verbosity(worktree, src_dirs,
-                                loc, tools, pmd_report, pmd_keep_waste)
+                                loc, tools, pmd_report, pmd_keep_waste, clones=jclones)
+    # Change-scoped duplication needs the evolving footprint: its LOC, and the files
+    # changed since base expressed in jscpd's src-dir-relative `name` space.
+    evolved_loc = total_java_loc(touched_fns)
+    evolved_names: set[str] = set()
+    for t in touched:
+        for d in src_dirs:
+            pref = d.rstrip("/") + "/"
+            if t.startswith(pref):
+                evolved_names.add(t[len(pref):])
+                break
     hs = hotspot_stats(touched_fns)                          # worst fn in the footprint
     fp = function_package_stats(worktree, arm_cfg.get("function_package_glob"))
     br = blast_radius(worktree, prev_ref, cur_ref, exclude=exclude)
@@ -970,6 +1105,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "java_loc": loc,
         "yaml_loc": yaml_loc(worktree, arm_cfg.get("yaml_globs", [])),
     }
+    row.update(clone_metrics(jrep, loc, evolved_loc, evolved_names))
     row.update(hs)
     row.update(fp)
     row.update(br)
