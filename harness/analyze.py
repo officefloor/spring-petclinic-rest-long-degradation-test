@@ -1426,10 +1426,60 @@ def main() -> int:
     gammas = [float(g) for g in args.gammas.split(",")]
     lines = ["# PetClinic-Evolve results\n"]
 
+    # Ratio metrics, as (field, numerator, denominator). A ratio must be POOLED over the run
+    # (sum of numerators / sum of denominators), never averaged across checkpoints or chains:
+    # per-checkpoint ratios are dominated by the points with a tiny denominator. `reedit_rate`'s
+    # denominator is the body lines of the functions a checkpoint edited, which can be a handful.
+    # In the sibling UI arm this artifact INVERTED an arm comparison, so the pooled value is the
+    # one to quote for a level and the slopes above are the trajectory.
+    pooled_ratios = [
+        ("verbosity", "verbosity_union_lines", "source_loc"),
+        ("dup_density", "dup_lines", "source_loc"),
+        ("dup_evolved_density", "dup_evolved_lines", "evolved_source_loc"),
+        ("reedit_rate", "reedit_prior_lines", "reedit_body_lines"),
+        ("reedit_lines_rate", "reedit_lines_settled", "reedit_lines_touched"),
+    ]
+
+    def _opt(x):
+        """float(x), or None for a blank / unparseable / NaN cell. A blank must stay BLANK."""
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return None if v != v else v
+
+    def _num(x) -> float:
+        """Same, as 0 for accumulation — NaN would poison a sum and is truthy, so `float(x) or 0`
+        does not guard it."""
+        v = _opt(x)
+        return 0.0 if v is None else v
+
+    def pooled_ratio(rows_in, num_field: str, den_field: str):
+        """Sum/sum. None when no row carried the denominator — a missing denominator must read
+        BLANK, never as a zero that drags the pooled value down."""
+        num = den = 0.0
+        seen = False
+        for r in rows_in:
+            d = _opt(r.get(den_field))
+            if d is None:
+                continue
+            seen = True
+            den += d
+            num += _num(r.get(num_field))
+        if not seen or den == 0:
+            return None
+        return num / den
+
     # Degradation slopes (headline)
     lines.append("## Degradation slopes m (OLS of metric on checkpoint; 95% bootstrap CI)\n")
-    lines.append("| arm/strategy | metric | slope m | CI low | CI high |")
-    lines.append("|---|---|---:|---:|---:|")
+    lines.append("A slope says nothing about how much of the series is even nonzero. `erosion`"
+                 " is a ratio over functions above CC 10, and in these runs most checkpoints have"
+                 " none: it is exactly 0 in 50-93% of rows depending on the run, and"
+                 " `erosion_handler` is 0 in ALL 1200 rows of blind-202609010045. A mean-curve"
+                 " slope over that is carried by a handful of points, so the nonzero fraction is"
+                 " reported beside every slope — read them together.\n")
+    lines.append("| arm/strategy | metric | slope m | CI low | CI high | nonzero |")
+    lines.append("|---|---|---:|---:|---:|---:|")
     # DERIVED from METRICS_TO_PLOT, never written out again: the two lists were
     # maintained separately and a metric added to one but not the other silently got
     # a plot with no slope, or a slope with no plot.
@@ -1442,8 +1492,35 @@ def main() -> int:
             m, lo, hi = bootstrap_slope(cs)
             if math.isnan(m):
                 continue
-            lines.append(f"| {gk[0]}/{gk[1]} | {field} | {m:.4g} | {lo:.4g} | {hi:.4g} |")
+            vals = [v for _k, v in ((k, v) for c in cs for k, v in cs[c])]
+            nz = sum(1 for v in vals if v != 0)
+            frac = f"{nz}/{len(vals)}" if vals else "-"
+            lines.append(f"| {gk[0]}/{gk[1]} | {field} | {m:.4g} | {lo:.4g} | {hi:.4g} "
+                         f"| {frac} |")
     lines.append("")
+
+    # Pooled ratios (sum/sum over the run) — quote THESE for a level, not the slopes above.
+    pooled_rows = []
+    for gk, grp in sorted(groups.items()):
+        for field, num_f, den_f in pooled_ratios:
+            if not grp or den_f not in grp[0]:
+                continue
+            v = pooled_ratio(grp, num_f, den_f)
+            if v is None:
+                continue
+            tn = sum(_num(r.get(num_f)) for r in grp)
+            td = sum(_num(r.get(den_f)) for r in grp)
+            pooled_rows.append(f"| {gk[0]}/{gk[1]} | {field} | {v:.4f} | {tn:.0f} | {td:.0f} |")
+    if pooled_rows:
+        lines.append("## Pooled ratios (sum numerator / sum denominator over the run)\n")
+        lines.append("Averaging per-checkpoint ratios weights a checkpoint that touched two "
+                     "lines the same as one that touched three hundred. These are summed "
+                     "instead, and are the figures to quote for a LEVEL; the slope table above "
+                     "is the trajectory.\n")
+        lines.append("| arm/strategy | ratio | pooled | numerator | denominator |")
+        lines.append("|---|---|---:|---:|---:|")
+        lines += pooled_rows
+        lines.append("")
 
     # ImpactGate pipeline (impact_gated strategy only) — did the architecture absorb the
     # change stream under the gate, and at what refactor cost? Rendered only when a group
