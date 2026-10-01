@@ -114,6 +114,34 @@ def total_java_loc(fns: list[dict]) -> int:
     return sum(f["nloc"] for f in fns)
 
 
+def source_loc(root: str, src_dirs: list[str]) -> int:
+    """Non-blank PHYSICAL lines of the scanned `.java` sources.
+
+    This is the correct denominator for any ratio whose NUMERATOR comes from jscpd or PMD,
+    because those report whole-file line numbers: imports, the package and class declarations,
+    field declarations and annotations. `total_java_loc` sums lizard's FUNCTION nloc, which
+    excludes all of that, so a clone line outside a method body counts in the numerator and not
+    in the denominator and the ratio drifts upward — far enough to exceed 1.0, which a share of
+    lines cannot do.
+
+    That was not hypothetical. `verbosity` is reported in the paper as rising "from 0.851 to
+    1.002 under the cohesion prompt" (paper/main.tex, Duplication); 1.002 is this error, not a
+    finding. The sibling UI arm hit it harder, reporting dup_density 0.9991 and
+    dup_evolved_density 1.0399 on one checkpoint, which is what exposed it.
+
+    `java_loc` (the old denominator) is still emitted alongside `source_loc`, so every previously
+    published figure stays derivable: old_ratio = new_ratio * source_loc / java_loc.
+    """
+    total = 0
+    for path in _java_files(root, [os.path.join(d, "**", "*.java") for d in src_dirs]):
+        try:
+            with open(path, errors="ignore") as fh:
+                total += sum(1 for line in fh if line.strip())
+        except OSError:
+            continue
+    return total
+
+
 def hotspot_stats(fns: list[dict]) -> dict:
     """God-method indicator: the single highest-cyclomatic-complexity function in
     the given set, named so you can see WHERE complexity concentrates. Pass the
@@ -1039,17 +1067,30 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     # duplication metrics below.
     jrep = _jscpd_report(worktree, src_dirs, tools.get("jscpd", "jscpd"))
     jclones = None if jrep is None else _clone_lines_from_report(jrep, worktree)
+    # Physical non-blank source lines, NOT the sum of function nloc: the clone/smell numerators
+    # are whole-file line numbers, so the function-scoped denominator let the ratio exceed 1
+    # (see `source_loc`). `loc` is still emitted as `java_loc` for continuity.
+    src_loc = source_loc(worktree, src_dirs)
     vscore, vdetail = verbosity(worktree, src_dirs,
-                                loc, tools, pmd_report, pmd_keep_waste, clones=jclones)
+                                src_loc, tools, pmd_report, pmd_keep_waste, clones=jclones)
     # Change-scoped duplication needs the evolving footprint: its LOC, and the files
     # changed since base expressed in jscpd's src-dir-relative `name` space.
-    evolved_loc = total_java_loc(touched_fns)
+    evolved_loc = total_java_loc(touched_fns)           # kept: `java_loc`-based, for continuity
+    evolved_src_loc = 0                                  # physical lines of the evolving footprint
     evolved_names: set[str] = set()
     for t in touched:
         for d in src_dirs:
             pref = d.rstrip("/") + "/"
             if t.startswith(pref):
                 evolved_names.add(t[len(pref):])
+                # Physical non-blank lines of this changed file, matching the numerator's unit.
+                # A file deleted by this checkpoint is simply absent, so it contributes nothing.
+                if t.endswith(".java"):
+                    try:
+                        with open(os.path.join(worktree, t), errors="ignore") as fh:
+                            evolved_src_loc += sum(1 for line in fh if line.strip())
+                    except OSError:
+                        pass
                 break
     hs = hotspot_stats(touched_fns)                          # worst fn in the footprint
     fp = function_package_stats(worktree, arm_cfg.get("function_package_glob"))
@@ -1102,10 +1143,12 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "verbosity_clone_lines": vdetail.get("clone_lines", ""),
         "verbosity_pattern_lines": vdetail.get("pattern_lines", ""),
         "verbosity_union_lines": vdetail.get("union_lines", ""),
-        "java_loc": loc,
+        "java_loc": loc,                 # summed FUNCTION nloc (the pre-fix denominator)
+        "source_loc": src_loc,           # physical non-blank source lines (the denominator now)
+        "evolved_source_loc": evolved_src_loc,
         "yaml_loc": yaml_loc(worktree, arm_cfg.get("yaml_globs", [])),
     }
-    row.update(clone_metrics(jrep, loc, evolved_loc, evolved_names))
+    row.update(clone_metrics(jrep, src_loc, evolved_src_loc, evolved_names))
     row.update(hs)
     row.update(fp)
     row.update(br)
