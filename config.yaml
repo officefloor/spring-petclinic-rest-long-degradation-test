@@ -554,6 +554,11 @@ paths:
 # the field"), each candidate was read against its spec, and only genuine under-determination is
 # listed. Every figure is reported BOTH ways so the effect of each exclusion is visible.
 #
+# The full audit — method, the two diagnostics that separate an ambiguity from a defect, and the
+# basis for each of the 15 tests KEPT as well as the 2 dropped — is in
+# docs/CORRECTNESS_EXCLUSIONS.md. `analyze` prints the split table every run, so the shortlist
+# that list came from is re-derivable from the output.
+#
 # A test failing in a MINORITY is not grounds for exclusion — that is non-compliance, and it is
 # what the harness exists to measure. Of the 17 tests that fail at all on first appearance, 15
 # are determined by their spec and stay scored, including the two highest failure rates
