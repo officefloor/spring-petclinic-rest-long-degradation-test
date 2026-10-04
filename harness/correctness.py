@@ -287,19 +287,64 @@ def test_checkpoint(test_id: str) -> int | None:
 
 
 def count_true_regressions(prior_passing: set[str], now_passing: set[str],
-                           mutated_cps) -> int:
+                           mutated_cps, results: dict[str, bool] | None = None) -> int:
     """Regressions on the surface a mutative checkpoint did NOT intend to change.
 
     A mutative checkpoint deliberately rewrites the rules in `mutated_cps`, so its
     prior tests are expected to change. A regression in one of THOSE classes is
     intended, not a fault. A regression in any OTHER prior checkpoint's tests is a
     true regression: the agent broke a rule it was not asked to touch. This is the
-    safety signal a purely additive run cannot produce."""
+    safety signal a purely additive run cannot produce.
+
+    What `mutates` excuses is a prior rule the checkpoint REPLACED: the updated copy
+    it ships supersedes the prior class, so the prior's test ids disappear and their
+    loss is intended. It does NOT excuse a test the updated copy still RUNS and that
+    FAILS — the replacement asserting the new behaviour and not getting it is a plain
+    failure, and forgiving it hides exactly the breakage the replacement was written
+    to pin. So a regressed test on a mutated surface is intended only when it is
+    ABSENT from this run's results; one that is present and failing counts.
+
+    `results` is the current {test_id: passed} map. Without it the old (over-
+    forgiving) behaviour is kept, so existing callers do not silently change meaning.
+    """
     mut = set(mutated_cps or ())
-    return sum(1 for t in (prior_passing - now_passing) if test_checkpoint(t) not in mut)
+    n = 0
+    for t in (prior_passing - now_passing):
+        if test_checkpoint(t) not in mut:
+            n += 1                              # not a mutated surface: always a regression
+        elif results is not None and t in results:
+            n += 1                              # ran under the updated copy and failed
+    return n
 
 
-def outcome_row(outcome: "TestOutcome", prior_passing: set[str], mutated_cps=()) -> dict:
+def count_unsatisfied_replacements(prior_selected: set[str] | None,
+                                   results: dict[str, bool], mutated_cps) -> int:
+    """Replacement tests this mutative checkpoint shipped that FAIL ON ARRIVAL.
+
+    A mutative checkpoint ships updated copies of the prior classes it revises
+    (cp08/Cp02Tests.java overwrites the running Cp02Tests.java). Those copies state
+    what the prior behaviour must BECOME, so the checkpoint has not done its job
+    until they pass. They are invisible to every other measure: never having passed,
+    such a test cannot be a regression; and because it carries the PRIOR class's name
+    it scores in the regression category rather than against this checkpoint's own
+    rule, so `func_p/func_t` still reports the checkpoint solved.
+
+    Measured across this repo's completed runs, this is not hypothetical — cp36's
+    replacement of cp28 fails on arrival in 24-26 of 40 chains, in three separate
+    blind runs, and was counted nowhere.
+
+    Counted as: tests newly present in this run, belonging to a checkpoint this one
+    declares it mutates, and failing. Needs the previous checkpoint's selected set;
+    without it, 0."""
+    if prior_selected is None:
+        return 0
+    mut = set(mutated_cps or ())
+    return sum(1 for t, ok in results.items()
+               if not ok and t not in prior_selected and test_checkpoint(t) in mut)
+
+
+def outcome_row(outcome: "TestOutcome", prior_passing: set[str], mutated_cps=(),
+                prior_selected: set[str] | None = None) -> dict:
     """Map a scored TestOutcome to the flat correctness row fields (incl. Normalized
     Change + regressions vs prior_passing). One definition, called by both the
     runner (run time) and analyze (recompute), so the schema lives in one place.
@@ -313,7 +358,8 @@ def outcome_row(outcome: "TestOutcome", prior_passing: set[str], mutated_cps=())
         blanks = {f: "" for f in (
             "total_selected", "strict_pass", "iso_pass", "core_pass",
             "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
-            "regr_p", "regr_t", "normalized_change", "regressions", "true_regressions")}
+            "regr_p", "regr_t", "normalized_change", "regressions", "true_regressions",
+            "unsatisfied_replacement")}
         return {"build_ok": outcome.build_ok, "gate_invalid": True, **blanks}
     return {
         "build_ok": outcome.build_ok,
@@ -329,5 +375,8 @@ def outcome_row(outcome: "TestOutcome", prior_passing: set[str], mutated_cps=())
         "normalized_change": round(
             normalized_change(prior_passing, outcome.passing, outcome.total_selected), 4),
         "regressions": count_regressions(prior_passing, outcome.passing),
-        "true_regressions": count_true_regressions(prior_passing, outcome.passing, mutated_cps),
+        "true_regressions": count_true_regressions(prior_passing, outcome.passing, mutated_cps,
+                                                   outcome.results),
+        "unsatisfied_replacement": count_unsatisfied_replacements(
+            prior_selected, outcome.results, mutated_cps),
     }

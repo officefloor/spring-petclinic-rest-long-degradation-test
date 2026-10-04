@@ -354,6 +354,11 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
             continue
 
         prior_passing: set[str] = set()
+        # What the PREVIOUS scored checkpoint ran, not just what passed — needed to tell a
+        # replacement test failing on arrival from one that was already there
+        # (correctness.count_unsatisfied_replacements). Carried across an invalid gate for the
+        # same reason prior_passing is.
+        prior_selected: set[str] | None = None
         prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
         n_noop = 0
         n_invalid = 0             # gates that aborted -> correctness is missing, not failed
@@ -440,13 +445,15 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 # cp53 read 7 phantom "true" regressions that were cp52's mandated
                 # mutation). Empty in the normal case, so scoring is unchanged.
                 mutated = [int(m) for m in (cap.get("mutates") or [])] + pending_mutated
-                row.update(correctness.outcome_row(outcome, prior_passing, mutated))
+                row.update(correctness.outcome_row(outcome, prior_passing, mutated,
+                                                   prior_selected))
                 if outcome.gate_invalid:
                     n_invalid += 1
                     row["notes"] = (tests.get("error") or "gate produced no results")[:200]
                     pending_mutated = mutated          # carried with prior_passing
                 else:
                     prior_passing = outcome.passing    # carried forward across a hole
+                    prior_selected = set(outcome.results)
                     pending_mutated = []
 
             # Ephemera straight from capture (irreproducible; never recomputed).
@@ -786,8 +793,16 @@ def regression_summary(rows: list[dict]) -> dict:
     total = sum(int(_f(r.get("regressions")) or 0) for r in graded)
     true = sum(int(_f(r.get("true_regressions")) or 0) for r in graded)
     n_mut = sum(1 for r in graded if str(r.get("checkpoint_type", "")).strip() == "mutative")
+    # Treat a missing/blank value as 0: this column was added after several runs were
+    # archived, and an older records.csv must still sum rather than raise on NaN.
+    unsat = 0
+    for r in graded:
+        v = _f(r.get("unsatisfied_replacement"))
+        if v == v:                              # NaN != NaN
+            unsat += int(v)
     return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut,
-            "invalid_gates": len(rows) - len(graded)}
+            "invalid_gates": len(rows) - len(graded),
+            "unsatisfied_replacement": unsat}
 
 
 METRICS_TO_PLOT = [
@@ -1866,14 +1881,20 @@ def main() -> int:
     # breakage on the surface the checkpoint was not asked to touch. The true
     # Zero-Regression Rate is the safety signal a purely additive run cannot give.
     lines.append("## Regressions: intended vs. true (un-mutated surface)\n")
-    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | invalid gates |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | unsat. replacements | invalid gates |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         rs = regression_summary(grp)
         tzrr = zero_regression_rate(grp, "true_regressions")
         lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
-                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | {rs['invalid_gates']} |")
+                     f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | "
+                     f"{rs['unsatisfied_replacement']} | {rs['invalid_gates']} |")
     lines.append("")
+    lines.append("`unsat. replacements` — updated prior tests a MUTATIVE checkpoint shipped and "
+                 "never satisfied. Invisible to every column beside it: never having passed, such "
+                 "a test cannot be a regression, and because it carries the prior class's name it "
+                 "scores in the regression category rather than against the checkpoint's own "
+                 "rule, so func_p/func_t still reads as solved.\n")
     # Checkpoints whose structural metrics are MISSING (the worktree could not be
     # created, so compute_all never ran). Their correctness fields are still valid, so
     # they stay in the correctness aggregates; every structural slope/mean simply has

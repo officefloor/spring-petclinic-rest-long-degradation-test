@@ -1241,6 +1241,10 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
     # Derived numbers below are computed ONLY to narrate progress in the log — they
     # are never persisted. The branch stores raw capture; analyze recomputes.
     prior_passing: set[str] = set()
+    # What the previous checkpoint RAN, not just what passed: a mutative checkpoint's
+    # replacement test failing on arrival is otherwise invisible (correctness
+    # .count_unsatisfied_replacements).
+    prior_selected: set[str] | None = None
     captures: list[dict] = []
     strict_count = regr_count = 0  # running tallies for the results commit headline
     stopped = False                # impact_gated: set when a checkpoint gives up (ends the chain)
@@ -1364,8 +1368,9 @@ def run_chain(cfg: dict, arm: str, strategy: str, chain: int, run_id: str,
         # intended. true_regressions counts only breakage on the un-mutated surface.
         mutated = [int(m) for m in (cp.get("mutates") or [])]
         row["checkpoint_type"] = cp.get("type", "additive")
-        row.update(correctness.outcome_row(outcome, prior_passing, mutated))
+        row.update(correctness.outcome_row(outcome, prior_passing, mutated, prior_selected))
         prior_passing = outcome.passing
+        prior_selected = set(outcome.results)
         if outcome.error and not row["notes"]:
             row["notes"] = outcome.error[:200]
 
