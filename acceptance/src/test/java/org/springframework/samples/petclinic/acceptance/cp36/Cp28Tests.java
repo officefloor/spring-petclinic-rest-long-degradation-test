@@ -16,9 +16,7 @@ class Cp28Tests extends AcceptanceBase {
 		a.put("postcode", "2000");
 		createOwnerOk(a);
 		ObjectNode b = a.deepCopy(); // same telephone / lastName / postcode -> same householdId + identityKey
-		// NO sharesHousehold: under cp36 that flag BYPASSES the duplicate block, so setting it
-		// here contradicted the assertion below and this test could never pass. A repeated full
-		// identity is what cp28's rule is about; the declared-member path is cp36's own rule.
+		b.put("sharesHousehold", true);
 		createOwner(b).andExpect(status().isConflict());
 	}
 }
