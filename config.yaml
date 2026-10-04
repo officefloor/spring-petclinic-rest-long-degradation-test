@@ -539,3 +539,50 @@ paths:
   work_root: ${HOME}/pe-work
   sandbox_root: ${HOME}/sandbox
   results_csv: results/records.csv
+
+# ---------------------------------------------------------------------------------------------
+# CORRECTNESS EXCLUSIONS
+#
+# A test is excluded from correctness when the behaviour it asserts is NOT DETERMINED by any
+# checkpoint specification — when passing it depends on which of two defensible readings the
+# implementation happened to take. Scoring such a test measures luck, and it measures it
+# unevenly across strategies, which distorts any comparison between them.
+#
+# The rule, and why it is stated rather than applied case by case: excluding the one awkward
+# test you happen to find, after seeing the results, is not a method. So every assertion was
+# audited by the split it produces across chains (analyze reports this — see "Tests that divide
+# the field"), each candidate was read against its spec, and only genuine under-determination is
+# listed. Every figure is reported BOTH ways so the effect of each exclusion is visible.
+#
+# A test failing in a MINORITY is not grounds for exclusion — that is non-compliance, and it is
+# what the harness exists to measure. Of the 17 tests that fail at all on first appearance, 15
+# are determined by their spec and stay scored, including the two highest failure rates
+# (Cp21Tests#coreAuditLineRecordsLevel at 33%, Cp11Tests#coreSharedHouseholdAndIdentityKey at
+# 17%) and two outright 500s.
+correctness:
+  excluded_tests:
+    - test: Cp28Tests#coreIdentityCollisionWithComputedHousehold
+      from_checkpoint: 36
+      split: 43 pass / 17 fail across 60 chains
+      reason: |
+        cp28 rejects (409) when the WHOLE identityKey matches. cp36 says 'sharesHousehold' "only
+        bypasses the duplicate block" and describes rejecting a HOUSEHOLD duplicate — it never
+        says whether the flag also bypasses a full identityKey collision. This test sets the flag
+        on an owner whose entire identityKey collides and requires 409, i.e. it takes the reading
+        that the flag does NOT bypass. Both readings are defensible from the text, and the field
+        divides 69/31 accordingly.
+
+    - test: Cp51Tests#coreCapsLevelByHousehold
+      from_checkpoint: 51
+      split: 54 pass / 6 fail across 60 chains
+      reason: |
+        The two specs conflict for exactly the case this test builds. It creates a second owner
+        with the same lastName and postcode, a different telephone, and NO 'sharesHousehold',
+        then requires the create to SUCCEED so it can compare levels.
+          cp28: "two members of the same household with different telephones have different
+                 identityKeys and must both be allowed"
+          cp36: "a second such owner is rejected as a household duplicate (409) unless it sets
+                 'sharesHousehold'"
+        All six failures are the create returning 409 — never the level assertion. So the test
+        penalises implementations that followed cp36's rule strictly, and it is cp51's OWN test,
+        which makes it the most consequential of the two.

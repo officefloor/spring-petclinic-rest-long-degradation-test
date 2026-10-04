@@ -86,6 +86,14 @@ CSV_FIELDS = [
     "build_ok", "total_selected", "strict_pass", "iso_pass", "core_pass",
     "core_p", "core_t", "error_p", "error_t", "func_p", "func_t",
     "regr_p", "regr_t", "regressions", "true_regressions", "checkpoint_type", "normalized_change",
+    # replacement tests a mutative checkpoint shipped and never satisfied (correctness
+    # .count_unsatisfied_replacements) — invisible to every column above it
+    "unsatisfied_replacement",
+    # the same correctness figures with the under-determined tests removed (config
+    # correctness.excluded_tests). Persisted so the CSV carries BOTH, and a paper can cite
+    # either without re-deriving it; `excluded_hits` says how many rows an exclusion touched.
+    "strict_pass_adj", "regressions_adj", "true_regressions_adj",
+    "unsatisfied_replacement_adj", "normalized_change_adj", "excluded_hits",
     # structure (final numbers + the intermediates they are computed from)
     "erosion", "erosion_high_mass", "erosion_total_mass", "erosion_hot_fns",  # whole app
     "erosion_scoped", "erosion_scoped_high_mass", "erosion_scoped_total_mass", "subsystem_nfns",  # touched-file subsystem

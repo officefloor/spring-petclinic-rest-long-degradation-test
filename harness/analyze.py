@@ -320,6 +320,13 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
     rows: list[dict] = []
     rc_root = os.path.join(work_root, "recompute")
     os.makedirs(rc_root, exist_ok=True)
+    # Under-determined tests (config correctness.excluded_tests), and the per-test split the
+    # exclusion list is audited against. PER_TEST counts each test once per chain, at the
+    # checkpoint it first appears — later checkpoints would otherwise weight a long-lived test by
+    # how long it survived rather than by how the field divided on it.
+    EXCLUSIONS = excluded_tests(cfg)
+    PER_TEST: dict[str, dict] = {}
+    SEEN_TEST: set = set()
     for repo, branch, arm, strat, chain in _evolve_branches(cfg, run_id):
         arm_cfg = cfg["arms"].get(arm)
         if not arm_cfg:
@@ -447,6 +454,37 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 mutated = [int(m) for m in (cap.get("mutates") or [])] + pending_mutated
                 row.update(correctness.outcome_row(outcome, prior_passing, mutated,
                                                    prior_selected))
+
+                # The same row scored again with the under-determined tests removed (config
+                # correctness.excluded_tests). Reported ALONGSIDE, never instead: an exclusion
+                # changes what is shown, not what was measured, and the delta between the two is
+                # itself the finding about how much a spec ambiguity cost each strategy.
+                drop = _excluded_ids(results, EXCLUSIONS, k)
+                row["excluded_hits"] = len(drop)
+                if drop:
+                    adj_res = {t: ok for t, ok in results.items() if t not in drop}
+                    adj = correctness.score_results(adj_res, k)
+                    adj.gate_invalid = outcome.gate_invalid
+                    adj_row = correctness.outcome_row(
+                        adj, prior_passing - drop, mutated,
+                        None if prior_selected is None else prior_selected - drop)
+                else:
+                    adj_row = row
+                for f in ("strict_pass", "regressions", "true_regressions",
+                          "unsatisfied_replacement", "normalized_change"):
+                    row[f + "_adj"] = adj_row.get(f)
+
+                # per-test split, for the audit table (split_report)
+                for tid, ok in results.items():
+                    d = PER_TEST.setdefault(tid, {"pass": 0, "fail": 0, "cps": set(),
+                                                  "excluded": False})
+                    if (branch, tid) in SEEN_TEST:
+                        continue
+                    SEEN_TEST.add((branch, tid))
+                    d["cps"].add(k)
+                    d["pass" if ok else "fail"] += 1
+                    if tid in drop:
+                        d["excluded"] = True
                 if outcome.gate_invalid:
                     n_invalid += 1
                     row["notes"] = (tests.get("error") or "gate produced no results")[:200]
@@ -545,6 +583,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
               + (f" ({n_noop} no-op)" if n_noop else "")
               + (f"  ! {n_invalid} INVALID GATE(S) — correctness excluded" if n_invalid else "")
               + ("" if caps else "  (no capture — structural metrics only)"))
+    recompute_rows.per_test = PER_TEST   # for split_report
     return rows
 
 
@@ -786,6 +825,53 @@ def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
     return clean / len(seen)
 
 
+def excluded_tests(cfg: dict) -> list[dict]:
+    """Tests excluded from correctness because no checkpoint spec determines them (config
+    `correctness.excluded_tests`). Every figure is reported both ways, so an exclusion changes
+    what is shown, never what was measured."""
+    return ((cfg or {}).get("correctness") or {}).get("excluded_tests") or []
+
+
+def _excluded_ids(results: dict, exclusions: list[dict], checkpoint: int) -> set:
+    """Which ids in this row's result map are excluded. Matched on the `Class#method` suffix, so
+    the fully qualified package prefix in a test id does not have to be repeated in config."""
+    out = set()
+    for e in exclusions:
+        suffix = str(e.get("test") or "")
+        if not suffix or checkpoint < int(e.get("from_checkpoint") or 0):
+            continue
+        out |= {t for t in results if t.endswith(suffix)}
+    return out
+
+
+def split_report(per_test: dict) -> list[str]:
+    """Tests ranked by how much they DIVIDE the field, at the checkpoint each first appears.
+
+    This is the instrument the exclusion list is derived from, and it belongs in the output so
+    the criterion is auditable rather than asserted. A spec-determined test is near-all-pass, or
+    fails in a minority that is not complying. A test that splits the field persistently is the
+    signature of an assertion the specs do not settle — and `unsatisfied_replacement` cannot find
+    those on its own, because it only sees REPLACEMENT tests that fail."""
+    lines = ["## Tests that divide the field\n",
+             "Pass/fail across chains at the checkpoint where each test first appears. A high "
+             "failure rate is not itself grounds for exclusion — non-compliance is what the "
+             "harness measures. It is a shortlist to read against the specs.\n",
+             "| test | first seen | pass | fail | fail % | scored |",
+             "|---|---:|---:|---:|---:|:--|"]
+    rows = []
+    for tid, d in per_test.items():
+        n = d["pass"] + d["fail"]
+        if n < 10 or not d["fail"]:
+            continue
+        rows.append((d["fail"] / n, tid, d))
+    for frac, tid, d in sorted(rows, reverse=True):
+        short = tid.split(".")[-1]
+        lines.append(f"| `{short}` | cp{min(d['cps']):02d} | {d['pass']} | {d['fail']} | "
+                     f"{100 * frac:.0f}% | {'no — excluded' if d['excluded'] else 'yes'} |")
+    lines.append("")
+    return lines
+
+
 def regression_summary(rows: list[dict]) -> dict:
     """Totals for the intended-vs-true regression split, plus the count of mutative
     checkpoints (so a reader can see how much cross-cutting pressure the run had)."""
@@ -795,14 +881,21 @@ def regression_summary(rows: list[dict]) -> dict:
     n_mut = sum(1 for r in graded if str(r.get("checkpoint_type", "")).strip() == "mutative")
     # Treat a missing/blank value as 0: this column was added after several runs were
     # archived, and an older records.csv must still sum rather than raise on NaN.
-    unsat = 0
-    for r in graded:
-        v = _f(r.get("unsatisfied_replacement"))
-        if v == v:                              # NaN != NaN
-            unsat += int(v)
+    def isum(field):
+        out = 0
+        for r in graded:
+            v = _f(r.get(field))
+            if v == v:                          # NaN != NaN; a column absent in an older CSV
+                out += int(v)
+        return out
     return {"total": total, "true": true, "intended": total - true, "mutative_cps": n_mut,
             "invalid_gates": len(rows) - len(graded),
-            "unsatisfied_replacement": unsat}
+            "unsatisfied_replacement": isum("unsatisfied_replacement"),
+            # the same figures with the under-determined tests excluded (config
+            # correctness.excluded_tests); equal to the above when nothing is excluded
+            "total_adj": isum("regressions_adj"), "true_adj": isum("true_regressions_adj"),
+            "unsat_adj": isum("unsatisfied_replacement_adj"),
+            "excluded_hits": isum("excluded_hits")}
 
 
 METRICS_TO_PLOT = [
@@ -1880,16 +1973,50 @@ def main() -> int:
     # so its regressions there do not count as faults. true_regressions counts only
     # breakage on the surface the checkpoint was not asked to touch. The true
     # Zero-Regression Rate is the safety signal a purely additive run cannot give.
+    # strict-pass both ways, since EvoScore is derived from it and an excluded test can move it
+    # by several points — unevenly across strategies, which is the part that matters.
+    lines.append("## Strict pass, with and without the under-determined tests\n")
+    lines.append("| arm/strategy | rows | strict pass | % | strict pass (adj) | % | delta |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for gk, grp in sorted(groups.items()):
+        g = scored(grp)
+        if not g:
+            continue
+        sp = sum(1 for r in g if _b(r.get("strict_pass")))
+        spa = sum(1 for r in g if _b(r.get("strict_pass_adj")))
+        n = len(g)
+        lines.append(f"| {gk[0]}/{gk[1]} | {n} | {sp} | {100*sp/n:.1f}% | {spa} | "
+                     f"{100*spa/n:.1f}% | {100*(spa-sp)/n:+.1f} |")
+    lines.append("")
+    for e in excluded_tests(cfg):
+        lines.append(f"- excluded: `{e['test']}` from cp{e['from_checkpoint']} "
+                     f"({e.get('split','')})")
+        for ln in str(e.get("reason", "")).strip().splitlines():
+            lines.append(f"  {ln.strip()}")
+    lines.append("")
+    per_test = getattr(recompute_rows, "per_test", None)
+    if per_test:
+        lines += split_report(per_test)
     lines.append("## Regressions: intended vs. true (un-mutated surface)\n")
-    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | unsat. replacements | invalid gates |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| arm/strategy | mutative cps | total regr | intended | true regr | true Zero-Regr Rate | unsat. repl. | excluded | true regr (adj) | invalid gates |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for gk, grp in sorted(groups.items()):
         rs = regression_summary(grp)
         tzrr = zero_regression_rate(grp, "true_regressions")
         lines.append(f"| {gk[0]}/{gk[1]} | {rs['mutative_cps']} | {rs['total']} | "
                      f"{rs['intended']} | {rs['true']} | {tzrr:.3f} | "
-                     f"{rs['unsatisfied_replacement']} | {rs['invalid_gates']} |")
+                     f"{rs['unsatisfied_replacement']} | {rs['excluded_hits']} | "
+                     f"{rs['true_adj']} | {rs['invalid_gates']} |")
     lines.append("")
+    lines.append("`unsat. repl.` — updated prior tests a MUTATIVE checkpoint shipped and never "
+                 "satisfied. Invisible to every column beside it: never having passed, such a "
+                 "test cannot be a regression, and because it carries the prior class's name it "
+                 "scores in the regression category rather than against the checkpoint's own "
+                 "rule, so func_p/func_t still reads as solved.\n")
+    lines.append("`excluded` — rows touched by a test the specs do not determine "
+                 "(config `correctness.excluded_tests`); `(adj)` columns are the same figures "
+                 "with those tests removed. Both are reported because an exclusion changes what "
+                 "is shown, never what was measured.\n")
     lines.append("`unsat. replacements` — updated prior tests a MUTATIVE checkpoint shipped and "
                  "never satisfied. Invisible to every column beside it: never having passed, such "
                  "a test cannot be a regression, and because it carries the prior class's name it "
