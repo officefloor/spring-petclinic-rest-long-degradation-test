@@ -17,6 +17,7 @@
 \usepackage{lmodern}
 \usepackage[margin=2.6cm]{geometry}
 \usepackage{graphicx}
+\usepackage{rotating}   % sidewaysfigure, for the wide small-multiples figure
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{amsmath}
@@ -842,9 +843,9 @@ control ahead of \texttt{impact-gated}, 3 against 5, where the means rank them
 the other way. Neither ordering of those two should be trusted at this sample
 size.
 
-\begin{figure}[t]
+\begin{sidewaysfigure}[p]
 \centering
-\includegraphics[width=\textwidth]{figures/strict_pass.png}
+\includegraphics[width=\textheight]{figures/strict_pass.png}
 \caption{Strict pass rate. The four panels are the trajectory over the sixty
 change requests. The row beneath puts the eight final phase means side by side
 with one dot per run, which is where the bimodality is visible: runs sit at 0, at
@@ -852,7 +853,7 @@ with one dot per run, which is where the bimodality is visible: runs sit at 0, a
 mode the mean falls in a gap where almost no run lands. The two
 \texttt{cohesion-prompt} cells have no high mode, and there the mean is a level.}
 \label{fig:strictpass}
-\end{figure}
+\end{sidewaysfigure}
 
 \paragraph{Escape from the call graph.} Under the formula condition the
 mutative arm's count of container dispatched classes, meaning advice, aspects,
