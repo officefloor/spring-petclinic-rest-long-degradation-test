@@ -777,14 +777,18 @@ def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict,
     cc_of = lambda keys: sum(by_key[k]["cc"] for k in keys if k in by_key)
     ccs = sorted(cc_of(s) for s in per)
     reach = Counter(k for s in per for k in s)          # how many nodes reach each method
-    total = sum(ccs)
     exclusive = sum(cc_of({k for k in s if reach[k] == 1}) for s in per)
     union = set().union(*per)
+    # Denominator is the DE-DUPLICATED union CC (the whole handling path, = node_path_cc),
+    # not Σ of the per-node closure CCs: a method several nodes reach would otherwise be
+    # counted once per node in the denominator but zero times in the numerator, so the
+    # share came out understated and was not a clean fraction of the handling path.
+    union_cc = cc_of(union)
     # Exclusivity is only meaningful with something to be exclusive AGAINST. With one
     # node it is trivially 1.0, which in an arm-vs-arm table would read as "Spring is
     # perfectly cohesive" when it means "Spring has no separable rules to share
     # between". Blank it instead.
-    excl_share = (round(exclusive / total, 4) if total and len(per) > 1 else None)
+    excl_share = (round(exclusive / union_cc, 4) if union_cc and len(per) > 1 else None)
     return {
         "node_count": len(per),
         "node_cc_median": round(statistics.median(ccs), 2),
@@ -858,8 +862,17 @@ IMPACT_RENAME_JACCARD = 0.6  # body-line Jaccard above which a within-commit 'ne
 
 
 def _parse_blob(worktree: str, ref: str, path: str) -> dict:
-    """name -> {cc, nloc, s, e, body} for the functions in path@ref (body = frozenset
-    of its stripped non-blank source lines, for within-commit rename matching)."""
+    """signature -> {cc, nloc, s, e, body} for the functions in path@ref (body =
+    frozenset of its stripped non-blank source lines, for within-commit rename matching).
+
+    Keyed by lizard's `long_name` (`Class::method( params )`), NOT the bare `name`:
+    lizard gives every Java overload the SAME `name` (`Foo::add` for `add(int)` and
+    `add(int,int)` alike -- the parameters live only in `long_name`), so a name-keyed
+    dict collapsed overloads to whichever parsed last. That undercounted `wmc_prev`
+    (the WMC_other context weight) and dropped the other overloads from the impact
+    classification entirely. `long_name` is stable across the prev/cur refs for an
+    unchanged signature, so the `name in prev` identity match still holds; a renamed
+    or re-signatured method falls to the body-Jaccard rename path as before."""
     try:
         code = _git(worktree, ["show", f"{ref}:{path}"])
         fl = lizard.analyze_file.analyze_source_code(path, code).function_list
@@ -868,7 +881,7 @@ def _parse_blob(worktree: str, ref: str, path: str) -> dict:
     L = code.splitlines()
     out = {}
     for f in fl:
-        out[f.name] = {
+        out[f.long_name] = {
             "cc": int(f.cyclomatic_complexity), "nloc": int(f.nloc),
             "s": f.start_line, "e": f.end_line,
             "body": frozenset(s.strip() for s in L[f.start_line - 1:f.end_line] if s.strip()),

@@ -312,14 +312,20 @@ def audit_branch(repo: str, base: str, tip: str, source_globs: list[str]) -> dic
             continue
         parsed_files += 1
         in_scope = _in_scope(path, source_globs)
-        covered = 0
+        # Count DISTINCT changed lines that fall inside any function. Summing each
+        # function's intersection length double-counts a line in a nested function
+        # (an anonymous-inner-class method inside a method, which lizard emits with
+        # its own overlapping line range), making `covered` exceed `n_lines` and
+        # under-reporting orphan lines. A set of line numbers de-duplicates the overlap.
+        covered_lines: set[int] = set()
         for fn in fns:
             hit = [r for r in rs if not (fn.end_line < r[0] or fn.start_line > r[1])]
             if not hit:
                 continue
-            covered += sum(min(b, fn.end_line) - max(a, fn.start_line) + 1
-                           for a, b in hit
-                           if min(b, fn.end_line) >= max(a, fn.start_line))
+            for a, b in hit:
+                lo, hi = max(a, fn.start_line), min(b, fn.end_line)
+                if lo <= hi:
+                    covered_lines.update(range(lo, hi + 1))
             key = (path, fn.name, int(fn.start_line))
             if key not in touched:
                 touched[key] = {
@@ -331,7 +337,7 @@ def audit_branch(repo: str, base: str, tip: str, source_globs: list[str]) -> dic
                     "is_test": _is_test(path),
                     "new_file": path not in base_files,
                 }
-        missed = max(0, n_lines - covered)
+        missed = max(0, n_lines - len(covered_lines))
         if missed:
             orphan_files[path] = missed
             if path.endswith(".java"):

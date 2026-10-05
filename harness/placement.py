@@ -184,13 +184,9 @@ _JAVA_KEYWORD_OPERATORS = {
     "continue", "return", "new", "throw", "throws", "try", "catch", "finally",
     "instanceof", "synchronized", "assert", "yield",
 }
-_JAVA_DECL_KEYWORDS = {
-    "class", "interface", "enum", "record", "extends", "implements", "package",
-    "import", "public", "private", "protected", "static", "final", "abstract",
-    "native", "transient", "volatile", "strictfp", "sealed", "permits", "var",
-    "void", "int", "long", "short", "byte", "char", "float", "double", "boolean",
-    "this", "super", "null", "true", "false",
-}
+# Declaration/type keywords (`class`, `public`, `int`, `void`, ...) are deliberately
+# NOT listed as operators: the tokeniser lets them fall through to the operand branch,
+# the conventional split this module documents. They need no explicit set.
 _OP_SYMBOLS = re.compile(
     r">>>=|<<=|>>=|>>>|\.\.\.|->|::|\+\+|--|&&|\|\||==|!=|<=|>=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<|>>"
     r"|[+\-*/%=<>!&|^~?:;,.\[\]{}()@]")
@@ -255,16 +251,24 @@ def halstead(source: str) -> dict:
             pos = m.end()
             continue
         pos += 1
-    n1, n2 = len(ops), len([k for k, v in operands.items() if v])
+    op_syms = frozenset(ops)
+    operand_syms = frozenset(k for k, v in operands.items() if v)
+    n1, n2 = len(op_syms), len(operand_syms)
     N1, N2 = sum(ops.values()), sum(operands.values())
     vocab, length = n1 + n2, N1 + N2
     if vocab <= 0 or length <= 0:
         return {"n1": 0, "n2": 0, "N1": 0, "N2": 0, "volume": 0.0,
-                "difficulty": 0.0, "effort": 0.0}
+                "difficulty": 0.0, "effort": 0.0,
+                "op_syms": frozenset(), "operand_syms": frozenset()}
     volume = length * math.log2(vocab)
     difficulty = (n1 / 2) * (N2 / n2) if n2 else 0.0
+    # `op_syms`/`operand_syms` are the DISTINCT symbols seen; the whole-arm aggregate
+    # unions them across files so `halstead_vocab` is a true program vocabulary rather
+    # than a per-file sum (which would recount `if`, `==` etc. once per file and grow
+    # with file count -- biasing the distributed arm in a conservation test).
     return {"n1": n1, "n2": n2, "N1": N1, "N2": N2,
-            "volume": volume, "difficulty": difficulty, "effort": difficulty * volume}
+            "volume": volume, "difficulty": difficulty, "effort": difficulty * volume,
+            "op_syms": op_syms, "operand_syms": operand_syms}
 
 
 def maintainability_index(volume: float, cc: float, loc: float) -> Optional[float]:
@@ -299,7 +303,9 @@ def halstead_placement(worktree: str, fns: list[dict]) -> dict:
         by_file.setdefault(f["file"], []).append(f)
     vols: list[float] = []
     mis: list[float] = []
-    agg = {"n1": 0, "n2": 0, "N1": 0, "N2": 0, "volume": 0.0, "effort": 0.0}
+    agg = {"volume": 0.0, "effort": 0.0}
+    all_ops: set = set()
+    all_operands: set = set()
     for rel, group in by_file.items():
         try:
             with open(os.path.join(worktree, rel), encoding="utf-8", errors="replace") as fh:
@@ -307,11 +313,17 @@ def halstead_placement(worktree: str, fns: list[dict]) -> dict:
         except OSError:
             continue
         vols.append(h["volume"])
-        for k in ("n1", "n2", "N1", "N2", "volume", "effort"):
+        for k in ("volume", "effort"):
             agg[k] += h[k]
+        all_ops |= h["op_syms"]
+        all_operands |= h["operand_syms"]
         file_loc = sum(float(g["nloc"]) for g in group)
-        mean_cc = sum(float(g["cc"]) for g in group) / len(group)
-        mi = maintainability_index(h["volume"], mean_cc, file_loc)
+        # MI per file: keep the three inputs at the same (file-total) granularity so
+        # the CC term is not diluted by method count. `maintainability_index` averages
+        # these per-file values; it never sees a whole-codebase total (which saturates
+        # the 0 floor and reports nothing).
+        file_cc = sum(float(g["cc"]) for g in group)
+        mi = maintainability_index(h["volume"], file_cc, file_loc)
         if mi is not None:
             mis.append(mi)
     if not vols:
@@ -320,7 +332,7 @@ def halstead_placement(worktree: str, fns: list[dict]) -> dict:
     row = {
         "halstead_volume": round(agg["volume"], 1),
         "halstead_effort": round(agg["effort"], 1),
-        "halstead_vocab": agg["n1"] + agg["n2"],
+        "halstead_vocab": len(all_ops) + len(all_operands),
         "mi_mean": round(sum(mis) / len(mis), 3) if mis else None,
         "mi_min": round(min(mis), 3) if mis else None,
     }
@@ -419,7 +431,7 @@ def propagation_cost(fns: list[dict], adj: dict) -> dict:
             if cf is not None and idx[cf] != s:
                 fadj[s].add(idx[cf])
     reach_counts = []
-    total = 0
+    visible = 0
     for s in range(n):
         seen = {s}
         stack = [s]
@@ -429,14 +441,18 @@ def propagation_cost(fns: list[dict], adj: dict) -> dict:
                 if v not in seen:
                     seen.add(v)
                     stack.append(v)
-        r = len(seen) - 1
-        total += r
-        reach_counts.append(r)
+        # MacCormack et al. (2006) propagation cost is the density of the visibility
+        # matrix V = Σ Aⁱ including A⁰ = I, so each file reaches ITSELF. Counting `seen`
+        # whole keeps that diagonal; omitting it subtracted a per-arm 1/n term, which
+        # differs between arms of different n and is the only comparison this metric is
+        # used for. `reach_counts` (fanout) keeps the self-exclusive out-degree.
+        visible += len(seen)
+        reach_counts.append(len(seen) - 1)
     reach_counts.sort()
     mid = n // 2
     median = float(reach_counts[mid]) if n % 2 else (reach_counts[mid - 1] + reach_counts[mid]) / 2
     return {
-        "propagation_cost": round(total / (n * n), 6),
+        "propagation_cost": round(visible / (n * n), 6),
         "propagation_fanout_median": round(median, 2),
         "propagation_fanout_max": reach_counts[-1],
         "propagation_files": n,
@@ -674,10 +690,12 @@ def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
                     except (TypeError, ValueError):
                         v = float("nan")
                     # CK emits NaN for a ratio with no defined denominator (TCC of a
-                    # class with fewer than two methods). It must become a BLANK, not
-                    # a NaN string in the CSV: `_f()` would coerce it to a float NaN
-                    # that survives into a fit and silently poisons the slope.
-                    out[f"ck_handler_{key}"] = None if v != v else round(v, 4)
+                    # class with fewer than two methods) and -1 for a metric it cannot
+                    # apply. Both must become a BLANK, not a value in the CSV: `_f()`
+                    # would coerce a NaN or a spurious -1 into a float that survives
+                    # into a fit and silently poisons the slope. This matches the drop
+                    # (`v == v and v >= 0`) the aggregate `col()` already applies.
+                    out[f"ck_handler_{key}"] = None if (v != v or v < 0) else round(v, 4)
                 break
     return out
 

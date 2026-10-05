@@ -804,6 +804,9 @@ package distribution (healthy growth = count rises while avg/max stay flat).
 `cost = max(WMC_other, 1) · CC · max(1, Δlines)`, where `WMC_other` = Σ CC of the
 *other* methods in that function's class (the context you must hold to change it
 safely); the whole commit is then multiplied by `files_changed` (a spread penalty).
+(`WMC_other` is computed over the function's **file**, which equals its class under the
+one-top-level-class-per-file convention the harness assumes; a file holding more than
+one class would count sibling-class methods in the context weight.)
 So mutating a method inside a heavy god-class costs far more than the same edit to an
 isolated unit; a brand-new class is floored to `1·CC·nloc·files` (small but non-zero,
 closing the fragmentation loophole). A within-commit **rename** (body Jaccard ≥ 0.6)

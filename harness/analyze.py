@@ -48,6 +48,17 @@ def _f(x):
         return math.nan
 
 
+def _i(x) -> int:
+    """NaN-safe int: a blank/missing/NaN cell counts as 0, never raises.
+
+    `int(_f(x) or 0)` was the old idiom and it is broken: `float('nan')` is TRUTHY, so
+    `nan or 0` returns `nan` and `int(nan)` raises. A column added after a run was
+    archived (e.g. `true_regressions`) is exactly that blank cell, and it crashed the
+    whole summary on re-analysis instead of summing as the comments intended."""
+    v = _f(x)
+    return int(v) if v == v else 0
+
+
 def _b(x):
     return str(x).strip().lower() in ("true", "1", "yes")
 
@@ -678,12 +689,13 @@ def _mean_curve_slope(chain_series: dict[int, list[tuple[int, float]]],
 def bootstrap_diff_slope(rows_a: list[dict], rows_b: list[dict], field: str,
                          n_boot: int = 2000, seed: int = 0
                          ) -> tuple[float, float, float, list[float]]:
-    """Bootstrap CI for slope(A) − slope(B): the PAIRED test the thesis needs.
+    """Bootstrap CI for slope(A) − slope(B): the between-arm test the thesis needs.
 
     Comparing each arm's slope CI to zero separately is not the same as testing that
-    the two arms differ; this resamples chains within each arm independently and takes
-    the slope difference per replicate. A returned CI that excludes 0 means the two
-    arms genuinely degrade at different rates on this metric.
+    the two arms differ; this resamples chains within each arm INDEPENDENTLY (the arms
+    are separate samples, not paired) and takes the slope difference per replicate. A
+    returned CI that excludes 0 means the two arms genuinely degrade at different rates
+    on this metric.
     """
     sa, sb = series_by_chain(rows_a, field), series_by_chain(rows_b, field)
     if not sa or not sb:
@@ -787,7 +799,9 @@ def phase_means(rows: list[dict], field: str):
 
 def evoscore(rows: list[dict], gamma: float) -> float:
     """gamma-weighted mean of the 0/1 strict-pass signal over a chain, averaged
-    across chains (later checkpoints discounted by gamma**i)."""
+    across chains. Checkpoint i (in order) carries weight gamma**i, so gamma > 1
+    weights LATER checkpoints more (rewards staying maintainable late, per the
+    module header), gamma == 1 is a plain mean, gamma < 1 would discount late ones."""
     per_chain = defaultdict(list)
     for r in scored(rows):
         val = 1.0 if _b(r["strict_pass"]) else 0.0
@@ -818,7 +832,7 @@ def zero_regression_rate(rows: list[dict], field: str = "regressions") -> float:
     for r in scored(rows):
         c = int(r["chain"])
         seen.add(c)
-        per_chain[c] += int(_f(r.get(field)) or 0)
+        per_chain[c] += _i(r.get(field))
     if not seen:
         return math.nan
     clean = sum(1 for c in seen if per_chain[c] == 0)
@@ -876,8 +890,8 @@ def regression_summary(rows: list[dict]) -> dict:
     """Totals for the intended-vs-true regression split, plus the count of mutative
     checkpoints (so a reader can see how much cross-cutting pressure the run had)."""
     graded = scored(rows)
-    total = sum(int(_f(r.get("regressions")) or 0) for r in graded)
-    true = sum(int(_f(r.get("true_regressions")) or 0) for r in graded)
+    total = sum(_i(r.get("regressions")) for r in graded)
+    true = sum(_i(r.get("true_regressions")) for r in graded)
     n_mut = sum(1 for r in graded if str(r.get("checkpoint_type", "")).strip() == "mutative")
     # Treat a missing/blank value as 0: this column was added after several runs were
     # archived, and an older records.csv must still sum rather than raise on NaN.
@@ -1665,9 +1679,9 @@ def main() -> int:
                             if str(r.get("ig_enforcement", "")) not in ("", "None")), "block")
             stop_impact = sum(1 for r in gated if str(r.get("ig_stop_reason", "")) == "impact")
             stop_quality = sum(1 for r in gated if str(r.get("ig_stop_reason", "")) == "quality")
-            nref = [int(_f(r.get("ig_refactors", "")) or 0) for r in gated]
+            nref = [_i(r.get("ig_refactors", "")) for r in gated]
             with_ref = sum(1 for v in nref if v > 0)
-            qturns = sum(int(_f(r.get("ig_quality_review_turns", "")) or 0) for r in gated)
+            qturns = sum(_i(r.get("ig_quality_review_turns", "")) for r in gated)
             grades = [_f(r.get("ig_grade", "")) for r in gated]
             grades = [g for g in grades if not math.isnan(g)]
             rcost = sum(_f(r.get("ig_refactor_cost_usd", "")) or 0 for r in gated
@@ -1676,7 +1690,7 @@ def main() -> int:
             mean_grade = (sum(grades) / len(grades)) if grades else float("nan")
             # one-refactor cohesion effect: first-attempt vs accepted impact, only on cps that
             # actually ran a refactor (others have first==accepted by construction).
-            ref_rows = [r for r in gated if int(_f(r.get("ig_refactors", "")) or 0) > 0]
+            ref_rows = [r for r in gated if _i(r.get("ig_refactors", "")) > 0]
             firsts = [_f(r.get("ig_impact_first", "")) for r in ref_rows]
             accs = [_f(r.get("ig_impact", "")) for r in ref_rows]
             firsts = [v for v in firsts if not math.isnan(v)]
@@ -1718,11 +1732,11 @@ def main() -> int:
             chains = sorted({int(r["chain"]) for r in revd})
             reached = sum(1 for ch in chains
                           if max(int(r["checkpoint"]) for r in revd if int(r["chain"]) == ch) >= n_cp)
-            turns = [int(_f(r.get("review_turns_run", "")) or 0) for r in revd]
+            turns = [_i(r.get("review_turns_run", "")) for r in revd]
             mean_turns = (sum(turns) / len(turns)) if turns else 0.0
             revised = sum(1 for r in revd if (_f(r.get("review_fix_cost_usd", "")) or 0) > 0)
             clean_first = sum(1 for r in revd
-                              if int(_f(r.get("review_turns_run", "")) or 0) >= 1
+                              if _i(r.get("review_turns_run", "")) >= 1
                               and not ((_f(r.get("review_fix_cost_usd", "")) or 0) > 0))
             rcost = sum(_f(r.get("review_cost_usd", "")) or 0 for r in revd
                         if not math.isnan(_f(r.get("review_cost_usd", ""))))
@@ -1768,9 +1782,13 @@ def main() -> int:
         rows_out = []
         for field in slope_fields:
             d, lo, hi, reps = bootstrap_diff_slope(ra, rb, field)
-            if math.isnan(d):
-                continue
             ld, llo, lhi, lreps = bootstrap_diff_level(ra, rb, field)
+            # Skip only a metric absent on BOTH dimensions. A field with a valid LEVEL
+            # diff but a NaN slope (fewer than two measured checkpoints) must still be
+            # level-tested and level-judged; its slope p falls to 1.0 below (empty reps)
+            # so it can never be slope-significant.
+            if math.isnan(d) and math.isnan(ld):
+                continue
             va = [_f(r.get(field)) for r in ra]
             vb = [_f(r.get(field)) for r in rb]
             delta = cliffs_delta([x for x in va if not math.isnan(x)],
@@ -1907,7 +1925,11 @@ def main() -> int:
                 continue
             rho_bar = float(np.tanh(np.mean(zs)))
             _summary[grp_name][ofield].append(abs(rho_bar))
-            cells.append(f"{rho_bar:+.3f} ({nsig}/{len(groups)})")
+            # Denominator is the number of TESTABLE groups (`len(zs)`), not all groups:
+            # a group whose ρ was NaN (too few points/events) was skipped above and never
+            # had the chance to be significant, so counting it in the denominator made
+            # the significant fraction read falsely low.
+            cells.append(f"{rho_bar:+.3f} ({nsig}/{len(zs)})")
         lines.append(f"| {grp_name} | `{field}` | " + " | ".join(cells) + " |")
     lines.append("")
     lines.append("### Mean |ρ| by claim group — the headline of this section\n")
