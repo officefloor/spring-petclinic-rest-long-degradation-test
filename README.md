@@ -762,14 +762,18 @@ over-threshold functions), reported over three scopes:
 | `erosion_handler` (+ intermediates, `_class`, `_nfns`) | the **entry-handler's own class only** — the clean concentration signal (Spring's controller erodes; OfficeFloor's `BuildOwner` stays flat) |
 
 **Verbosity (SlopCodeBench Eq. 4)** — `verbosity = |clone-lines ∪ ast-grep-flagged
-lines| / LOC` (jscpd duplication ∪ ast-grep anti-patterns); `verbosity_clone_lines`,
-`verbosity_pattern_lines`, `verbosity_union_lines` are the components. `java_loc`,
-`yaml_loc` are the two LOC pools (kept separate).
+lines| / source_loc` (jscpd duplication ∪ ast-grep anti-patterns); `verbosity_clone_lines`,
+`verbosity_pattern_lines`, `verbosity_union_lines` are the components. The denominator is
+`source_loc`, the non-blank **physical** `.java` lines, not `java_loc` (Σ function nloc):
+the clone/pattern numerator is a set of whole-file line numbers, so dividing by function
+bodies alone counted a clone line outside any method in the numerator but not the
+denominator and drove the ratio above 1. `java_loc` and `yaml_loc` remain the two
+function-nloc pools (kept separate) and `java_loc` is still emitted for continuity.
 
 **Duplication (clone-structure) — `dup_*`** — standalone code-duplication metrics, all
 mechanical and read off the SAME single jscpd run as Verbosity (no second jscpd; no
 semantic interpretation). *Quantity* (Bellon/SonarQube family): `dup_lines` (duplicated
-lines, equals `verbosity_clone_lines`), `dup_density` (`dup_lines / java_loc`),
+lines, equals `verbosity_clone_lines`), `dup_density` (`dup_lines / source_loc`),
 `dup_tokens`, `dup_pairs` (clone pairs), `dup_blocks` (distinct fragments), `dup_files`,
 `dup_classes` (clone classes = connected components of the pair graph),
 `dup_largest_lines`, `dup_mean_block_lines`. *Locality / dispersion* (Kapser & Godfrey):

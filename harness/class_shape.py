@@ -121,7 +121,12 @@ def classify(path: str, code: str) -> str:
 def audit_branch(repo: str, base: str, tip: str) -> collections.Counter:
     """Category counts over the production classes this chain CREATED."""
     base_files = set(_git(repo, ["ls-tree", "-r", "--name-only", base]).split())
-    changed = _git(repo, ["diff", "--name-only", f"{base}..{tip}",
+    # --diff-filter=A -M: count only GENUINELY ADDED files. With rename detection on (-M) a
+    # renamed existing class is classified R, not A, so it is excluded. Without this, a rename
+    # shows under its new path, which is absent from base_files, and the moved class was
+    # miscounted as CREATED (inflating the shape distribution). --no-renames does NOT help here:
+    # it splits the rename into delete+add and the add still looks new.
+    changed = _git(repo, ["diff", "--diff-filter=A", "-M", "--name-only", f"{base}..{tip}",
                           "--", "src/main/java"]).split()
     counts: collections.Counter = collections.Counter()
     for path in changed:

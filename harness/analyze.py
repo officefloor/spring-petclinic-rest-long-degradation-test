@@ -30,7 +30,7 @@ import numpy as np
 import yaml
 
 from . import class_shape, correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
-from .run_experiment import CSV_FIELDS, phase_for
+from .run_experiment import CSV_FIELDS, PHASES, phase_for
 
 try:
     import matplotlib
@@ -1200,7 +1200,7 @@ METRIC_EXPECTATION = {
 
 
 def bootstrap_diff_level(rows_a: list[dict], rows_b: list[dict], field: str,
-                         tail_frac: float = 0.2, n_boot: int = 2000, seed: int = 0
+                         n_boot: int = 2000, seed: int = 0
                          ) -> tuple[float, float, float, list[float]]:
     """Bootstrap CI for the END-STATE difference: mean(A) - mean(B) over the final
     phase, resampling CHAINS within each arm independently.
@@ -1209,6 +1209,12 @@ def bootstrap_diff_level(rows_a: list[dict], rows_b: list[dict], field: str,
     descriptions ("this arm ends with a god class", "this arm spreads over more
     files") are claims about where the codebase ENDS UP, and testing those on a
     slope is a category error that produces false counter-signals.
+
+    The window is the documented FINAL phase (`phase_for`), not a bespoke tail
+    fraction, so this test, the phase-means table and the gallery all cover the
+    same checkpoints (cp49-60 of a 60-checkpoint run). A 0.2 tail silently added
+    one Late checkpoint and could flip a borderline counter-signal against the
+    Final-phase column a reader cross-references it with.
     """
     sa, sb = series_by_chain(rows_a, field), series_by_chain(rows_b, field)
     if not sa or not sb:
@@ -1220,8 +1226,7 @@ def bootstrap_diff_level(rows_a: list[dict], rows_b: list[dict], field: str,
             if not pts:
                 continue
             last = max(k for k, _ in pts)
-            cut = last - max(1.0, last * tail_frac)
-            vals = [v for k, v in pts if k >= cut]
+            vals = [v for k, v in pts if phase_for(k, last) == PHASES[-1]]
             if vals:
                 out[c] = float(np.mean(vals))
         return out

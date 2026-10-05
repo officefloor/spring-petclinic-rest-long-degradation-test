@@ -2045,14 +2045,18 @@ _add("verbosity",
           "that catches the cheap way to score well on everything else on this "
           "page, which is to copy the logic into a new small class instead of "
           "factoring it out.",
-     formula="verbosity = | clone_lines &cup; pattern_lines | / LOC",
+     formula="verbosity = | clone_lines &cup; pattern_lines | / source_loc",
      terms="<b>clone_lines</b> and <b>pattern_lines</b> are sets of "
            "<b>(file, line number)</b> pairs, not counts, which is what makes the "
            "union meaningful. The union rather than the sum matters: a line that is "
-           "both duplicated and an anti-pattern is charged once. <b>LOC</b> is the "
-           "production Java line count. The result can exceed 1 in principle, "
-           "because the LOC denominator counts function bodies while the line sets "
-           "are gathered over whole files.",
+           "both duplicated and an anti-pattern is charged once. <b>source_loc</b> is "
+           "the count of non-blank physical lines in the scanned <code>.java</code> "
+           "sources. It matches the numerator, which jscpd and PMD both report as "
+           "whole-file line numbers, so the ratio is a true share of lines and does "
+           "not exceed 1. An earlier version divided by <b>java_loc</b>, the sum of "
+           "lizard function bodies. That denominator omits imports, fields and class "
+           "declarations while the numerator counts them, and the ratio drifted above "
+           "1. <b>java_loc</b> is still emitted for continuity.",
      how="<code>metrics.verbosity</code>. Clones come from jscpd, anti-patterns "
          "from PMD or ast-grep depending on the run's own config snapshot, so an "
          "old run replays with the detector it actually used. If one detector "
