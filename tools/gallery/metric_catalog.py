@@ -1995,17 +1995,25 @@ _add("propagation_cost",
           "it? It is the density of the transitive closure of the file dependency "
           "matrix, and it is the one whole-architecture coupling number here with "
           "real pedigree in the modularity literature.",
-     formula="propagation_cost = &Sigma;<sub>i=1..n</sub> | reach(i) | / "
+     formula="propagation_cost = &Sigma;<sub>i=1..n</sub> | vis(i) | / "
+             "n<sup>2</sup> = ( n + &Sigma;<sub>i=1..n</sub> | reach(i) | ) / "
              "n<sup>2</sup>",
-     terms="<b>n</b> is the number of production Java files. <b>reach(i)</b> is the "
-           "set of <i>other</i> files reachable from file <i>i</i> by following "
-           "call edges transitively, so a file does not count itself. The "
-           "numerator is therefore the number of ordered reachable pairs, and "
-           "dividing by <b>n<sup>2</sup></b> gives the expected fraction of the "
-           "system a random change can touch.",
+     terms="<b>n</b> is the number of production Java files. <b>vis(i)</b> is the "
+           "set of files reachable from file <i>i</i> by following call edges "
+           "transitively, and it includes <i>i</i> itself: the A<sup>0</sup> = I "
+           "diagonal of MacCormack's visibility matrix V = &Sigma; A<sup>i</sup>. "
+           "<b>reach(i)</b> is the same set with the file itself removed, so "
+           "| vis(i) | = | reach(i) | + 1 and the numerator is n + &Sigma; | "
+           "reach(i) |. Dividing by <b>n<sup>2</sup></b> gives the density of the "
+           "visibility matrix: the expected fraction of the system a random change "
+           "can touch.",
      how="<code>placement.propagation_cost</code> collapses the method call graph "
-         "to a file graph, dropping self-edges, then runs a depth-first reach from "
-         "every file.",
+         "to a file graph (dropping self-call edges), then runs a depth-first reach "
+         "from every file and counts the file itself. The diagonal is kept on "
+         "purpose: dropping it would subtract a per-arm 1/n term, and since the arms "
+         "have very different n that term does not cancel in the only comparison "
+         "this metric is used for. The self-exclusive out-degree is reported "
+         "separately as <code>propagation_fanout</code>.",
      read="Lower means better modularised. Use the between-arm comparison at the "
           "same change request and nothing else.",
      caveat="Two load-bearing caveats. First, the <b>n<sup>2</sup> denominator "

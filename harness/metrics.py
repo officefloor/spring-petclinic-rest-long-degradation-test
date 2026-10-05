@@ -215,10 +215,39 @@ def _jscpd_line(fobj: dict, base: str):
     return v if isinstance(v, int) else None
 
 
+def _pkg_rel_key(path: str, src_dirs: list[str]) -> str:
+    """Collapse a file path to its package-relative tail so the Verbosity clone and smell
+    sets share ONE key space and the union can deduplicate.
+
+    jscpd reports a file relative to the scanned source dir, WITHOUT the prefix
+    ("org/.../Owner.java"); PMD and ast-grep report it repo-relative WITH it
+    ("src/main/java/org/.../Owner.java"). Keyed as-is the two never match, so a line
+    flagged as BOTH a clone and a smell was counted twice and inflated `verbosity`
+    (SlopCodeBench Eq.4) above its definition. Stripping any configured src_dir prefix
+    maps both to the same tail; a jscpd name carries no such prefix and is returned
+    unchanged (and the mapping is idempotent, so normalising an already-tail key is safe).
+    """
+    p = str(path).replace("\\", "/")
+    for d in src_dirs:
+        pref = d.rstrip("/") + "/"
+        i = p.find(pref)
+        if i != -1:
+            return p[i + len(pref):]
+    return p
+
+
 def _clone_lines_from_report(data: dict, root: str) -> set[tuple[str, int]]:
-    """{(path, line)} covered by any duplicate fragment. The path key is
-    relpath(name, root), kept EXACTLY as the original _clone_lines_jscpd produced it so
-    Verbosity's clone/pattern union is byte-for-byte unchanged."""
+    """{(path, line)} covered by any duplicate fragment. The path is jscpd's own `name`
+    (source-dir-relative, e.g. "org/.../Owner.java"), separator-normalised; `verbosity`
+    reduces it and the smell keys to one space via `_pkg_rel_key` before the union.
+
+    This no longer runs `relpath(name, root)`: `name` is already relative, so relpath
+    resolved it against the PROCESS cwd (not `root`) and produced a cwd-dependent key
+    with `../` segments that could never match the repo-relative smell keys. Only this
+    function's output (the Verbosity clone half) is affected; `clone_metrics` reads the
+    raw report in its own consistent space and is untouched. The distinct-pair COUNT
+    (`verbosity_clone_lines`) is unchanged, since the old relpath was injective over names.
+    """
     lines: set[tuple[str, int]] = set()
     for dup in data.get("duplicates", []):
         for side in ("firstFile", "secondFile"):
@@ -227,7 +256,7 @@ def _clone_lines_from_report(data: dict, root: str) -> set[tuple[str, int]]:
             start = _jscpd_line(f, "start")
             end = _jscpd_line(f, "end")
             if name and start and end:
-                rel = os.path.relpath(name, root)
+                rel = str(name).replace("\\", "/")
                 for ln in range(int(start), int(end) + 1):
                     lines.add((rel, ln))
     return lines
@@ -393,11 +422,14 @@ def verbosity(root: str, src_dirs: list[str], loc: int, tools: dict,
     patterns = _pattern_lines(root, src_dirs, tools, pmd_report, pmd_keep)
     if clones is None and patterns is None:
         return float("nan"), {"reason": "neither jscpd nor ast-grep produced output"}
+    # Reduce both sides to the package-relative key space before unioning: the clone half
+    # (jscpd names) and the smell half (PMD/ast-grep repo-relative paths) carry different
+    # prefixes, so without this a line flagged by BOTH is counted twice (see _pkg_rel_key).
     union: set[tuple[str, int]] = set()
     if clones:
-        union |= clones
+        union |= {(_pkg_rel_key(p, src_dirs), ln) for (p, ln) in clones}
     if patterns:
-        union |= patterns
+        union |= {(_pkg_rel_key(p, src_dirs), ln) for (p, ln) in patterns}
     return len(union) / loc, {
         "clone_lines": len(clones) if clones is not None else None,
         "pattern_lines": len(patterns) if patterns is not None else None,

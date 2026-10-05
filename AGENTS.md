@@ -312,6 +312,21 @@ important negative result in the suite** and must be reported as such.
   statistic on those tips** (`node_path_cc` still 202 vs 229 on `blind-202608100006`
   chain0) because the recovered overloads sat off the handling path. Do not read that
   as "harmless"; nothing keeps the next chain's overloads off the path.
+* **Verbosity's clone ∪ smell union lived in two path spaces, so it never
+  deduplicated.** jscpd reports a file source-dir-relative (`org/.../Owner.java`); PMD and
+  ast-grep report it repo-relative WITH the `src/main/java` prefix. `_clone_lines_from_report`
+  also ran `relpath(name, root)` on the already-relative jscpd name, which resolved it
+  against the PROCESS cwd and produced a `../`-laden key that could not match either. A line
+  flagged as BOTH a clone and a smell was therefore counted twice, inflating `verbosity`
+  (SlopCodeBench Eq.4) and `verbosity_union_lines` above the definition. Latent on the
+  archived runs only because their smell half never ran (clones-only union), but the live
+  config enables PMD and `verbosity_pattern_lines` is recomputed at analyze time, so any new
+  run or re-analysis triggers it. Fixed by `metrics._pkg_rel_key`, which strips any configured
+  `src_dir` prefix so both halves share the package-relative space before the union; the clone
+  key is now jscpd's raw `name`, not a relpath. The clone/smell COUNTS are unchanged (the old
+  relpath was injective); only the union, and the pooled `verbosity` level it feeds, move.
+  `clone_metrics`/`dup_*` read the raw report in their own consistent space and are untouched.
+  **Two line-set keys that are unioned must be built in the same path space.**
 * **A metric that is also an OUTCOME correlates with itself, and the tautology was
   averaged into a headline.** `reedit_rate` is in `METRICS_TO_PLOT` *and* in `OUTCOMES`,
   so the outcome-prediction matrix printed ρ = +1.000 for it and fed that into "Mean
