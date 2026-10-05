@@ -11,6 +11,7 @@ architecture's complexity distribution and not the other's*
 | `figures/plasticity.png` | Figure 1. |
 | `figures/plasticity_dist.png` | Figure 2. |
 | `figures/strict_pass.png` | Figure 3. |
+| `figures.sh` | Regenerates `figures/` from `../results/` and copies them in. `--check` reports drift without rendering, which `build.sh` runs on every build. |
 | `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | The built paper, 23 pages. Written by `build.sh` and **gitignored**, for the same reason as `arxiv.tar.gz` below: it is derivable from `main.tex` and `figures/`. |
@@ -50,21 +51,27 @@ have `pdflatex`, use it, because that path builds the file exactly as submitted.
 
 ## Reproducing the numbers
 
-Every figure in the paper comes from the four runs in `../results/`:
-
-| Condition | Run |
-|---|---|
-| `just-solve` | `blind-202608100006` |
-| `cohesion-prompt` | `blind-202609160027` |
-| `impact-gated` (advisory) | `blind-202609031757` |
-| `formula-provided` | `blind-202609010045` |
-
-Figure 1 is regenerated with:
+Every figure in the paper is derived from the analysed runs in `../results/`.
+The condition to run mapping is NOT repeated here, because a copy in a README is
+a copy that goes stale. It lives in `tools/gallery/metric_gallery.py` as `RUNS`,
+and `figures.sh` reads it from there. To print it:
 
 ```
-python -m tools.gallery.plasticity_fig
-cp ../blog/metric-gallery/figs/plasticity.png figures/
+python -c "from tools.gallery.metric_gallery import RUNS
+print('\n'.join(f'{c:18s} {r}' for c, r, _ in RUNS))"
 ```
+
+All three figures are regenerated and copied in with:
+
+```
+./figures.sh                      # all of them
+./figures.sh --only strict_pass   # just one
+```
+
+It refuses to run if a required run has not been analysed, and names the one it
+is missing. `build.sh` calls `./figures.sh --check` on every build, which
+compares the tracked figures against the last render and warns if they differ.
+That check never fails the build: a fresh clone has no render to compare with.
 
 The statistics in the tables come from three scripts, each seeded at 0 and each
 taking `--latex` to emit its table rows verbatim:

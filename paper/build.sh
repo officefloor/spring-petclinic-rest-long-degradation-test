@@ -100,6 +100,20 @@ abstract() {
 
 abstract
 
+# Are the tracked figures the ones the current analysis produces? figures.sh
+# --check compares them against the last gallery render without rendering
+# anything, so it costs nothing and needs no venv. A WARNING, never a failure:
+# a fresh clone has no blog/ render to compare against, and a reviewer building
+# the paper has no business being blocked by the harness's output.
+if [ -x ./figures.sh ]; then
+  echo "== figures =="
+  ./figures.sh --check || {
+    echo "   WARNING: the figures above are stale. ./figures.sh refreshes them." >&2
+    echo "   Building with what is in figures/ anyway." >&2
+  }
+  echo
+fi
+
 if command -v pdflatex >/dev/null 2>&1; then
   echo "pdflatex found: building the file exactly as submitted."
   pdflatex -interaction=nonstopmode -halt-on-error main.tex
