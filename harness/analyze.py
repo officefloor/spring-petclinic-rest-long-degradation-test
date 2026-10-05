@@ -304,6 +304,44 @@ def _resolve_run_config(live_cfg: dict, run_id: str, tmp_dir: str) -> dict:
             print(f"  ! tools.{key} absent from the run's config snapshot "
                   f"(metric added after the run); using the live value")
 
+    # The same absent-key backfill one level UP, over the TOP-LEVEL sections, and one
+    # level INTO each of them. This bug has now landed three times at successively higher
+    # levels: `arms.*` (node_roots), then `tools.*` (pmd/ck), then a whole missing
+    # SECTION. The third was the worst, because it produced no blank column to notice:
+    # `correctness.excluded_tests` landed 2026-10-04, no snapshot carries a `correctness`
+    # key at all (checked against the oldest and the newest recorded run), so
+    # `recompute_rows` ran with an EMPTY exclusion list on every run. Every `*_adj` column
+    # then equalled its unadjusted twin, `excluded_hits` summed to 0, and `split_report`
+    # marked both excluded tests `scored: yes` -- while the same summary.md printed the
+    # exclusion list above it from the LIVE config. A self-contradicting summary, and the
+    # whole "with and without the under-determined tests" result inert on exactly the
+    # archived runs it was written for.
+    #
+    # The sub-key pass is what stops the FOURTH recurrence: a key added to a section a run
+    # DID record would otherwise be missed the same way.
+    #
+    # Scoped to the sections the ANALYSIS derives from, listed rather than swept. A blanket
+    # sweep also filled `prompt_strategies` and `build.test_attempts` from live, which is
+    # worse than useless: nothing in the derive path reads them (correctness comes from the
+    # capture, not from re-running the gate), and writing a later prompt strategy into a
+    # historical run's config misrepresents how that run was configured, which is the one
+    # thing this function exists to get right. `arms`/`tools` are filled above with their
+    # own rules; `paths` is read from the LIVE config by main(), never from here.
+    for key in ("correctness", "acceptance"):
+        live_val = (live_cfg or {}).get(key)
+        if live_val in (None, "", [], {}):
+            continue
+        if key not in run_cfg:
+            run_cfg[key] = live_val
+            print(f"  ! {key}.* absent from the run's config snapshot "
+                  f"(section added after the run); using the live value")
+        elif isinstance(live_val, dict) and isinstance(run_cfg.get(key), dict):
+            for sub, sub_val in live_val.items():
+                if sub not in run_cfg[key] and sub_val not in (None, "", [], {}):
+                    run_cfg[key][sub] = sub_val
+                    print(f"  ! {key}.{sub} absent from the run's config snapshot "
+                          f"(added after the run); using the live value")
+
     print(f"  using per-run config snapshot from {branch}")
     return run_cfg
 
@@ -489,13 +527,18 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                 for tid, ok in results.items():
                     d = PER_TEST.setdefault(tid, {"pass": 0, "fail": 0, "cps": set(),
                                                   "excluded": False})
+                    # Flagged BEFORE the seen-check, because an exclusion can start at a
+                    # LATER checkpoint than the test's first appearance (`from_checkpoint`).
+                    # Behind the `continue` it never fired for such a test, and the audit
+                    # table then printed `scored: yes` for a test the same summary lists as
+                    # excluded.
+                    if tid in drop:
+                        d["excluded"] = True
                     if (branch, tid) in SEEN_TEST:
                         continue
                     SEEN_TEST.add((branch, tid))
                     d["cps"].add(k)
                     d["pass" if ok else "fail"] += 1
-                    if tid in drop:
-                        d["excluded"] = True
                 if outcome.gate_invalid:
                     n_invalid += 1
                     row["notes"] = (tests.get("error") or "gate produced no results")[:200]
@@ -1035,13 +1078,25 @@ METRICS_TO_PLOT += PLACEMENT_METRICS
 # point of that analysis is that the three groups should behave DIFFERENTLY against
 # maintenance outcomes: if amount predicts nothing and placement predicts cost and
 # breakage, Tesler and Brooks are tested rather than assumed.
+
+# Metrics that carry NO claim and must stay out of every group mean. `container_total`
+# is the call-graph escape counter: a VALIDITY column with no prediction on record (see
+# `METRIC_EXPECTATION`), so averaging it into the amount group's mean |rho| attributes a
+# claim to it that the harness explicitly declines to make.
+UNGROUPED_METRICS = {"container_total"}
+
+# The TAX assignments are applied LAST on purpose. They used to run before the
+# prefix sweep below, which then re-read its own keys and silently flipped
+# `cum_change_files` to placement -- a metric whose own expectation is (-1, level),
+# i.e. the navigational tax. Prefix first, hand-listed exceptions after.
+_TAX_METRICS = ("total_files", "total_packages", "indirection_median", "indirection_max",
+                "indirection_deep_share", "ck_cbo_mean", "ck_cbo_max", "ck_fanout_mean",
+                "pmd_demeter_violations", "files_created", "cum_change_files")
+
 METRIC_GROUP = {}
 for _f2, _lab in PLACEMENT_METRICS:
-    METRIC_GROUP[_f2] = "amount"
-for _f2 in ("total_files", "total_packages", "indirection_median", "indirection_max",
-            "indirection_deep_share", "ck_cbo_mean", "ck_cbo_max", "ck_fanout_mean",
-            "pmd_demeter_violations", "files_created", "cum_change_files"):
-    METRIC_GROUP[_f2] = "tax"
+    if _f2 not in UNGROUPED_METRICS:
+        METRIC_GROUP[_f2] = "amount"
 for _f2 in [k for k in METRIC_GROUP if k.startswith(
         ("ccdist_", "wmcdist_", "cogdist_", "voldist_", "change_", "cum_change_",
          "propagation_", "ck_lcom", "ck_tcc", "ck_lcc", "ck_rfc", "ck_handler_",
@@ -1051,10 +1106,19 @@ for _f2 in ("wmc_handler", "wmc_max", "entry_cc", "node_cc_median", "node_cc_max
             "erosion_handler", "impact_composite", "impact_mutation", "reedit_rate",
             "existing_fns_modified", "packages_touched"):
     METRIC_GROUP[_f2] = "placement"
+# `mi_mean`/`mi_min` are grouped AMOUNT deliberately, even though their expectation sign
+# is -1: the Maintainability Index is a whole-codebase average and location-blind by
+# construction (see placement.maintainability_index), so it belongs with the amount
+# operationalisations. The -1 is a thesis prediction about maintainability, not a
+# navigational tax, despite sitting under the tax heading in METRIC_EXPECTATION below.
 for _f2 in ("total_cc", "pmd_cognitive_total", "pmd_npath_total", "halstead_volume",
             "halstead_effort", "ck_wmc_total", "total_fns", "node_path_cc", "erosion",
-            "java_loc", "mi_mean"):
+            "java_loc", "mi_mean", "mi_min"):
     METRIC_GROUP[_f2] = "amount"
+for _f2 in UNGROUPED_METRICS:
+    METRIC_GROUP.pop(_f2, None)
+for _f2 in _TAX_METRICS:
+    METRIC_GROUP[_f2] = "tax"
 
 
 # ---------------------------------------------------------------------------
@@ -1902,6 +1966,11 @@ def main() -> int:
                  "are supported by prediction and not merely by description — and if the `amount` "
                  "rows predict just as well, that is the single most important negative result in "
                  "this suite and belongs in the abstract.\n")
+    lines.append("`_self_` marks a metric that is also the outcome in that column (`reedit_rate` is "
+                 "both). Correlating it with itself gives exactly 1 and would inflate the group mean "
+                 "below, so the cell is not computed. The group means average |ρ| over an UNEQUAL "
+                 "and partly redundant set of metrics (placement carries several HHI and top-share "
+                 "variants of the same quantity), so read the ordering, not the gap.\n")
     lines.append("| group | metric | " + " | ".join(n for _, n in OUTCOMES) + " |")
     lines.append("|---|---|" + "---:|" * len(OUTCOMES))
     _summary: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -1911,6 +1980,14 @@ def main() -> int:
             continue
         cells = []
         for ofield, _note in OUTCOMES:
+            if ofield == field:
+                # A metric that is ALSO an outcome would correlate with itself: rho is
+                # exactly 1 and significant in every group, and that 1.000 was being
+                # averaged into the claim-group headline below. `reedit_rate` is both, so
+                # the placement group read 0.200 against temporal coupling where the 42
+                # real metrics give 0.181. Not a correlation, so not a cell.
+                cells.append("_self_")
+                continue
             zs, nsig = [], 0
             for gk, grp in sorted(groups.items()):
                 src = scored(grp) if ofield in CORRECTNESS_OUTCOMES else grp
@@ -2219,10 +2296,13 @@ def main() -> int:
         newf = sum(_num(r, "files_created") for r in grp)
         add = sum(_num(r, "churn_added") for r in grp)
         rem = sum(_num(r, "churn_removed") for r in grp)
-        zero = sum(1 for r in grp
-                   if str(r.get("existing_fns_modified", "")).strip() != ""
-                   and _num(r, "existing_fns_modified") == 0)
-        lines.append(f"| {gk[0]}/{gk[1]} | {fns / nch:.1f} | {zero}/{len(grp)} | "
+        # Denominator is the MEASURED checkpoints, not all of them: a checkpoint whose
+        # worktree failed carries no `existing_fns_modified` at all and never had the
+        # chance to be zero-blast, so counting it made the rate read falsely low. Same
+        # correction as the outcome matrix's `len(zs)`.
+        measured = [r for r in grp if str(r.get("existing_fns_modified", "")).strip() != ""]
+        zero = sum(1 for r in measured if _num(r, "existing_fns_modified") == 0)
+        lines.append(f"| {gk[0]}/{gk[1]} | {fns / nch:.1f} | {zero}/{len(measured)} | "
                      f"{newf / nch:.1f} | +{add / nch:.0f}/-{rem / nch:.0f} |")
     lines.append("")
 

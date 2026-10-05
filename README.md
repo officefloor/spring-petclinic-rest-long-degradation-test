@@ -672,6 +672,16 @@ collapsed to its single entry node — CC 8 rather than a 19-node pipeline, a nu
 with nothing obviously wrong with it. Recorded snapshot values always win; only
 absent keys are filled.
 
+The fill covers `arms.*`, `tools.*` **and the analysis-shaping top-level sections**
+(`correctness`, `acceptance`, at both section and sub-key level). The section level was
+the third time this bug landed: `correctness.excluded_tests` arrived after every
+recorded run, no snapshot carries a `correctness` key, so the exclusion list was empty
+on re-analysis. Each `*_adj` column then equalled its unadjusted twin and the
+"tests that divide the field" table marked the excluded tests `scored: yes`, while the
+same `summary.md` printed the exclusion list above it from the live config. **After
+adding config in a new section, re-analyse one chain and check the columns differ from
+their unadjusted twins, not just that the run exited 0.**
+
 **Confirms the thesis** if the *concentration* slopes climb for Spring and stay
 flat for OfficeFloor with disjoint CIs — `node_cc_median`, `entry_cc`, `wmc_handler`, handler-scoped
 erosion, and above all the **structural-impact** score (`impact_composite` /
@@ -796,6 +806,7 @@ package distribution (healthy growth = count rises while avg/max stay flat).
 | `node_count`, `node_cc_median` / `_mean` / `_p90` / `_max`, `node_methods_median` | per-node comprehension load: CC transitively reachable from ONE handling node — what you must understand to change one rule. Nodes come from the arm's declared wiring (`node_roots.wiring_file`), or the single `entry_handler` when an arm declares none. Relocation-proof: work pushed to a later node lands in that node's closure |
 | `node_exclusive_share` | cohesion: fraction of node-reachable CC reachable from exactly ONE node. Low = thin wrappers over a shared blob. Blank when an arm has a single node (trivially 1.0) |
 | `node_path_cc`, `node_path_methods` | the union across nodes: the whole handling path, transitively. The honest total that answers "you just moved it downstream" |
+| *(all of the above)* | the call graph is keyed **per overload**, not per method name: lizard gives `getPet(String)` and `getPet(Integer)` the same `name`, so a name-keyed graph kept one and dropped the others' CC **and** their outgoing edges. Resolution stays conservative (same class, or a name unique project-wide), and because a call site is matched by name every overload of a resolved name is an edge |
 | `entry_cc` (+ `_nloc`, `_fn`) | cyclomatic complexity of the **one** function the create endpoint routes through (`addOwner` / `BuildOwner::service`) — does the front door bloat |
 | `packages_touched` | distinct packages the rule's production-Java diff reaches (change spread) |
 | `reedit_rate` (+ `reedit_body_lines`, `reedit_prior_lines`) | temporal coupling: of the lines in functions this checkpoint edited, the share authored by **earlier** checkpoints |
@@ -847,7 +858,7 @@ everything in this group is a published or textbook measure that predates the wo
 | `total_cc` | total cyclomatic complexity, whole app (McCabe 1976) |
 | `pmd_cognitive_total` / `_max` / `_mean` | cognitive complexity (Campbell/SonarSource 2018) — penalises nesting, forgives flat sequences, so it separates a nested method from a long flat dispatch |
 | `pmd_npath_total` / `_max` | acyclic execution paths (Nejmeh 1988) |
-| `halstead_volume`, `halstead_effort`, `halstead_vocab` | Halstead (1977) — vocabulary size, an operationalisation independent of control flow |
+| `halstead_volume`, `halstead_effort`, `halstead_vocab` | Halstead (1977) — vocabulary size, an operationalisation independent of control flow. Every string/char literal collapses to **one** operand symbol, counted **once**, so an arm cannot move the score by changing message text; `halstead_vocab` unions the distinct symbols **across** files (a per-file sum would recount `if`/`==` once per file and grow with file count) |
 | `mi_mean`, `mi_min` | Maintainability Index (Coleman et al. 1994), computed **per file** then averaged; `mi_min` is the worst file |
 | `ck_wmc_total` | total WMC from CK — an independent parser's cross-check on the lizard numbers |
 | `total_fns`, `total_files`, `total_packages` | unit counts |

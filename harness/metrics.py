@@ -646,18 +646,50 @@ _JAVA_KEYWORDS = {"if", "for", "while", "switch", "catch", "return", "new", "sup
                   "this", "synchronized", "try", "do", "else", "assert", "throw"}
 
 
+def _node_key(f: dict) -> tuple[str, str, str, int]:
+    """The call graph's node identity for one function record.
+
+    (class, method, long_name, start_line). The long_name and the start line are what
+    make it UNIQUE PER OVERLOAD: lizard gives every Java overload the same `name`
+    (`Owner::getPet` for `getPet(String)`, `getPet(Integer)` and
+    `getPet(String, boolean)` alike), the parameters living only in `long_name`. The
+    start line is belt and braces for the one case long_name cannot separate: two
+    identically-signatured methods in two anonymous inner classes in the same file.
+    Keys live inside a single checkpoint's computation and are never compared across
+    refs, so the line number costs nothing."""
+    return (f["_cls"], f["_meth"], f["long_name"], int(f["start"]))
+
+
 def _call_index(worktree: str, fns: list[dict]) -> tuple[dict, dict]:
-    """(class, method) -> record and method -> [records], each record carrying the set of
+    """node key -> record and method -> [records], each record carrying the set of
     names it calls. Class comes from the FILE (one top-level class per Java file), which
-    also absorbs lizard's variation between 'Class::method' and bare 'method' naming."""
-    by_key: dict[tuple[str, str], dict] = {}
+    also absorbs lizard's variation between 'Class::method' and bare 'method' naming.
+
+    Keyed by `_node_key`, NOT by (class, method). A (class, method) dict kept whichever
+    overload parsed last, and that dropped the others TWICE over: their CC left every
+    closure sum, and their outgoing call edges left the graph entirely, because
+    `call_adjacency` walks this dict's values. On the two base repos it hid 11 methods
+    in spring and 8 in officefloor, `Owner.getPet` among them (CC 1, 5 and 1, so the
+    CC 5 body could be the one that vanished). Same defect `_parse_blob` documents for
+    the impact score, fixed the same way.
+
+    WHAT IT CHANGED, measured rather than assumed. Resolved edges rose ~5-8% on every
+    tree checked (base and four chain tips). The closure STATISTICS did not move on any
+    of those four tips: `node_path_cc` stayed 202 vs 229 on blind-202608100006 chain0 and
+    40 vs 124 on blind-202609010045 chain0, with `node_cc_median`, `node_cc_max`,
+    `node_exclusive_share`, indirection and propagation cost unchanged. The recovered
+    overloads sat outside the handling path, or led only to methods it already reached.
+    So this is a correctness fix with no known effect on a published closure number. It
+    is not a no-op: nothing guarantees the next chain puts its overloads off the path."""
+    by_key: dict[tuple[str, str, str, int], dict] = {}
     by_name: dict[str, list[dict]] = defaultdict(list)
     src: dict[str, list[str]] = {}
     for f in fns:
         cls = f["file"].split("/")[-1].removesuffix(".java")
         meth = f["name"].split("::")[-1]
         f["_cls"], f["_meth"] = cls, meth
-        by_key[(cls, meth)] = f
+        f["_key"] = _node_key(f)
+        by_key[f["_key"]] = f
         by_name[meth].append(f)
         path = os.path.join(worktree, f["file"])
         if path not in src:
@@ -670,8 +702,16 @@ def _call_index(worktree: str, fns: list[dict]) -> tuple[dict, dict]:
     return by_key, by_name
 
 
+def _by_class_method(by_key: dict) -> dict:
+    """(class, method) -> every record with that name in that class (its overloads)."""
+    out: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for f in by_key.values():
+        out[(f["_cls"], f["_meth"])].append(f)
+    return out
+
+
 def call_adjacency(by_key: dict, by_name: dict) -> dict:
-    """Resolved call edges: (class, method) -> set of callee (class, method).
+    """Resolved call edges: node key -> set of callee node keys (see `_node_key`).
 
     THE single definition of how a Java call is resolved in this harness, extracted
     so the closure walk (`_closure`) and the placement metrics (indirection depth,
@@ -684,33 +724,40 @@ def call_adjacency(by_key: dict, by_name: dict) -> dict:
     Symmetric across arms, so both are undercounted the same way. An upper bound
     that follows every same-named method was checked off-line and agrees on every
     between-arm comparison.
+
+    OVERLOADS ARE ALL EDGES. The call site is matched by NAME (`_CALL_RE` sees
+    `getPet(` and no argument types), so when the resolved name has several overloads
+    every one of them is an edge. Picking one would be a guess, and dropping the rest
+    is what the old (class, method) keying did by accident. This is the rule the
+    unique-class branch below already applied, now applied to the same-class branch
+    too.
     """
-    adj: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    by_cm = _by_class_method(by_key)
+    adj: dict[tuple, set[tuple]] = {}
     for f in by_key.values():
-        key = (f["_cls"], f["_meth"])
-        out: set[tuple[str, str]] = set()
+        out: set[tuple] = set()
         for name in f["_calls"]:
-            same = by_key.get((f["_cls"], name))
+            same = by_cm.get((f["_cls"], name))
             if same:
-                cands = [same]
+                cands = same
             elif name in by_name and len({h["_cls"] for h in by_name[name]}) == 1:
                 cands = by_name[name]
             else:
                 continue          # ambiguous or external -> not followed
             for c in cands:
-                out.add((c["_cls"], c["_meth"]))
-        adj[key] = out
+                out.add(c["_key"])
+        adj[f["_key"]] = out
     return adj
 
 
 def _closure(roots: list[dict], by_key: dict, by_name: dict,
-             adj: Optional[dict] = None) -> set[tuple[str, str]]:
+             adj: Optional[dict] = None) -> set[tuple]:
     """Methods transitively reachable from `roots` (see `call_adjacency` for the
     resolution rule, which this shares so the two can never diverge)."""
     if adj is None:
         adj = call_adjacency(by_key, by_name)
-    seen: set[tuple[str, str]] = set()
-    queue = [(r["_cls"], r["_meth"]) for r in roots]
+    seen: set[tuple] = set()
+    queue = [r["_key"] for r in roots]
     while queue:
         key = queue.pop()
         if key in seen:
@@ -739,11 +786,16 @@ def _node_roots(worktree: str, by_key: dict, arm_cfg: dict) -> list[dict]:
             rx = re.compile(nr.get("class_regex", r"class:\s*([\w.]+)"))
             method = nr.get("node_method", "service")
             text = open(path, encoding="utf-8", errors="replace").read()
+            by_cm = _by_class_method(by_key)
             roots = []
             for cls in dict.fromkeys(rx.findall(text)):       # ordered, de-duplicated
-                rec = by_key.get((cls.split(".")[-1], method))
-                if rec:
-                    roots.append(rec)
+                # ONE node per wired step, even when its node method is overloaded: the
+                # wiring names a class, not a signature, so which overload the container
+                # calls cannot be read off the YAML. Take the heaviest, the same tiebreak
+                # the entry_handler fallback below uses, with long_name for determinism.
+                cands = by_cm.get((cls.split(".")[-1], method))
+                if cands:
+                    roots.append(max(cands, key=lambda f: (f["cc"], f["nloc"], f["long_name"])))
             if roots:
                 return roots
     pattern = arm_cfg.get("entry_handler")
@@ -751,7 +803,9 @@ def _node_roots(worktree: str, by_key: dict, arm_cfg: dict) -> list[dict]:
         return []
     rx = re.compile(pattern)
     hits = [f for f in by_key.values() if rx.search(f"{f['file']}::{f['name']}")]
-    return [max(hits, key=lambda f: (f["cc"], f["nloc"]))] if hits else []
+    # long_name breaks a tie between two equally heavy overloads, so the chosen root
+    # does not depend on dict iteration order.
+    return [max(hits, key=lambda f: (f["cc"], f["nloc"], f["long_name"]))] if hits else []
 
 
 def node_closure_stats(worktree: str, fns: list[dict], arm_cfg: dict,

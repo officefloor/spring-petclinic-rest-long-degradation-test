@@ -193,6 +193,10 @@ _OP_SYMBOLS = re.compile(
 _IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 _NUMBER = re.compile(r"0[xXbB][0-9a-fA-F_]+[lLfFdD]?|\d[\d_]*\.?[\d_]*([eE][+-]?\d+)?[lLfFdD]?")
 _STRIP = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/', re.S)
+# Every string/char literal collapses to this single operand symbol, so an arm cannot
+# move its Halstead score by changing message text. NUL-wrapped so it cannot collide
+# with a real identifier; matched explicitly in the scan loop below.
+_LIT = "\x00LIT\x00"
 
 
 def halstead(source: str) -> dict:
@@ -209,32 +213,40 @@ def halstead(source: str) -> dict:
     and Halstead all agree the arms carry the same amount, that is four independent
     operationalisations, not one measure repeated.
     """
-    literals = 0
-
     def _sub(m: re.Match) -> str:
-        nonlocal literals
         t = m.group(0)
         if t.startswith(("//", "/*")):
             return " "
-        literals += 1
-        return " \x00LIT\x00 "
+        return f" {_LIT} "
 
     text = _STRIP.sub(_sub, source)
     ops: Counter = Counter()
     operands: Counter = Counter()
-    operands["\x00LIT\x00"] = literals
+    # `_LIT` is matched by the loop below, ahead of `_IDENT`, and counted exactly once.
+    # It used to be pre-seeded into `operands` with `_IDENT` expected to skip it, which
+    # `_IDENT` cannot do: its regex starts at `[A-Za-z_$]`, so it never matched the
+    # NUL-wrapped token. It skipped the NUL and matched the bare `LIT` instead, and every
+    # literal was counted twice (once as the seeded symbol, once as `LIT`) with a phantom
+    # second vocabulary symbol for literals. Volume came out 1.7% to 2.1% high, and by a
+    # DIFFERENT amount per arm because the inflation tracks literal density: on the base
+    # trees 156,250 vs 155,324 (a 0.60% gap) became 153,297 vs 152,798 (0.33%). So the
+    # bug was about half the between-arm gap on a CONSERVATION metric, whose whole claim
+    # is that the gap is nil. At the chain tips the real gap is larger (~2.5%) and the
+    # correction is close to arm-neutral.
     pos, n = 0, len(text)
     while pos < n:
         ch = text[pos]
         if ch.isspace():
             pos += 1
             continue
+        if text.startswith(_LIT, pos):            # one literal -> one operand occurrence
+            operands[_LIT] += 1
+            pos += len(_LIT)
+            continue
         m = _IDENT.match(text, pos)
         if m:
             word = m.group(0)
-            if word == "\x00LIT\x00":
-                pass                                  # already counted
-            elif word in _JAVA_KEYWORD_OPERATORS:
+            if word in _JAVA_KEYWORD_OPERATORS:
                 ops[word] += 1
             else:
                 operands[word] += 1                   # identifiers AND type keywords
@@ -370,8 +382,8 @@ def indirection_stats(roots: list[dict], adj: dict) -> dict:
     if not roots or not adj:
         return {"indirection_median": None, "indirection_max": None,
                 "indirection_deep_share": None, "indirection_reached": None}
-    depth: dict[tuple[str, str], int] = {}
-    frontier = [(r["_cls"], r["_meth"]) for r in roots]
+    depth: dict[tuple, int] = {}
+    frontier = [r["_key"] for r in roots]          # metrics._node_key: unique per overload
     for k in frontier:
         depth[k] = 0
     while frontier:
@@ -418,7 +430,7 @@ def propagation_cost(fns: list[dict], adj: dict) -> dict:
         return {"propagation_cost": None, "propagation_fanout_median": None,
                 "propagation_fanout_max": None, "propagation_files": None}
     idx = {f: i for i, f in enumerate(files)}
-    file_of = {(f["_cls"], f["_meth"]): f["file"] for f in fns if "_cls" in f}
+    file_of = {f["_key"]: f["file"] for f in fns if "_key" in f}
     n = len(files)
     fadj: list[set[int]] = [set() for _ in range(n)]
     for src_key, callees in adj.items():

@@ -267,7 +267,9 @@ important negative result in the suite** and must be reported as such.
 * **`call_adjacency` is now the ONE definition of call resolution**, shared by
   `_closure` and the placement metrics so they cannot drift. Changing it changes
   `node_cc_*` too — re-check a known chain (OF `blind-202608100006` chain0: 19 nodes,
-  median 9.0, path 229) after any edit.
+  median 9.0, path 229) after any edit. Nodes are keyed per OVERLOAD
+  (`metrics._node_key`), and because a call site is matched by name alone, every
+  overload of a resolved name is an edge.
 * **`_resolve_run_config` backfilled `arms.*` but NOT `tools.*`, and that silently
   emptied the whole PMD/CK half.** A run's config snapshot cannot contain a tool key
   invented after it, so `pmd_metrics_rules` and `ck` were absent, both readers
@@ -277,6 +279,45 @@ important negative result in the suite** and must be reported as such.
   filled from live with a logged `!` line, like `arms.*`. **After adding any metric
   that needs new config, re-analyse ONE chain and check the columns are populated, not
   just that the run exited 0.**
+* **The SAME bug, a third time, one level up again: whole top-level SECTIONS were not
+  backfilled, which made the under-determined-test exclusion a no-op on every run.**
+  `correctness.excluded_tests` landed 2026-10-04; no snapshot carries a `correctness`
+  key at all (checked against the oldest and newest recorded run), so `recompute_rows`
+  ran with an empty exclusion list. Every `*_adj` column equalled its unadjusted twin,
+  `excluded_hits` summed to 0, and `split_report` printed `scored: yes` for a test the
+  same `summary.md` listed as excluded three sections earlier. The fill now covers the
+  sections the ANALYSIS derives from (`correctness`, `acceptance`) at both the section
+  and the sub-key level, with a logged `!` line. Deliberately not a blanket sweep: a
+  sweep also filled `prompt_strategies` and `build.*` from live, which no derive path
+  reads and which would write a later prompt strategy into a historical run's record.
+  **A new section's effect must be verified by a value that CHANGED, not by a column
+  that is populated: this failure produced fully populated columns that were silently
+  equal to their unadjusted twins.**
+* **Halstead counted every string literal TWICE.** The literal placeholder was
+  pre-seeded into the operand counter and the scan loop was expected to skip it, which
+  `_IDENT` cannot do: its regex starts at `[A-Za-z_$]`, so it skipped the NUL and
+  matched the bare `LIT`. Volume was inflated 1.7-2.1%, unevenly between arms because
+  the inflation tracks literal density, and on the base trees that was about half the
+  entire between-arm gap on a metric whose claim is that the gap is nil. The
+  placeholder is now matched explicitly, ahead of `_IDENT`. **A tokeniser's sentinel
+  must be consumed by the tokeniser, never counted outside it.**
+* **The call graph was keyed by (class, method), which collapsed Java overloads.**
+  lizard gives `getPet(String)`, `getPet(Integer)` and `getPet(String, boolean)` the
+  identical `name`, so `by_key` kept whichever parsed last. That dropped the others'
+  CC from every closure sum AND their outgoing edges from the graph, because
+  `call_adjacency` walks `by_key.values()`. It is the same defect `_parse_blob` was
+  fixed for on 2026-10-05, left behind one module over. Keys are now
+  `metrics._node_key` (class, method, long_name, start). Measured effect: resolved
+  edges +5-8% on the base trees and four chain tips, and **no change to any closure
+  statistic on those tips** (`node_path_cc` still 202 vs 229 on `blind-202608100006`
+  chain0) because the recovered overloads sat off the handling path. Do not read that
+  as "harmless"; nothing keeps the next chain's overloads off the path.
+* **A metric that is also an OUTCOME correlates with itself, and the tautology was
+  averaged into a headline.** `reedit_rate` is in `METRICS_TO_PLOT` *and* in `OUTCOMES`,
+  so the outcome-prediction matrix printed ρ = +1.000 for it and fed that into "Mean
+  |ρ| by claim group". The placement group read 0.200 against temporal coupling where
+  its 42 real metrics give 0.181. The cell is now `_self_` and is excluded from the
+  mean. **Check any new OUTCOMES entry against `METRIC_GROUP` before adding it.**
 * **A bootstrap over fewer than 3 chains is degenerate, and it looks like signal.**
   Every replicate resamples the same chain, so the CI collapses to a POINT and every
   comparison "survives" FDR — a one-chain validation pass produced **17 spurious
@@ -1174,6 +1215,16 @@ OfficeFloor as a 1-node arm at CC 8 instead of a 19-node pipeline. The tell was 
 statistics that can only coincide when there is exactly one node. **When adding a
 metric with new config, check the backfill log for the fill lines and sanity-check one
 checkpoint by hand before trusting the trajectory.**
+
+The fill runs at three levels, because the bug landed three times: `arms.*`,
+`tools.*`, and **top-level sections plus their sub-keys** (`correctness`, `acceptance`
+— the sections the analysis derives from, named rather than swept, so a run-time
+section like `prompt_strategies` is never rewritten from live). The section level is
+the one that hid longest: `correctness.excluded_tests` is absent from every snapshot,
+so the exclusion analysis ran with an empty list and produced populated columns that
+were silently identical to their unadjusted twins. A missing section fails the same way
+a missing key does, only with no blank column to give it away. **If you add an
+analysis-shaping section, add it to that list.**
 
 ### Smell-ruleset paths must be absolute by the time PMD is spawned
 
