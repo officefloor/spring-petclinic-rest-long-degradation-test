@@ -3,7 +3,14 @@
 # CPU and wall-clock only. Back up results/<run>/analysis first -- it is overwritten.
 set -u
 cd "$(dirname "$0")"
-RUNS="${*:-blind-202608100006 blind-202609160027 blind-202609031757 blind-202609010045}"
+# The paper's conditions, in paper order. 1-4 are the v1 paper; 5 (reviewed, the
+# independent-AI-review lever) joins them for v2.
+#   1 just-solve (control)  blind-202608100006
+#   2 cohesion-prompt       blind-202609160027
+#   3 impact_gated          blind-202609031757
+#   4 formula provided      blind-202609010045   (branch strategy: impact_gated)
+#   5 reviewed              blind-202609290948
+RUNS="${*:-blind-202608100006 blind-202609160027 blind-202609031757 blind-202609010045 blind-202609290948}"
 for run in $RUNS; do
   echo "=== $run  $(date -Is)"
   # tee, not >: progress goes to the console AND the log. Each run is hours long and
