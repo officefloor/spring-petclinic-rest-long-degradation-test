@@ -49,14 +49,19 @@ RUNS = [
     ("cohesion-prompt", "blind-202609160027"),
     ("impact-gated", "blind-202609031757"),
     ("formula-provided", "blind-202609010045"),
+    ("ai-reviewed", "blind-202609290948"),
 ]
 ARMS = ["spring", "officefloor"]
 ARM_LABEL = {"spring": "Spring", "officefloor": "OfficeFloor"}
 FINAL_PHASE = "Final"
 
-# Marker per condition. Shape is the SECONDARY encoding, so the four conditions
+# Marker per condition. Shape is the SECONDARY encoding, so the conditions
 # are separable without colour, which colour is already spent on architecture.
-COND_MARKER = ["o", "s", "^", "D"]
+# Indexed by position in RUNS, so a condition added there needs a shape added
+# here. Asserted rather than cycled: two conditions sharing a shape is a silently
+# unreadable figure, which is worse than a failed build.
+COND_MARKER = ["o", "s", "^", "D", "v"]
+assert len(COND_MARKER) >= len(RUNS), "add a marker shape for the new condition"
 
 AMOUNT = [
     ("total_cc", "Total cyclomatic complexity"),
@@ -125,7 +130,7 @@ def panel(ax, data, metrics, title, subtitle):
             vals = [phase_mean(data[cond], arm, field) for cond, _ in RUNS]
             if any(v is None for v in vals) or not vals[0]:
                 continue
-            rel = [v / vals[0] for v in vals]
+            rel = [v / vals[0] for v in vals]   # RUNS[0] is the control
             # Vertical offset separates the two arms on the same metric row.
             yy = y + (0.17 if ai == 0 else -0.17)
             colour = ARM_COLORS[arm]
@@ -180,7 +185,7 @@ def build(results_dir: str, out_path: str) -> str:
     legend += [Line2D([], [], color="#52514e", marker=COND_MARKER[i],
                       linestyle="none", markersize=6, label=cond)
                for i, (cond, _) in enumerate(RUNS)]
-    axes[0].legend(handles=legend, fontsize=8, frameon=False, ncol=3,
+    axes[0].legend(handles=legend, fontsize=8, frameon=False, ncol=4,
                    loc="lower left", bbox_to_anchor=(0, 1.16))
 
     fig.suptitle("The interventions moved one architecture and not the other",

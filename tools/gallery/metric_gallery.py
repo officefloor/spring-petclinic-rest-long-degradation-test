@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Per-metric comparison gallery across the four study conditions.
+"""Per-metric comparison gallery across the study conditions.
 
 Produces, for EVERY metric in `metric_catalog.py`, one self-contained figure
-showing all eight series (4 conditions x 2 architectures), a numbers table, and
+showing every series (one per condition x architecture), a numbers table, and
 a blog-ready page that explains the metric in isolation beside its figure.
 
 The figure shades the FINAL PHASE on every panel and labels each arm's mean over
@@ -16,7 +16,7 @@ only the bootstrap slope in `metrics.csv` costs time, and only it needs `--stats
 Why a separate tool rather than a flag on `harness/analyze.py`: `analyze` is
 per-RUN. It recomputes one run's branches and answers "what happened in this
 run". This reads the already-computed `records.concat.csv` of SEVERAL runs and
-answers "how does this one metric look across all four conditions" -- the view a
+answers "how does this one metric look across all the conditions" -- the view a
 reader needs to understand a metric on its own. It deliberately recomputes
 nothing: if a number here disagrees with a run's `summary.md`, the run is right
 and this tool has a bug.
@@ -27,7 +27,7 @@ chains) by importing those primitives rather than reimplementing them.
 
 Usage
 -----
-    python -m tools.gallery.metric_gallery                  # all four runs, all metrics
+    python -m tools.gallery.metric_gallery                  # all runs, all metrics
     python -m tools.gallery.metric_gallery --only node_path_cc,cost_usd
     python -m tools.gallery.metric_gallery --n-boot 2000    # publication CIs (slow)
     python -m tools.gallery.metric_gallery --img-base https://example.com/figs/
@@ -64,7 +64,7 @@ from harness.run_experiment import PHASES
 from tools.gallery import metric_catalog as cat
 
 # --------------------------------------------------------------------------
-# The four conditions, in the order they were run and the order they are shown.
+# The study conditions, in the order they were run and the order they are shown.
 # `label` is what a reader sees; `blurb` is the one-line reminder of what the
 # condition actually DID, repeated on every figure so a metric can be read in
 # isolation without scrolling back to the introduction.
@@ -80,6 +80,10 @@ RUNS = [
     # the reader-facing name used in the blog series. Same condition.
     ("formula-provided", "blind-202609010045",
      "The scoring formula itself pasted into the implement prompt."),
+    # The `reviewed` strategy. Advisory: the review never stops the chain.
+    ("ai-reviewed", "blind-202609290948",
+     "An independent AI reviewer critiques each change and the author is "
+     "resumed to act on it."),
 ]
 
 ARMS = ["spring", "officefloor"]
@@ -318,9 +322,9 @@ def pct_change(a: float, b: float) -> str:
 # The figure
 # --------------------------------------------------------------------------
 def build_figure(field: str, entry: dict, data: dict, out_path: str) -> bool:
-    """One figure, all eight series, and nothing else.
+    """One figure, every condition x arm series, and nothing else.
 
-    A row of four small multiples, one per condition, sharing a y-axis so the
+    A row of small multiples, one per condition, sharing a y-axis so the
     conditions are directly comparable by eye. Within each panel the two
     architectures are the two coloured lines, which is the comparison the study
     is actually about.
@@ -356,13 +360,17 @@ def build_figure(field: str, entry: dict, data: dict, out_path: str) -> bool:
     if not curves:
         return False
 
-    fig = plt.figure(figsize=(13.2, 6.1), facecolor=SURFACE)
+    # Width per panel, not a fixed figure width: the margins below are axes
+    # fractions, so scaling the width with the condition count keeps each panel
+    # (and the blurb wrap that was tuned to it) the same size in inches. 3.3 in
+    # x 4 conditions is the 13.2 the v1 figures were built at.
+    fig = plt.figure(figsize=(3.3 * len(RUNS), 6.1), facecolor=SURFACE)
     # Two rows. The trajectories on top, and beneath them one full-width strip
-    # carrying the same eight final-phase means side by side. The strip is the
-    # summary a reader wants after reading four panels, and putting it on the
+    # carrying the same final-phase means side by side. The strip is the
+    # summary a reader wants after reading the panels, and putting it on the
     # SAME y-axis is what makes it readable at a glance: the flat line in the
     # strip sits at exactly the height of the dashed rule in its own panel.
-    gs = gridspec.GridSpec(2, 4, figure=fig, wspace=0.13, hspace=0.60,
+    gs = gridspec.GridSpec(2, len(RUNS), figure=fig, wspace=0.13, hspace=0.60,
                            height_ratios=[2.45, 1.0],
                            left=0.062, right=0.987, top=0.770, bottom=0.102)
 
@@ -453,21 +461,21 @@ def build_figure(field: str, entry: dict, data: dict, out_path: str) -> bool:
     # The panels are for the trajectory. The strip is for where it ended up.
 
     # ----------------------------------------------------------------
-    # The final-phase strip, full width beneath the four panels.
+    # The final-phase strip, full width beneath the panels.
     #
     # One position per series, in the panels' own order, so each condition's
     # pair sits directly under the panel it came from. The short flat line is
     # the mean over the final twelve change requests, which is the same number
     # the dashed rule marks above. The dots are the ten individual runs.
     #
-    # The dots are the reason this section exists. Four mean curves cannot show
+    # The dots are the reason this section exists. Mean curves alone cannot show
     # whether a condition moved every run or two of them, and on this experiment
     # that distinction has already changed a conclusion: one prompt produced
     # several genuinely different architectures across its ten runs, and the
     # mean alone read as a clean win.
     # ----------------------------------------------------------------
     # NOT sharey with the panels. The panels span the whole run, from the first
-    # change request to the sixtieth, so on that scale the eight final-phase
+    # change request to the sixtieth, so on that scale the final-phase
     # means collapse into the top fifth of the row and the between-run spread,
     # which is the only reason this section exists, becomes invisible. The strip
     # carries its own scale and says so in its title.
@@ -749,13 +757,15 @@ def render_page(rows_by_group: dict, out_dir: str, img_rel: str, meta: dict,
         f"<style>{PAGE_CSS}</style>",
         "<div class='wrap'>",
         "<p class='eyebrow'>Architecture as the independent variable "
-        "&middot; four conditions &middot; 4,800 checkpoints</p>",
+        f"&middot; {len(RUNS)} conditions "
+        f"&middot; {len(RUNS) * 1200:,} checkpoints</p>",
         "<h1>One metric at a time</h1>",
         "<div class='measure'>",
         f"<p class='lede'>Every one of the {n_metrics} numbers this experiment "
         "reports, explained on its own: what it is, how it is computed, how to "
         "read it, and how it can be misread. Each one sits beside a figure "
-        "showing all four prompting conditions across both architectures.</p>",
+        f"showing all {len(RUNS)} prompting conditions across both "
+        "architectures.</p>",
         "<p>An AI agent implements sixty change requests, one after another, all "
         "landing on the same REST endpoint. The full acceptance suite runs after "
         "every one. That happens on a conventional Spring codebase and on the same "

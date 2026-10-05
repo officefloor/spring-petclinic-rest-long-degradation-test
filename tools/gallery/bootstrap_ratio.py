@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Cluster bootstrap over chains for the intervention spread S and the ratio R.
 
-The point estimates in the paper are a range over four condition means, and a
+The point estimates in the paper are a range over the condition means, and a
 range carries no uncertainty on its face. This attaches one.
+
+S and R therefore DEPEND ON THE CONDITION SET. The v1 paper's numbers are a
+range over four conditions; with the fifth (`ai-reviewed`) in RUNS below the
+range can only widen, so every S and R printed here is a v2 number and is not
+comparable with a v1 table. Drop the fifth entry to reproduce v1 exactly.
 
 The resampling unit is the CHAIN, not the checkpoint. Checkpoints within a chain
 are successive states of one codebase and are strongly dependent, so resampling
@@ -11,7 +16,7 @@ produce intervals far too narrow. Chains are genuinely independent runs, which
 makes them the right cluster. This is the same choice `analyze.bootstrap_slope`
 makes for the degradation slopes.
 
-Each of the eight cells is resampled independently, because chain 3 of one
+Each condition x arm cell is resampled independently, because chain 3 of one
 condition has no relationship to chain 3 of another beyond both being draws from
 the same agent.
 
@@ -35,7 +40,8 @@ if _REPO not in sys.path:
 RUNS = [("just-solve", "blind-202608100006"),
         ("cohesion-prompt", "blind-202609160027"),
         ("impact-gated", "blind-202609031757"),
-        ("formula-provided", "blind-202609010045")]
+        ("formula-provided", "blind-202609010045"),
+        ("ai-reviewed", "blind-202609290948")]
 ARMS = ["spring", "officefloor"]
 
 PLACEMENT = ["cum_change_top1", "cum_change_entropy_norm", "cum_change_hhi",
@@ -80,7 +86,7 @@ def chain_values(rows, arm, field):
 
 
 def _spread(means):
-    """S over an axis-0 stack of four condition means."""
+    """S over an axis-0 stack of condition means (axis 0 = condition)."""
     return (np.max(means, axis=0) - np.min(means, axis=0)) / np.abs(np.mean(means, axis=0))
 
 

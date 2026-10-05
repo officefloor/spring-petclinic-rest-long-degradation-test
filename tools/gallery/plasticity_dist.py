@@ -30,7 +30,8 @@ from harness.analyze import ARM_COLORS
 RUNS = [("just-solve", "blind-202608100006"),
         ("cohesion-prompt", "blind-202609160027"),
         ("impact-gated", "blind-202609031757"),
-        ("formula-provided", "blind-202609010045")]
+        ("formula-provided", "blind-202609010045"),
+        ("ai-reviewed", "blind-202609290948")]
 ARMS = ["spring", "officefloor"]
 SKIP = {"run_id", "branch", "arm", "strategy", "chain", "checkpoint",
         "checkpoint_id", "phase"}
