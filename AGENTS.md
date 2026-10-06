@@ -405,7 +405,7 @@ the ordered rule stream; `config.yaml` wires arms/paths/limits.
 ### `tools/gallery/` — the cross-run metric gallery (reader-facing, 2026-09)
 
 `analyze` is per-RUN: it recomputes one run's branches and answers "what happened
-here". The gallery is the orthogonal cut — ONE metric across ALL FOUR conditions
+here". The gallery is the orthogonal cut — ONE metric across ALL FIVE conditions
 and both arms — which is the view a reader needs to understand a metric in
 isolation, and the source of the blog series' per-metric figures.
 
@@ -511,22 +511,29 @@ paper can be checked without reconstructing the aggregation.
 
 | file | responsibility |
 |---|---|
-| `bootstrap_ratio.py` | The intervention spread `S`, the plasticity ratio `R`, the cluster bootstrap over chains, and `P(R>1)`. Three metric lists, `PLACEMENT` / `AMOUNT` / `NONSEPARATING`, are the three groups of the paper's spread table. **The resampling unit is the CHAIN, never the checkpoint** — checkpoints within a chain are successive states of one codebase, and resampling them would treat sixty correlated observations as sixty independent ones. |
-| `floor_effect.py` | The floor-effect rebuttal, which is the main rival explanation for the plasticity gap. Two checks, and **they disagree, which is the point**. Check A correlates `S(spring)` against the arms' control separation under four parameterisations, because "how far apart" has no canonical scale and the answer depends on which is used: absolute gives `r = -0.04`, separation relative to the arm mean (the same normalisation `S` uses, so the consistent choice) gives `r = +0.72`. Check B divides each arm's range by the room it had to the even-distribution limit, and the ratio stays at 2.2 to 6.1 across seven metrics. **Do not report Check A alone at the favourable parameterisation** — that is the error this file exists to prevent. |
-| `plasticity_dist.py` | Figure 2, the distribution of `R` over every metric with a computable ratio, plus the **per-family** counts. `FAMILY_PREFIXES` / `family()` / `by_family()` exist because the 169 columns are nowhere near 169 independent measurements: a top-1 share, an HHI and a Gini over one distribution are three views of one thing, CK reports fifteen metrics off one parse and PMD twelve. The raw count is 116 of 169 with `R >= 1`; per family it is 30 of 46, and an exact sign test drops from `p < 0.001` to `p = 0.054`. **Quote the family figure when the claim is about direction across metrics**, and keep the grouping coarse, since merging two distinct families understates the evidence and that is the safe direction to err in. |
+| `bootstrap_ratio.py` | The intervention spread `S`, the plasticity ratio `R`, the cluster bootstrap over chains, and `P(R>1)`. Three metric lists, `PLACEMENT` / `AMOUNT` / `NONSEPARATING`, are the three groups of the paper's spread table. **`S` and `R` depend on the condition set**, so `--conditions four\|five\|both` selects the four external-control levers (`RUNS_FOUR`, the paper's primary spread), the five (adding `ai-reviewed`), or both. **The resampling unit is the CHAIN, never the checkpoint** — checkpoints within a chain are successive states of one codebase, and resampling them would treat sixty correlated observations as sixty independent ones. |
+| `floor_effect.py` | The floor-effect rebuttal, which is the main rival explanation for the plasticity gap. Two checks, and **they disagree, which is the point**. Check A correlates `S(spring)` against the arms' control separation under four parameterisations, because "how far apart" has no canonical scale and the answer depends on which is used: over the four external-control conditions absolute gives `r = -0.02`, separation relative to the arm mean (the same normalisation `S` uses, so the consistent choice) gives `r = +0.68`. Check B divides each arm's range by the room it had to the even-distribution limit, and the ratio stays at 2.2 to 6.1 across seven metrics. Takes the same `--conditions` selector, defaulting to `four` because the floor-effect check defends the primary spread. **Do not report Check A alone at the favourable parameterisation** — that is the error this file exists to prevent. |
+| `plasticity_dist.py` | Figure 2, the distribution of `R` over every metric with a computable ratio, plus the **per-family** counts. `FAMILY_PREFIXES` / `family()` / `by_family()` exist because the 200 columns are nowhere near 200 independent measurements: a top-1 share, an HHI and a Gini over one distribution are three views of one thing, CK reports fifteen metrics off one parse and PMD twelve. Over the four external-control conditions the raw count is 142 of 200 with `R >= 1` (exact sign test `p = 3e-9`); per family it is 50 of 66 (`p = 3e-5`), median family `R = 1.48`, so the direction holds decisively under the family correction. Takes `--conditions four\|five\|both`; the five-condition cut shifts the whole distribution toward 1 (median `R` 1.38 to 1.29) as `ai-reviewed` adds movement on the additive arm. **Quote the family figure when the claim is about direction across metrics**, and keep the grouping coarse, since merging two distinct families understates the evidence and that is the safe direction to err in. |
 
-All three take `--results` and default to a **fixed seed of 0**, which is what
+| `paper_cells.py` | Every NON-spread table and paragraph the paper reports: the amount totals, the complexity ADDED over each arm's base (the two base-tree values are baked in as `BASE`, re-measured via `metrics.compute_all`), strict and `strict (adj)` correctness, the outcome measures with their pooled between-arm bootstrap difference, and the escape / duplication / money paragraphs. All five conditions. Exists so these numbers stop being hand-entered literals. `--latex` emits the rows; `--only` selects a section. |
+
+All four take `--results` and default to a **fixed seed of 0**, which is what
 lets the paper say its intervals are reproducible rather than merely repeatable. A
 percentile of a range statistic carries its own resampling noise: `propagation_cost`
 has a 2.5th percentile that moves between roughly 1.0 and 1.1 with the seed, which
 is why `P(R>1)` is reported beside every interval and is the statistic to trust
-when an endpoint sits within a hundredth of a decision boundary.
+when an endpoint sits within a hundredth of a decision boundary. `bootstrap_ratio`,
+`floor_effect` and `plasticity_dist` take `--conditions four|five|both`; the paper's
+primary spread is the four external-control conditions, and the five-condition cut
+(adding `ai-reviewed`) is reported beside it because the AI reviewer is the one
+lever that also moves the additive arm.
 
 ```bash
-python -m tools.gallery.bootstrap_ratio            # S, R, CIs, P(R>1) for all three groups
-python -m tools.gallery.bootstrap_ratio --latex    # ... as LaTeX table rows
-python -m tools.gallery.floor_effect               # both floor-effect checks
-python -m tools.gallery.plasticity_dist            # Figure 2 + the per-family counts
+python -m tools.gallery.bootstrap_ratio --conditions both   # S, R, CIs, P(R>1), four and five
+python -m tools.gallery.bootstrap_ratio --latex             # ... as LaTeX table rows
+python -m tools.gallery.floor_effect --conditions four      # both floor-effect checks
+python -m tools.gallery.plasticity_dist --conditions both   # Figure 2 + the per-family counts
+python -m tools.gallery.paper_cells --latex                 # amount/added/correctness/outcome rows
 ```
 
 ## The checkpoint lifecycle (current design)

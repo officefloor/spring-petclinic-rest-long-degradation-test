@@ -1,12 +1,12 @@
 ## The paper for this test harness
 
-Conserved amount, negotiable placement: prompting moves one architecture's complexity distribution and not the other's
+Conserved amount, negotiable placement. Prompting perturbs one architecture, an AI reviewer both
 
-Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22967550.svg)](https://doi.org/10.5281/zenodo.22967550)
+Available: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23190619.svg)](https://doi.org/10.5281/zenodo.23190619)
 
-> Sagenschneider, D. (2026). *Conserved amount, negotiable placement: prompting
-> moves one architecture's complexity distribution and not the other's.*
-> Zenodo. https://doi.org/10.5281/zenodo.22967550
+> Sagenschneider, D. (2026). *Conserved amount, negotiable placement. Prompting
+> perturbs one architecture, an AI reviewer both.*
+> Zenodo. https://doi.org/10.5281/zenodo.23190619
 
 The paper's LaTeX source and figures are in [`paper/`](./paper). The per
 checkpoint commits and raw capture for every chain are published as branches in
