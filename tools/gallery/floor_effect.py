@@ -45,7 +45,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from tools.gallery.bootstrap_ratio import (  # noqa: E402
-    ARMS, PLACEMENT, RUNS, chain_values, load,
+    ARMS, PLACEMENT, RUNS, RUNS_FOUR, RUNS_FIVE, chain_values, load, select_runs,
 )
 
 CONTROL = "just-solve"
@@ -73,8 +73,8 @@ def cell_mean(data, label, arm, field):
     return float(np.mean(v)) if len(v) else float("nan")
 
 
-def spread(data, arm, field):
-    means = [cell_mean(data, l, arm, field) for l, _ in RUNS]
+def spread(data, arm, field, runs=RUNS):
+    means = [cell_mean(data, l, arm, field) for l, _ in runs]
     return (max(means) - min(means)) / abs(float(np.mean(means)))
 
 
@@ -97,9 +97,9 @@ def _spearman(x, y):
     return _pearson(rank(x), rank(y))
 
 
-def check_a(data, fields=PLACEMENT):
+def check_a(data, fields=PLACEMENT, runs=RUNS):
     """Correlate S(spring) against the arms' control separation, four ways."""
-    S = [spread(data, "spring", f) for f in fields]
+    S = [spread(data, "spring", f, runs) for f in fields]
     sp = [cell_mean(data, CONTROL, "spring", f) for f in fields]
     of = [cell_mean(data, CONTROL, "officefloor", f) for f in fields]
     variants = {
@@ -120,7 +120,7 @@ def check_a(data, fields=PLACEMENT):
     return out
 
 
-def check_b(data, spec=BOUNDED):
+def check_b(data, spec=BOUNDED, runs=RUNS):
     """Range over conditions divided by the room available to the arm.
 
     "Room" needs an n, and an HHI or top-1 floor of 1/n moves when the number of
@@ -143,7 +143,7 @@ def check_b(data, spec=BOUNDED):
     for field, (direction, n_col) in spec.items():
         row = {"metric": field}
         for arm in ARMS:
-            means = [cell_mean(data, l, arm, field) for l, _ in RUNS]
+            means = [cell_mean(data, l, arm, field) for l, _ in runs]
             rng = max(means) - min(means)
             ctl = cell_mean(data, CONTROL, arm, field)
             if direction == "hi":
@@ -151,12 +151,12 @@ def check_b(data, spec=BOUNDED):
             elif n_col is None:
                 floors = [0.0]                   # a Gini bottoms out at 0
             else:                                # HHI and top-1 bottom out at 1/n
-                ns = [cell_mean(data, l, arm, n_col) for l, _ in RUNS]
+                ns = [cell_mean(data, l, arm, n_col) for l, _ in runs]
                 floors = [1.0 / cell_mean(data, CONTROL, arm, n_col), 1.0 / max(ns)]
             room_ctl = abs(ctl - floors[0])
             room_wide = abs(ctl - floors[-1])
             row[arm] = {
-                "S": spread(data, arm, field), "ctl": ctl,
+                "S": spread(data, arm, field, runs), "ctl": ctl,
                 "room": room_ctl, "room_wide": room_wide,
                 "S_room": rng / room_ctl if room_ctl else float("nan"),
                 "S_room_wide": rng / room_wide if room_wide else float("nan"),
@@ -173,39 +173,48 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=os.path.join(_REPO, "results"))
     ap.add_argument("--latex", action="store_true")
+    ap.add_argument("--conditions", choices=("four", "five", "both"),
+                    default="four",
+                    help="the floor-effect check defends the PRIMARY asymmetry, "
+                         "which v2 states over the four external-control "
+                         "conditions, so four is the default; five adds "
+                         "ai-reviewed; both prints each in its own block")
     a = ap.parse_args(argv)
     data = load(a.results)
 
-    print("=== CHECK A: does S(spring) track the arms' control separation?")
-    print(f"    over the {len(PLACEMENT)} placement metrics\n")
-    for name, r, lo, hi, rs in check_a(data):
-        if a.latex:
-            print(f"{name} & ${r:+.2f}$ & $[{lo:+.2f}, {hi:+.2f}]$ & ${rs:+.2f}$ \\\\")
-        else:
-            print(f"  {name:52s} r={r:+.3f}  95% CI [{lo:+.2f},{hi:+.2f}]"
-                  f"  rho={rs:+.3f}")
+    for set_label, runs in select_runs(a.conditions):
+        print(f"########## {set_label} ({', '.join(l for l, _ in runs)})")
+        print("=== CHECK A: does S(spring) track the arms' control separation?")
+        print(f"    over the {len(PLACEMENT)} placement metrics\n")
+        for name, r, lo, hi, rs in check_a(data, runs=runs):
+            if a.latex:
+                print(f"{name} & ${r:+.2f}$ & $[{lo:+.2f}, {hi:+.2f}]$ & ${rs:+.2f}$ \\\\")
+            else:
+                print(f"  {name:52s} r={r:+.3f}  95% CI [{lo:+.2f},{hi:+.2f}]"
+                      f"  rho={rs:+.3f}")
 
-    print("\n=== CHECK B: range over conditions as a fraction of the room available")
-    print("    room is |control - even-distribution limit| for each arm\n")
-    rows = sorted(check_b(data), key=lambda r: -r["R_room_wide"])
-    print(f"  {'metric':26s} {'room_sp':>8} {'room_of':>8}"
-          f" {'Sroom_sp':>9} {'Sroom_of':>9} {'Rroom':>6} {'Rwide':>6} {'R':>6}")
-    for row in rows:
-        s, o = row["spring"], row["officefloor"]
-        if a.latex:
-            print(f"\\texttt{{{row['metric'].replace('_', chr(92) + '_')}}} & "
-                  f"{s['room_wide']:.3f} & {o['room_wide']:.3f} & "
-                  f"{s['S_room_wide']*100:.0f}\\% & {o['S_room_wide']*100:.0f}\\% & "
-                  f"{row['R_room_wide']:.1f} & {row['R']:.1f} \\\\")
-        else:
-            print(f"  {row['metric']:26s} {s['room_wide']:8.4f} {o['room_wide']:8.4f}"
-                  f" {s['S_room_wide']*100:8.1f}% {o['S_room_wide']*100:8.1f}%"
-                  f" {row['R_room']:6.2f} {row['R_room_wide']:6.2f} {row['R']:6.2f}")
-    for key, label in (("R_room", "room at the control n "),
-                       ("R_room_wide", "room at the widest n  ")):
-        v = [r[key] for r in rows]
-        print(f"\n  {label}: min {min(v):.2f}  median {float(np.median(v)):.2f}"
-              f"  max {max(v):.2f}  all above 1: {all(x > 1 for x in v)}")
+        print("\n=== CHECK B: range over conditions as a fraction of the room available")
+        print("    room is |control - even-distribution limit| for each arm\n")
+        rows = sorted(check_b(data, runs=runs), key=lambda r: -r["R_room_wide"])
+        print(f"  {'metric':26s} {'room_sp':>8} {'room_of':>8}"
+              f" {'Sroom_sp':>9} {'Sroom_of':>9} {'Rroom':>6} {'Rwide':>6} {'R':>6}")
+        for row in rows:
+            s, o = row["spring"], row["officefloor"]
+            if a.latex:
+                print(f"\\texttt{{{row['metric'].replace('_', chr(92) + '_')}}} & "
+                      f"{s['room_wide']:.3f} & {o['room_wide']:.3f} & "
+                      f"{s['S_room_wide']*100:.0f}\\% & {o['S_room_wide']*100:.0f}\\% & "
+                      f"{row['R_room_wide']:.1f} & {row['R']:.1f} \\\\")
+            else:
+                print(f"  {row['metric']:26s} {s['room_wide']:8.4f} {o['room_wide']:8.4f}"
+                      f" {s['S_room_wide']*100:8.1f}% {o['S_room_wide']*100:8.1f}%"
+                      f" {row['R_room']:6.2f} {row['R_room_wide']:6.2f} {row['R']:6.2f}")
+        for key, label in (("R_room", "room at the control n "),
+                           ("R_room_wide", "room at the widest n  ")):
+            v = [r[key] for r in rows]
+            print(f"\n  {label}: min {min(v):.2f}  median {float(np.median(v)):.2f}"
+                  f"  max {max(v):.2f}  all above 1: {all(x > 1 for x in v)}")
+        print()
     return 0
 
 

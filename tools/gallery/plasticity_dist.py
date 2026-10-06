@@ -27,11 +27,13 @@ import matplotlib.pyplot as plt
 
 from harness.analyze import ARM_COLORS
 
-RUNS = [("just-solve", "blind-202608100006"),
-        ("cohesion-prompt", "blind-202609160027"),
-        ("impact-gated", "blind-202609031757"),
-        ("formula-provided", "blind-202609010045"),
-        ("ai-reviewed", "blind-202609290948")]
+from tools.gallery.bootstrap_ratio import RUNS_FOUR, RUNS_FIVE, select_runs  # noqa: E402
+
+# Default to all five for loading; the condition set the ratio ranges over is a
+# separate choice, passed into ratios(). v2's headline distribution is the four
+# external-control conditions (matching the spread table); the five-condition
+# distribution is reported for contrast because ai-reviewed compresses it.
+RUNS = RUNS_FIVE
 ARMS = ["spring", "officefloor"]
 SKIP = {"run_id", "branch", "arm", "strategy", "chain", "checkpoint",
         "checkpoint_id", "phase"}
@@ -57,13 +59,13 @@ def _f(v):
         return None
 
 
-def ratios(results_dir):
+def ratios(results_dir, runs=RUNS):
     data = {}
-    for label, run in RUNS:
+    for label, run in runs:
         with open(os.path.join(results_dir, run, "records.concat.csv"),
                   newline="", encoding="utf-8") as fh:
             data[label] = list(csv.DictReader(fh))
-    header = list(data[RUNS[0][0]][0].keys())
+    header = list(data[runs[0][0]][0].keys())
 
     def phase_mean(rows, arm, field):
         per = {}
@@ -78,7 +80,7 @@ def ratios(results_dir):
         return sum(vals) / len(vals) if vals else None
 
     def spread(field, arm):
-        mu = [phase_mean(data[l], arm, field) for l, _ in RUNS]
+        mu = [phase_mean(data[l], arm, field) for l, _ in runs]
         if any(x is None for x in mu):
             return None
         mean = st.mean(mu)
@@ -147,8 +149,8 @@ def summarise(R, floor=2.9):
             "median": float(np.median(v))}
 
 
-def build(results_dir, out_path):
-    R = ratios(results_dir)
+def build(results_dir, out_path, runs=RUNS):
+    R = ratios(results_dir, runs)
     vals = np.array(sorted(R.values()))
     # Log scale: R is a ratio, so 0.5 and 2.0 are the same distance from parity
     # and a linear axis would make the right tail look like the whole story.
@@ -211,18 +213,32 @@ def main(argv=None):
     ap.add_argument("--results", default=os.path.join(_REPO, "results"))
     ap.add_argument("--out", default=os.path.join(_REPO, "blog", "metric-gallery",
                                                   "figs", "plasticity_dist.png"))
+    ap.add_argument("--conditions", choices=("four", "five", "both"),
+                    default="four",
+                    help="range the ratio over the four external-control "
+                         "conditions (default, the paper's Figure 2), the five, "
+                         "or both (writes a _five.png beside the four-cond png "
+                         "and prints both family summaries)")
     a = ap.parse_args(argv)
-    R = build(a.results, a.out)
 
-    # The independence caveat, recomputed per family.
-    per_fam, groups = by_family(R)
-    for label, d in (("all metrics", R), ("one vote per family", per_fam)):
-        t = summarise(d)
-        print(f"  {label:20} n={t['n']:3d}  R>=1 {t['ge_1']:3d}"
-              f"  R<=1/2.9 {t['le_inv']:2d}  R>=2.9 {t['ge_floor']:3d}"
-              f"  median {t['median']:.2f}")
-    big = sorted(((len(v), g) for g, v in groups.items()), reverse=True)[:6]
-    print("  largest families: " + ", ".join(f"{g} ({n})" for n, g in big))
+    def _run(set_label, runs, out_path):
+        print(f"########## {set_label} ({', '.join(l for l, _ in runs)})")
+        R = build(a.results, out_path, runs)
+        per_fam, groups = by_family(R)
+        for label, d in (("all metrics", R), ("one vote per family", per_fam)):
+            t = summarise(d)
+            print(f"  {label:20} n={t['n']:3d}  R>=1 {t['ge_1']:3d}"
+                  f"  R<=1/2.9 {t['le_inv']:2d}  R>=2.9 {t['ge_floor']:3d}"
+                  f"  median {t['median']:.2f}")
+        big = sorted(((len(v), g) for g, v in groups.items()), reverse=True)[:6]
+        print("  largest families: " + ", ".join(f"{g} ({n})" for n, g in big))
+
+    base, ext = os.path.splitext(a.out)
+    if a.conditions in ("four", "both"):
+        _run("four external-control conditions", RUNS_FOUR, a.out)
+    if a.conditions in ("five", "both"):
+        five_out = a.out if a.conditions == "five" else f"{base}_five{ext}"
+        _run("five conditions (adds ai-reviewed)", RUNS_FIVE, five_out)
     return 0
 
 

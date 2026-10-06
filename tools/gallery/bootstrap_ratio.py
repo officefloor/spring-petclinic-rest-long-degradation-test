@@ -4,10 +4,13 @@
 The point estimates in the paper are a range over the condition means, and a
 range carries no uncertainty on its face. This attaches one.
 
-S and R therefore DEPEND ON THE CONDITION SET. The v1 paper's numbers are a
-range over four conditions; with the fifth (`ai-reviewed`) in RUNS below the
-range can only widen, so every S and R printed here is a v2 number and is not
-comparable with a v1 table. Drop the fifth entry to reproduce v1 exactly.
+S and R therefore DEPEND ON THE CONDITION SET, and v2 reports two of them.
+`--conditions four` ranges over the four external-control levers (the same set
+v1 used, though the numbers differ because the measure-calculation bugs were
+fixed since v1). `--conditions five` adds `ai-reviewed`, a lever of a different
+kind. `--conditions both` (the default) prints each in its own block. A v2
+four-condition number is NOT comparable with a v1 table: the analysis was
+corrected in between. A five-condition number is not comparable with either.
 
 The resampling unit is the CHAIN, not the checkpoint. Checkpoints within a chain
 are successive states of one codebase and are strongly dependent, so resampling
@@ -37,11 +40,36 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-RUNS = [("just-solve", "blind-202608100006"),
-        ("cohesion-prompt", "blind-202609160027"),
-        ("impact-gated", "blind-202609031757"),
-        ("formula-provided", "blind-202609010045"),
-        ("ai-reviewed", "blind-202609290948")]
+# The condition set the spread ranges over is a CHOICE, and v2 reports two.
+# RUNS_FOUR are the four EXTERNAL-CONTROL levers: the change request alone, a
+# plain-language cohesion request, an impact gate, and the disclosed formula.
+# Each sits outside the agent's own reasoning and constrains it from without.
+# The fifth, ai-reviewed, is a different KIND of lever: a second agent reads the
+# change and reasons about cohesion itself, which reaches into a composed
+# pipeline in a way no external instruction does. Folding it into the same range
+# conflates "how far instruction moves an architecture" with "how far AInative
+# review moves it", so the two are reported separately and the default is both.
+RUNS_FOUR = [("just-solve", "blind-202608100006"),
+             ("cohesion-prompt", "blind-202609160027"),
+             ("impact-gated", "blind-202609031757"),
+             ("formula-provided", "blind-202609010045")]
+RUNS_AIREVIEW = [("ai-reviewed", "blind-202609290948")]
+RUNS_FIVE = RUNS_FOUR + RUNS_AIREVIEW
+# Backward-compatible default for importers (e.g. floor_effect) and loaders: the
+# full five, so load() reads every run unless told otherwise.
+RUNS = RUNS_FIVE
+
+
+def select_runs(which):
+    """Map a --conditions choice to a list of (set-label, runs) pairs."""
+    if which == "four":
+        return [("four external-control conditions", RUNS_FOUR)]
+    if which == "five":
+        return [("five conditions (adds ai-reviewed)", RUNS_FIVE)]
+    return [("four external-control conditions", RUNS_FOUR),
+            ("five conditions (adds ai-reviewed)", RUNS_FIVE)]
+
+
 ARMS = ["spring", "officefloor"]
 
 PLACEMENT = ["cum_change_top1", "cum_change_entropy_norm", "cum_change_hhi",
@@ -90,22 +118,23 @@ def _spread(means):
     return (np.max(means, axis=0) - np.min(means, axis=0)) / np.abs(np.mean(means, axis=0))
 
 
-def bootstrap(data, field, n_boot=10000, seed=0):
+def bootstrap(data, field, n_boot=10000, seed=0, runs=None):
+    runs = RUNS if runs is None else runs
     rng = np.random.default_rng(seed)
     cells = {(l, a): chain_values(data[l], a, field)
-             for l, _ in RUNS for a in ARMS}
+             for l, _ in runs for a in ARMS}
     if any(len(v) == 0 for v in cells.values()):
         return None
     reps = {}
     point = {}
     for arm in ARMS:
         draws = []
-        for l, _ in RUNS:
+        for l, _ in runs:
             x = cells[(l, arm)]
             idx = rng.integers(0, len(x), size=(n_boot, len(x)))
             draws.append(x[idx].mean(axis=1))
         reps[arm] = _spread(np.array(draws))
-        point[arm] = _spread(np.array([[cells[(l, arm)].mean()] for l, _ in RUNS]))[0]
+        point[arm] = _spread(np.array([[cells[(l, arm)].mean()] for l, _ in runs]))[0]
     R = reps["spring"] / reps["officefloor"]
     return {
         "S_spring": point["spring"], "S_officefloor": point["officefloor"],
@@ -122,25 +151,32 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--latex", action="store_true",
                     help="emit the CI column as LaTeX table cells")
+    ap.add_argument("--conditions", choices=("four", "five", "both"),
+                    default="both",
+                    help="range S/R over the four external-control conditions, "
+                         "the five (adding ai-reviewed), or both (default)")
     a = ap.parse_args(argv)
     data = load(a.results)
 
-    for name, fields in (("PLACEMENT", PLACEMENT), ("AMOUNT", AMOUNT),
-                        ("NON-SEPARATING", NONSEPARATING)):
-        print(f"=== {name}")
-        excl = 0
-        for f_ in fields:
-            b = bootstrap(data, f_, a.n_boot, a.seed)
-            excl += b["R_lo"] > 1
-            if a.latex:
-                print(f"\\texttt{{{f_.replace('_', chr(92) + '_')}}}"
-                      f" & {b['S_spring']*100:.0f}\\% & {b['S_officefloor']*100:.0f}\\%"
-                      f" & {b['R']:.1f} & [{b['R_lo']:.2f}, {b['R_hi']:.2f}]"
-                      f" & {b['P_R_gt_1']*100:.0f}\\% \\\\")
-            else:
-                print(f"  {f_:26s} R={b['R']:6.1f}  95% CI [{b['R_lo']:6.2f},{b['R_hi']:7.2f}]"
-                      f"  P(R>1)={b['P_R_gt_1']*100:5.1f}%")
-        print(f"  {excl}/{len(fields)} with CI entirely above 1\n")
+    for set_label, runs in select_runs(a.conditions):
+        print(f"########## {set_label} "
+              f"({', '.join(l for l, _ in runs)})")
+        for name, fields in (("PLACEMENT", PLACEMENT), ("AMOUNT", AMOUNT),
+                            ("NON-SEPARATING", NONSEPARATING)):
+            print(f"=== {name}")
+            excl = 0
+            for f_ in fields:
+                b = bootstrap(data, f_, a.n_boot, a.seed, runs=runs)
+                excl += b["R_lo"] > 1
+                if a.latex:
+                    print(f"\\texttt{{{f_.replace('_', chr(92) + '_')}}}"
+                          f" & {b['S_spring']*100:.0f}\\% & {b['S_officefloor']*100:.0f}\\%"
+                          f" & {b['R']:.1f} & [{b['R_lo']:.2f}, {b['R_hi']:.2f}]"
+                          f" & {b['P_R_gt_1']*100:.0f}\\% \\\\")
+                else:
+                    print(f"  {f_:26s} R={b['R']:6.1f}  95% CI [{b['R_lo']:6.2f},{b['R_hi']:7.2f}]"
+                          f"  P(R>1)={b['P_R_gt_1']*100:5.1f}%")
+            print(f"  {excl}/{len(fields)} with CI entirely above 1\n")
     return 0
 
 

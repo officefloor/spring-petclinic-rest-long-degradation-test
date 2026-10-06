@@ -124,6 +124,11 @@ def phase_mean(rows, arm, field, phase=FINAL_PHASE):
 
 
 def panel(ax, data, metrics, title, subtitle):
+    # RUNS[0] is the control and RUNS[:4] are the four external-control
+    # conditions; the last entry (ai-reviewed) is the reviewer lever, drawn
+    # distinctly and EXCLUDED from the labelled spread so the label matches the
+    # four-condition spread in the paper's table.
+    n_ext = 4
     ys = list(range(len(metrics)))[::-1]
     for y, (field, label) in zip(ys, metrics):
         for ai, arm in enumerate(ARMS):
@@ -131,21 +136,30 @@ def panel(ax, data, metrics, title, subtitle):
             if any(v is None for v in vals) or not vals[0]:
                 continue
             rel = [v / vals[0] for v in vals]   # RUNS[0] is the control
+            rel_ext = rel[:n_ext]
             # Vertical offset separates the two arms on the same metric row.
             yy = y + (0.17 if ai == 0 else -0.17)
             colour = ARM_COLORS[arm]
-            # The range bar first, so the markers sit on top of it.
-            ax.plot([min(rel), max(rel)], [yy, yy], color=colour, linewidth=2,
-                    alpha=0.35, solid_capstyle="round", zorder=2)
-            for ci, r in enumerate(rel):
+            # The range bar spans ALL conditions, so the reviewer's reach is
+            # visible, but the external-control extent is drawn heavier.
+            ax.plot([min(rel), max(rel)], [yy, yy], color=colour, linewidth=1.2,
+                    alpha=0.22, solid_capstyle="round", zorder=2)
+            ax.plot([min(rel_ext), max(rel_ext)], [yy, yy], color=colour,
+                    linewidth=2.6, alpha=0.38, solid_capstyle="round", zorder=2)
+            for ci, r in enumerate(rel[:n_ext]):
                 ax.plot(r, yy, marker=COND_MARKER[ci], markersize=7,
                         color=colour, markeredgecolor="#fcfcfb",
                         markeredgewidth=1.2, zorder=3, linestyle="none")
-            # One direct label per arm per row: the spread, which is the number
-            # the figure exists to show. Never a label on every marker.
-            spread = (max(rel) - min(rel)) / _st.mean(rel)
+            # The reviewer marker: a ring, larger, dark edge, so it reads as a
+            # different KIND of point rather than a fifth condition in line.
+            ax.plot(rel[-1], yy, marker=COND_MARKER[-1], markersize=10,
+                    markerfacecolor="none", markeredgecolor=colour,
+                    markeredgewidth=2.2, zorder=4, linestyle="none")
+            # One direct label per arm per row: the FOUR-condition spread, which
+            # is the number the paper's table reports. Never a label per marker.
+            spread = (max(rel_ext) - min(rel_ext)) / _st.mean(rel_ext)
             ax.annotate(f"{spread * 100:.0f}%", (max(rel), yy),
-                        textcoords="offset points", xytext=(7, 0), fontsize=7.5,
+                        textcoords="offset points", xytext=(9, 0), fontsize=7.5,
                         color="#52514e", va="center")
     ax.axvline(1.0, color="#b8b6b0", linewidth=1, zorder=1)
     ax.set_yticks(ys)
@@ -171,10 +185,12 @@ def build(results_dir: str, out_path: str) -> str:
     panel(axes[0], data, AMOUNT,
           "AMOUNT. How much complexity the sixty rules cost.",
           "Tesler's prediction: nothing moves. Neither architecture, "
-          "under any condition.")
+          "under any condition, reviewer included.")
     panel(axes[1], data, ORGANISATION,
           "ORGANISATION. Where that complexity ended up.",
-          "The thesis: the mutative arm moves, the additive arm does not.")
+          "Four external controls move the mutative arm only. The AI reviewer "
+          "(ring) is the one lever that moves the additive arm. Label = "
+          "four-condition spread.")
     axes[1].set_xlabel(
         "Final-phase value relative to the same architecture's own control "
         "(control = 1.0)", fontsize=9)
@@ -184,11 +200,14 @@ def build(results_dir: str, out_path: str) -> str:
                      label=ARM_LABEL[a]) for a in ARMS]
     legend += [Line2D([], [], color="#52514e", marker=COND_MARKER[i],
                       linestyle="none", markersize=6, label=cond)
-               for i, (cond, _) in enumerate(RUNS)]
+               for i, (cond, _) in enumerate(RUNS[:4])]
+    legend += [Line2D([], [], color="#52514e", marker=COND_MARKER[-1],
+                      linestyle="none", markersize=8, markerfacecolor="none",
+                      markeredgewidth=2.0, label="ai-reviewed (lever of a different kind)")]
     axes[0].legend(handles=legend, fontsize=8, frameon=False, ncol=4,
                    loc="lower left", bbox_to_anchor=(0, 1.16))
 
-    fig.suptitle("The interventions moved one architecture and not the other",
+    fig.suptitle("External instruction moved one architecture; an AI reviewer moved the other",
                  fontsize=12.5, x=0.012, ha="left", y=0.988)
     # subplots_adjust rather than tight_layout: the y-axis labels are long and
     # tight_layout cannot see the annotations placed outside the axes, so it

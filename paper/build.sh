@@ -21,11 +21,50 @@ cd "$(dirname "$0")"
 
 # The arXiv submission bundle. Packed on every build so it cannot drift from
 # main.tex, which is exactly what happened when it was packed by hand. It is
-# gitignored: every byte in it is already tracked as main.tex and figures/, so
-# committing it would only add a large binary that churns on each rebuild.
+# gitignored, because it is derived: main.tex and figures/ are tracked here, and
+# the results CSVs are tracked in the run-data repository.
+#
+# The bundle also carries the RAW METRICS, the per-checkpoint records the whole
+# paper is computed from, one CSV per run under results/<run>/, plus the run key
+# results/README. The paper deliberately does NOT print the opaque run ids
+# (blind-YYYYMMDDHHMM); that mapping belongs with the data, not in the prose, so
+# it is kept here. Its source is the tracked, human-editable file
+# paper/results-README.txt, packed into the bundle under the name results/README
+# (staged through a temp dir so the archive path is clean and results/ is never
+# written to). Edit that file to change what ships, the same as editing main.tex.
+#
+# A reader who downloads the arXiv source therefore gets the data behind every
+# table and figure AND the key to it, not only the typeset numbers. Only the CSVs
+# and the README are included, not the 31 MB of per-metric PNGs or the analysis
+# logs under results/<run>/analysis/: those are DERIVED from the CSVs by the
+# harness, and shipping them would bloat the source package toward arXiv's size
+# limit with figures a reader can regenerate. arXiv ignores non-TeX files for the
+# build and simply carries them as ancillary data.
 pack() {
-  tar czf arxiv.tar.gz main.tex figures/
-  echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries)"
+  local here; here="$(pwd)"
+  local repo; repo="$(cd .. && pwd)"
+  local csvs=()
+  mapfile -t csvs < <(cd "$repo" && ls results/*/records.concat.csv 2>/dev/null)
+
+  # Stage the tracked README under the name it ships as: results/README.
+  local stage; stage="$(mktemp -d)"
+  trap 'rm -rf "$stage"' RETURN
+  local readme_member=()
+  if [ -f "$here/results-README.txt" ]; then
+    mkdir -p "$stage/results"
+    cp "$here/results-README.txt" "$stage/results/README"
+    readme_member=(-C "$stage" results/README)
+  else
+    echo "   ! paper/results-README.txt missing; bundle will have no run key" >&2
+  fi
+
+  if [ "${#csvs[@]}" -gt 0 ]; then
+    tar czf arxiv.tar.gz main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}"
+  else
+    echo "   ! no results/*/records.concat.csv found; packing paper only" >&2
+    tar czf arxiv.tar.gz main.tex figures/ "${readme_member[@]}"
+  fi
+  echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries, $(du -h arxiv.tar.gz | cut -f1))"
 }
 
 # The abstract as plain text, for pasting into the arXiv and Zenodo submission

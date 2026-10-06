@@ -1,7 +1,12 @@
 # The paper
 
-Paper: *Conserved amount, negotiable placement: prompting moves one
-architecture's complexity distribution and not the other's*
+Paper (v2): *Conserved amount, negotiable placement: external instruction moves
+one architecture's complexity distribution, and an AI reviewer moves the other's*
+
+> v2 adds a fifth condition (an AI reviewer), reports the four external-control
+> conditions separately from it, drops the borrowed whole-application erosion
+> measure, and recomputes every number from the corrected analysis. v1 is tagged
+> `paper-v1` in the harness repository.
 
 ## What is here
 
@@ -11,11 +16,12 @@ architecture's complexity distribution and not the other's*
 | `figures/plasticity.png` | Figure 1. |
 | `figures/plasticity_dist.png` | Figure 2. |
 | `figures/strict_pass.png` | Figure 3. |
+| `results-README.txt` | The run key. A static, tracked, human-editable description of which run is which condition (the opaque `blind-*` ids the paper deliberately does not print). `build.sh` packs it into `arxiv.tar.gz` as `results/README`, beside the CSVs. Edit it here, the same as editing `main.tex`. |
 | `figures.sh` | Regenerates `figures/` from `../results/` and copies them in. `--check` reports drift without rendering, which `build.sh` runs on every build. |
 | `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | The built paper, 23 pages. Written by `build.sh` and **gitignored**, for the same reason as `arxiv.tar.gz` below: it is derivable from `main.tex` and `figures/`. |
-| `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored**: every byte in it is already tracked as `main.tex` and `figures/`. |
+| `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored** (derived). Holds `main.tex`, `figures/`, the raw per-checkpoint metrics `results/<run>/records.concat.csv` (one CSV per run), and the run key `results/README` (from `results-README.txt`), so a reader of the arXiv source has the data behind every table and figure and the key to which run is which. The derived per-metric PNGs and logs under `results/<run>/analysis/` are left out, to keep the source package small, and they regenerate from the CSVs. ~3 MB. |
 | `abstract.txt` | The abstract as plain text, for pasting into the arXiv abstract field and the Zenodo description. Written by `build.sh` on every build from `main.tex`'s `abstract` environment, and **gitignored** for the same reason as the two above. Each paragraph is **one unwrapped line**, blank-line separated, because both fields take text that way and 79-column source wrapping pastes into Zenodo as ragged mid-sentence breaks. The build prints the character count and warns past arXiv's 1920 limit. Regenerated before the compile and needs no TeX, so `./build.sh` refreshes it even with no LaTeX installed. |
 
 ## Build
@@ -78,11 +84,17 @@ taking `--latex` to emit its table rows verbatim:
 
 | Script | Produces |
 |---|---|
-| `tools.gallery.bootstrap_ratio` | Table 3: `S`, `R`, bootstrap intervals, `P(R>1)` |
-| `tools.gallery.floor_effect` | Table 7 (room-normalised) and the floor-effect correlations |
+| `tools.gallery.bootstrap_ratio` | Tables 3 and 4: `S`, `R`, bootstrap intervals, `P(R>1)` |
+| `tools.gallery.floor_effect` | Table 8 (room-normalised) and the floor-effect correlations |
 | `tools.gallery.plasticity_dist` | Figure 2 and the per-family counts |
+| `tools.gallery.paper_cells` | Tables 1, 2, 5, 6, 7, 9: amount, added, convergence, correctness, outcome, and the escape / duplication / money paragraphs |
 
 Run them from the repository root, e.g. `python -m tools.gallery.floor_effect`.
+The first three take `--conditions four|five|both`, so the four-condition spread
+(the four external-control levers, the paper's primary statistic) and the
+five-condition spread (adding the AI reviewer) are both reproducible from one
+command. `paper_cells` carries the two base-tree values of the added table as
+constants, with the command that re-measures them in its module header.
 
 ## Publishing
 

@@ -49,9 +49,10 @@ run_stat() {  # $1 = label, rest = module + args
   if "$PY" -m "$@" >> "$STATS" 2>&1; then echo "    ok   $label"
   else echo "    ! FAIL $label  (traceback in $STATS)"; fi
 }
-run_stat "Table 3"                    tools.gallery.bootstrap_ratio --latex
-run_stat "Table 7 + floor-effect"     tools.gallery.floor_effect --latex
-run_stat "Figure 2 per-family counts" tools.gallery.plasticity_dist
+run_stat "Tables 3 + 4 (spread, four and five)" tools.gallery.bootstrap_ratio --latex --conditions both
+run_stat "Table 8 + floor-effect (four)"         tools.gallery.floor_effect --latex --conditions four
+run_stat "Figure 2 per-family counts (both)"     tools.gallery.plasticity_dist --conditions both
+run_stat "Tables 1,2,5,6,7,9 cell numbers"       tools.gallery.paper_cells --latex
 echo "    wrote $STATS"
 
 echo "=== 3/3 build  $(date -Is)"
