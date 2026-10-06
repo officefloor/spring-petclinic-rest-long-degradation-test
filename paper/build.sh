@@ -34,8 +34,9 @@ cd "$(dirname "$0")"
 # written to). Edit that file to change what ships, the same as editing main.tex.
 #
 # A reader who downloads the arXiv source therefore gets the data behind every
-# table and figure AND the key to it, not only the typeset numbers. Only the CSVs
-# and the README are included, not the 31 MB of per-metric PNGs or the analysis
+# table and figure AND the key to it, not only the typeset numbers. The CSVs, the
+# README and the correctness-exclusions audit are included, but not the 31 MB of
+# per-metric PNGs or the analysis
 # logs under results/<run>/analysis/: those are DERIVED from the CSVs by the
 # harness, and shipping them would bloat the source package toward arXiv's size
 # limit with figures a reader can regenerate. arXiv ignores non-TeX files for the
@@ -58,11 +59,20 @@ pack() {
     echo "   ! paper/results-README.txt missing; bundle will have no run key" >&2
   fi
 
+  # The correctness-exclusions audit, carried at the bundle root beside the paper.
+  # It is the basis for the strict (adj) column and the fairness figure.
+  local doc_member=()
+  if [ -f "$repo/docs/CORRECTNESS_EXCLUSIONS.md" ]; then
+    doc_member=(-C "$repo/docs" CORRECTNESS_EXCLUSIONS.md)
+  else
+    echo "   ! docs/CORRECTNESS_EXCLUSIONS.md missing; bundle will omit the audit" >&2
+  fi
+
   if [ "${#csvs[@]}" -gt 0 ]; then
-    tar czf arxiv.tar.gz main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}"
+    tar czf arxiv.tar.gz main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}" "${doc_member[@]}"
   else
     echo "   ! no results/*/records.concat.csv found; packing paper only" >&2
-    tar czf arxiv.tar.gz main.tex figures/ "${readme_member[@]}"
+    tar czf arxiv.tar.gz main.tex figures/ "${readme_member[@]}" "${doc_member[@]}"
   fi
   echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries, $(du -h arxiv.tar.gz | cut -f1))"
 }

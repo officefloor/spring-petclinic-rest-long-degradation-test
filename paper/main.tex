@@ -36,16 +36,16 @@
 \newcommand{\offl}{\textsc{OfficeFloor}}
 
 \title{\bfseries Conserved amount, negotiable placement.\\
-External instruction moves one architecture's complexity\\
-distribution, and an AI reviewer moves the other's}
+Prompting perturbs one architecture,\\
+an AI reviewer both}
 
 % Zenodo DOI, reserved before publishing and printed under the author block.
-\newcommand{\thedoi}{10.5281/zenodo.22967550}
+\newcommand{\thedoi}{10.5281/zenodo.23190619}
 \newcommand{\doiline}{\ifdefined\thedoi\\\small\texttt{doi:\thedoi}\fi}
 
 \author{Daniel Sagenschneider\\\small OfficeFloor\\\small\texttt{daniel@officefloor.net}\doiline}
 
-\date{}
+\date{October 2026}
 
 \begin{document}
 \maketitle
@@ -241,13 +241,13 @@ is one architecture's resistance to having its arrangement set from outside
 itself, which in that vocabulary is closest to susceptibility to drift, and the
 claim is comparative between two arms rather than a theory of decay.
 
-\paragraph{Agentic degradation benchmarks.} Two recent benchmarks shape this
-design. The verbosity measure, and the practice of contrasting prompt arms
-against a plain control, follow SlopCodeBench \cite{slopcodebench}. The strict
-pass criterion, under which a checkpoint counts only when every test selected so
-far is green, follows SWE-CI's gate semantics \cite{sweci}. The harness records a
-wider set of measures from both benchmarks, including degradation slope,
-normalized change and zero regression rate, and those are not used here.
+\paragraph{Agentic degradation benchmarks.} The strict pass criterion, under
+which a checkpoint counts only when every test selected so far is green, follows
+SWE-CI's gate semantics \cite{sweci}. The harness records a wider set of
+long-horizon degradation measures, including degradation slope, normalized change
+and zero regression rate, and those are not used here. The practice of contrasting
+several prompt conditions against a plain control is the design of this study and
+is not borrowed from any one benchmark.
 
 \paragraph{Agents as architectural decision makers.} That prompts shape
 architecture is already claimed in the literature this paper joins, and is not
@@ -338,8 +338,8 @@ bootstrap over chains} \cite{davison1997, field2007}. Within each cell the ten
 chains are resampled with replacement, the cell mean recomputed, and $S$ and $R$
 recomputed from the resampled means, 10{,}000 times. The reported interval is the
 2.5th to 97.5th percentile of that distribution. Every interval in this paper is
-produced at one fixed seed, 0, which is the default of the script that computes
-them, so the figures are reproducible rather than merely repeatable. A percentile
+produced at one fixed resampling seed, so the figures are reproducible rather
+than merely repeatable. A percentile
 of a range statistic carries its own resampling noise, which matters only where
 an endpoint lands within a hundredth of a decision boundary. The share of
 replicates above parity is reported alongside each interval for that reason.
@@ -419,10 +419,12 @@ complete one. Parenthesised figures are one standard deviation across the ten
 runs.
 
 \paragraph{Scale.} 5 conditions $\times$ 2 architectures $\times$ 10 runs
-$\times$ 60 change requests = 6{,}000 agent implementations, at a total
-implement turn model spend of \$8{,}634. The AI reviewer condition additionally
-pays for the reviewer and fix turns inside each change request, which is why it
-is among the two most expensive conditions per run
+$\times$ 60 change requests = 6{,}000 agent implementations, a token-priced total
+of \$8{,}634 for the implement turns at list prices. That figure is the compute
+consumed valued at list token prices, not an amount billed, because the work ran
+under a flat-rate subscription (see Funding). The AI reviewer condition
+additionally consumes the reviewer and fix turns inside each change request,
+which is why it is among the two most expensive conditions per run
 (Section~\ref{sec:correctness}).
 
 \section{Results}
@@ -479,8 +481,8 @@ Table~\ref{tab:added} repeats the test on the complexity the sixty rules
 \begin{table}[t]
 \centering
 \caption{Complexity added by the sixty change requests, computed per run as the
-final phase mean minus the value at that arm's \texttt{base\_ref}, the commit
-every run starts from. That base is one fixed codebase per arm. The mutative arm
+final phase mean minus the value at that arm's starting commit, the fixed base
+every run begins from. That base is one fixed codebase per arm. The mutative arm
 starts at \texttt{total\_cc} 404, Halstead 153.3k and \texttt{ck\_wmc} 518, the
 additive arm at 351, 152.8k and 431. Mean over ten runs. ``Spread'' is within an
 architecture, across the five conditions.}
@@ -524,9 +526,7 @@ from Table~\ref{tab:amount}. Figure~\ref{fig:plasticity} shows the same result.
 \caption{Intervention spread $S$ per architecture, and the plasticity ratio
 $R$, over the \textbf{four external-control conditions}. Final phase. A ratio
 near 1 means the four conditions moved both architectures equally. $P(R>1)$ is
-the share of the 10{,}000 bootstrap replicates above parity. Every figure is
-produced by \texttt{tools/gallery/bootstrap\_ratio.py --conditions four} at its
-default seed of 0.}
+the share of the 10{,}000 bootstrap replicates above parity.}
 \label{tab:spread}
 \small
 \begin{tabular}{lrrrrr}
@@ -595,11 +595,11 @@ should on the question of magnitude. The honest statement is that no amount
 metric shows the asymmetry the placement metrics show, not that every amount
 metric sits astride 1.
 
-The one placement metric to discount is \texttt{propagation\_cost}, whose $R$ of
-2.7 carries an interval of [0.71, 9.03] that now contains 1, with a posterior of
-93\% rather than the 100\% the other ten reach. It was marginal in the previous
-analysis and is marginal here, and the conclusion does not rest on it. Nine of
-the eleven have a lower bound above 2 and a posterior of 100\%.
+The one placement metric to discount is \texttt{propagation\_cost}. Its $R$ of
+2.7 carries an interval of [0.71, 9.03] that straddles 1, at a posterior of
+93\% against the 100\% the other ten reach, so it is the weakest of the eleven
+and the conclusion does not rest on it. Nine of the eleven have a lower bound
+above 2 and a posterior of 100\%.
 \texttt{cum\_change\_top1}'s interval spans [4.13, 30.35], which is the small
 denominator instability discussed in Section~\ref{sec:threats} made visible, and
 the conclusion does not rest on it either.
@@ -631,8 +631,7 @@ concentration.
 the same ratio with the \texttt{ai-reviewed} condition added as a fifth. Only the
 additive arm's spread $S(\offl{})$ is shown, because that is what the reviewer
 moves, while the mutative arm's spread barely changes. A ratio that falls toward 1 when
-the reviewer is added is a metric on which the reviewer moved the additive arm.
-Produced by \texttt{bootstrap\_ratio.py --conditions both}.}
+the reviewer is added is a metric on which the reviewer moved the additive arm.}
 \label{tab:aireview}
 \small
 \begin{tabular}{lrrrr}
@@ -823,31 +822,33 @@ anything earlier. Table~\ref{tab:correctness} gives both for all ten cells.
 \begin{table}[h]
 \centering
 \caption{Correctness, final phase. \texttt{strict} is the share of checkpoints
-with every test of every rule so far green, and \texttt{iso} is the share whose own
-rule passed its own core, error and functionality tests. ``at 0'' and
-``$\ge$0.8'' count the ten runs per cell, which is where the bimodality of the
-strict rate sits. Every checkpoint in the study compiled.}
+with every test of every rule so far green. \texttt{strict (adj)} is the same with
+the two under-determined tests removed, the fairer measure discussed below.
+\texttt{iso} is
+the share whose own rule passed its own core, error and functionality tests. ``at
+0'' and ``$\ge$0.8'' count the ten runs per cell on the raw \texttt{strict} rate,
+which is where its bimodality sits. Every checkpoint in the study compiled.}
 \label{tab:correctness}
 \small
 \setlength{\tabcolsep}{5pt}
-\begin{tabular}{llrrrrr}
+\begin{tabular}{llrrrrrr}
 \toprule
-Condition & Arch & \texttt{strict} & at 0 & $\ge$0.8 & \texttt{iso} & \texttt{build\_ok} \\
+Condition & Arch & \texttt{strict} & \texttt{strict (adj)} & at 0 & $\ge$0.8 & \texttt{iso} & \texttt{build\_ok} \\
 \midrule
-\texttt{just-solve}       & \sprg{} & 0.267 & 3 & 2 & 1.000 & 1.000 \\
-                          & \offl{} & 0.325 & 3 & 2 & 0.983 & 1.000 \\
+\texttt{just-solve}       & \sprg{} & 0.267 & 0.300 & 3 & 2 & 1.000 & 1.000 \\
+                          & \offl{} & 0.325 & 0.392 & 3 & 2 & 0.983 & 1.000 \\
 \addlinespace
-\texttt{cohesion-prompt}  & \sprg{} & 0.108 & 7 & 0 & 0.983 & 1.000 \\
-                          & \offl{} & 0.050 & 7 & 0 & 0.992 & 1.000 \\
+\texttt{cohesion-prompt}  & \sprg{} & 0.108 & 0.158 & 7 & 0 & 0.983 & 1.000 \\
+                          & \offl{} & 0.050 & 0.117 & 7 & 0 & 0.992 & 1.000 \\
 \addlinespace
-\texttt{impact-gated}     & \sprg{} & 0.308 & 5 & 3 & 1.000 & 1.000 \\
-                          & \offl{} & 0.167 & 7 & 0 & 1.000 & 1.000 \\
+\texttt{impact-gated}     & \sprg{} & 0.308 & 0.342 & 5 & 3 & 1.000 & 1.000 \\
+                          & \offl{} & 0.167 & 0.300 & 7 & 0 & 1.000 & 1.000 \\
 \addlinespace
-\texttt{formula-provided} & \sprg{} & 0.033 & 8 & 0 & 1.000 & 1.000 \\
-                          & \offl{} & 0.275 & 6 & 2 & 0.992 & 1.000 \\
+\texttt{formula-provided} & \sprg{} & 0.033 & 0.033 & 8 & 0 & 1.000 & 1.000 \\
+                          & \offl{} & 0.275 & 0.283 & 6 & 2 & 0.992 & 1.000 \\
 \addlinespace
-\texttt{ai-reviewed}      & \sprg{} & 0.033 & 8 & 0 & 1.000 & 1.000 \\
-                          & \offl{} & 0.125 & 7 & 1 & 0.992 & 1.000 \\
+\texttt{ai-reviewed}      & \sprg{} & 0.033 & 0.050 & 8 & 0 & 1.000 & 1.000 \\
+                          & \offl{} & 0.125 & 0.192 & 7 & 1 & 0.992 & 1.000 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -874,9 +875,29 @@ with the damage in the interaction between them rather than in missing
 functionality. It is a real and serious cost, and it is not the cost that would
 undermine comparing the two arms' structure.
 
+\paragraph{Two tests the specification does not determine.} Of the seventeen tests
+that fail on their first appearance, fifteen are determined by their own
+specification and stay scored, including the two highest failure rates and two
+outright server errors, because failing a test whose answer the specification does
+fix is non-compliance and is exactly what the experiment measures. Two are
+different. One sets a flag on an owner whose entire identity key collides and
+demands rejection, where the specification says only that the flag bypasses a
+household duplicate and never says whether it also bypasses a full collision. The
+other requires a create to succeed that an earlier rule says must be rejected, so
+it marks down any implementation that followed the earlier rule. Scoring either
+measures which defensible reading a run happened to take rather than whether it was
+correct, so both are removed and strict pass is reported again without them as
+\texttt{strict (adj)} in Table~\ref{tab:correctness}. Removing them lifts strict
+pass by a few points, and by more for the additive arm than the mutative one in
+every condition, so the raw rate is if anything unkind to the additive arm. The
+full audit, with the basis for every test kept as well as the two dropped,
+accompanies the paper as supplementary material, and both rates are reported
+so the effect of the exclusion is always visible. Figure~\ref{fig:strictpass} is
+drawn on the adjusted measure, with the raw rate beside it in the table.
+
 These strict means need more care than the rest of the paper, because the
 underlying distribution is bimodal and the mean falls in a gap where almost no
-run lands. Runs land at 0, at 0.167, or above 0.75, and rarely between, as
+run lands. Runs cluster near 0 or high up, and rarely in between, as
 Figure~\ref{fig:strictpass} shows. The ``at 0'' column of
 Table~\ref{tab:correctness} is the more robust summary, moving from 3 of 10 in
 both control cells to 8 of 10 in the worst, and it agrees with the means on the
@@ -885,11 +906,13 @@ trusted at this sample size.
 
 \begin{sidewaysfigure}[p]
 \centering
-\includegraphics[width=\textheight]{figures/strict_pass.png}
-\caption{Strict pass rate. The panels are the trajectory over the sixty
+\includegraphics[width=\textheight]{figures/strict_pass_adj.png}
+\caption{Strict pass rate with the two under-determined tests removed, the
+\texttt{strict (adj)} measure. The panels are the trajectory over the sixty
 change requests for each condition. The row beneath puts the final phase means
 side by side with one dot per run, which is where the bimodality is visible. Runs
-sit at 0, at 0.167, or above 0.75, and rarely between.}
+cluster near 0 or high up and rarely in between. The raw rate, which includes the
+two ambiguous tests, is the \texttt{strict} column of Table~\ref{tab:correctness}.}
 \label{fig:strictpass}
 \end{sidewaysfigure}
 
@@ -1027,6 +1050,17 @@ An AI reviewer that consolidates a pipeline is choosing the concentration side o
 that trade, case by case, and the study cannot say it chose well, only that it
 was the one agent in the experiment that could choose at all.
 
+This is an old argument rather than a new one. Developers have pushed logic toward
+one place and back out across many small units for as long as both options have
+existed, from Transaction Script against Domain Model \cite{fowler2002} onward,
+and it has stayed unsettled partly because it was argued as a matter of taste.
+What was missing was a way to see, for a given architecture, how far its placement
+can be moved and by what, before any of the logic is written. This study does not
+settle which arrangement is better, and Section~\ref{sec:nopredict} is candid that
+its own outcome measures cannot. What it adds is that the question has a measurable
+prior, the negotiability of the placement, and that this is a property of the
+architecture and the lever applied to it rather than of whoever is arguing.
+
 \paragraph{Durability, not quality.} The practical reading is about durability.
 A structure that depends on an external prompt, review or metric depends on the
 discipline of whoever is holding it, on every change, indefinitely. A structure
@@ -1037,6 +1071,18 @@ thing that moves a composed pipeline is another agent reasoning about it, which 
 also the one kind of ``nobody'' that an agentic workflow increasingly puts in the
 loop by default. A team that adds an AI review step is adding the single lever
 this study found that can reshape the architecture its other tooling cannot.
+
+The same step does the opposite where the architecture already allows anything.
+On the mutative arm a reviewer is not a constraint but one more discretionary
+hand, free to place a rule wherever it reasons best, and here it added rather than
+settled. Under the reviewer the mutative arm kept the study's worst strict
+correctness and pushed still more complexity out of the call graph into
+container-dispatched classes (Section~\ref{sec:correctness}). More agents deciding
+structure over an architecture that permits every structure is more room to be
+undisciplined, not less, since each is bound by nothing but its own judgement on
+the day. A reasoning reviewer helps a composed pipeline because the composition
+bounds what deciding can do, and it cannot stand in for that bound where there is
+none.
 
 That is as far as the evidence goes, and it is worth being blunt about how far it
 does not. Section~\ref{sec:nopredict} shows the placement result failing to
@@ -1125,8 +1171,8 @@ styles is an argument, not a measurement.
 test of two.} The obvious alternative explanation for the four-condition result
 is arithmetic rather than architectural. Left alone, the additive arm already
 sits near an even distribution and so has little room to move, while the mutative
-arm sits far from one and so has a great deal. Two checks are reported, they
-disagree, and both are in \texttt{tools/gallery/floor\_effect.py}.
+arm sits far from one and so has a great deal. Two checks are reported, and they
+disagree.
 
 The first is the correlation the account most directly predicts, that
 $S(\sprg{})$ tracks how far apart the two arms are when nothing is asked of them.
@@ -1226,49 +1272,18 @@ levels.
 \section{Reproducibility and data availability}
 \label{sec:repro}
 
-Everything behind this paper is public, in two repositories.
+The raw per-checkpoint metrics this paper is computed from are included with it as
+supplementary material, one record per condition of two architectures by ten
+chains by sixty change requests, from which every table and figure here is
+derived rather than read back from anything an agent wrote. The correctness audit
+of Section~\ref{sec:correctness} and a description of each run are included
+alongside them.
 
-The \textbf{harness} \cite{repo} holds the frozen change request plan, the
-acceptance suite, the measurement and analysis code, and the per checkpoint
-record for each run. Every metric reported here is recomputed by that analysis
-pass from committed source, rather than read back from any file an agent wrote.
-
-The \textbf{run data} \cite{data} holds the codebases themselves, one branch per
-chain, and every checkpoint on a branch is a commit carrying its own raw capture,
-the agent transcript, the diff, the build log and the measurement record. The
-five conditions are 100 such branches in all, ten chains for each of the two arms
-in each condition.
-
-The per-checkpoint metrics the paper is computed from travel with it. The arXiv
-source package includes one \texttt{records.concat.csv} per condition under a
-\texttt{results/} directory, alongside a \texttt{results/README} that names each
-run and records what condition, date and branch it is, so the data behind every
-table and figure is in hand without consulting the run-data repository.
-
-Every statistic in this paper that is not a cell mean comes from one of four
-scripts in the harness, each reading the same per checkpoint records and taking
-its randomness from a fixed default seed of 0:
-
-\begin{center}
-\small
-\begin{tabular}{ll}
-\toprule
-Script & Produces \\
-\midrule
-\texttt{tools/gallery/bootstrap\_ratio.py}  & Tables~\ref{tab:spread}, \ref{tab:aireview}: $S$, $R$, intervals \\
-\texttt{tools/gallery/floor\_effect.py}     & Table~\ref{tab:room} and the floor-effect correlations \\
-\texttt{tools/gallery/plasticity\_dist.py}  & Figure~\ref{fig:dist} and the per family counts \\
-\texttt{tools/gallery/paper\_cells.py}      & Tables~\ref{tab:amount}, \ref{tab:added}, \ref{tab:aiconverge}, \ref{tab:convergence}, \ref{tab:correctness}, \ref{tab:outcome} \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\noindent The first three take \texttt{--conditions four|five|both} so the
-four-condition and five-condition spreads are both reproducible from one command.
-\texttt{paper\_cells.py} carries the two base-tree values of Table~\ref{tab:added}
-as constants, with the command that re-measures them in its header. The commit
-that produced this version of the paper is tagged \texttt{paper-v2} in the
-harness repository.
+That supplementary material is self-describing. It names each run and its
+condition, documents the column schema and the phase binning, gives the base each
+run starts from, and points to the public code that recomputes every figure and
+to the full per-checkpoint run data. A reader therefore has the data behind every
+number in hand, and the means to regenerate all of it.
 
 \section{Conclusion}
 
@@ -1355,16 +1370,20 @@ three arrangement metrics fail to separate the architectures at all
 arms or favours the mutative one (Table~\ref{tab:outcome}). That last result is
 the one most damaging to the author's position, and it has a subsection of its
 own rather than a footnote. None of that removes the interest. A reader who wants
-an independent check has the harness, the frozen plan and the five runs' raw
-metrics shipped with this paper, and a replication needs no cooperation from the
-author.
+an independent check has the frozen plan and the five runs' raw metrics in the
+supplementary material, with the code and full run data described there, and a
+replication needs no cooperation from the author.
 
 \section*{Funding}
 
-This work received no external funding. The model usage reported in Section~4,
-totalling \$8{,}634 of implement turn spend across the ten cells, plus the
-reviewer, fix and comprehension probe turns, was paid for by the author
-personally.
+This work received no external funding. It was paid for by the author personally,
+through a flat-rate model subscription rather than metered per-token billing, so
+no sum was charged in proportion to the compute consumed. The dollar figures in
+the paper, the \$8{,}634 implement-turn total in Section~4 and the per-run and
+per-change-request costs in Sections~\ref{sec:correctness} and
+\ref{sec:nopredict}, are that compute valued at list token prices, reported as a
+measure of scale and as a relative cost between the arms, not as amounts the
+author was billed.
 
 \begin{thebibliography}{99}
 
@@ -1410,6 +1429,10 @@ personally.
   ``Bootstrapping clustered data,''
   \emph{Journal of the Royal Statistical Society: Series B (Statistical
   Methodology)}, vol.~69, no.~3, pp.~369--390, 2007.
+
+\bibitem{fowler2002} M.~Fowler,
+  \emph{Patterns of Enterprise Application Architecture}. Addison-Wesley, 2002.
+  Transaction Script and Domain Model.
 
 \bibitem{goodhart1975} C.~A.~E. Goodhart,
   ``Problems of Monetary Management: The U.K. Experience,''
@@ -1461,19 +1484,10 @@ personally.
   ``Metrics for Assessing a Software System's Maintainability,''
   in \emph{Proc. Conference on Software Maintenance (ICSM)}, pp.~337--344, 1992.
 
-\bibitem{slopcodebench} G.~Orlanski, D.~Roy, A.~Yun, C.~Shin, A.~Gu, A.~Ge,
-  D.~Adila, N.~Roberts, F.~Sala and A.~Albarghouthi,
-  ``SlopCodeBench: Benchmarking How Coding Agents Degrade Over Long-Horizon
-  Iterative Tasks,'' arXiv:2603.24755, 2026.
-
 \bibitem{perry1992} D.~E. Perry and A.~L. Wolf,
   ``Foundations for the Study of Software Architecture,''
   \emph{ACM SIGSOFT Software Engineering Notes}, vol.~17, no.~4, pp.~40--52,
   1992.
-
-\bibitem{repo} D.~Sagenschneider,
-  ``PetClinic-Evolve harness,'' 2026.
-  \url{https://github.com/officefloor/spring-petclinic-rest-long-degradation-test}
 
 \bibitem{conversion} D.~Sagenschneider,
   ``Conversion to OfficeFloor YAML end point function injection,'' 2026.
@@ -1484,11 +1498,6 @@ personally.
 \bibitem{impactgate} D.~Sagenschneider,
   ``ImpactGate: code review via the change impact measure,'' 2026. Apache-2.0.
   \url{https://github.com/officefloor/ImpactGate}
-
-\bibitem{data} D.~Sagenschneider,
-  ``PetClinic-Evolve run data,'' 2026. The per checkpoint commits and raw
-  capture for every chain, as branches:
-  \url{https://github.com/officefloor/spring-petclinic-rest}
 
 \bibitem{officefloor} D.~Sagenschneider,
   ``OfficeFloor: using office patterns to improve software design,''

@@ -291,6 +291,34 @@ _add("strict_pass",
             "failing here at every later change request, which is the honest "
             "accounting. The transition counts do not show it.")
 
+_add("strict_pass_adj",
+     title="Strict pass rate, under-determined tests removed",
+     group="outcome", direction="up",
+     source="SWE-CI (arXiv:2603.03823) gate semantics, with the correctness.excluded_tests audit",
+     what="The same strict pass rate, but with the two tests whose own specification "
+          "does not determine the right answer removed from the selected set. Those "
+          "two tests penalise an implementation for taking a defensible reading of an "
+          "ambiguous or self-contradictory spec, so scoring them measures luck rather "
+          "than correctness. The full audit, including the fifteen awkward tests that "
+          "were KEPT because their spec does determine the answer, is in "
+          "docs/CORRECTNESS_EXCLUSIONS.md.",
+     formula="identical to strict_pass, over selected(c) minus the under-determined tests",
+     terms="Same as strict_pass. The removed tests are "
+           "Cp28Tests#coreIdentityCollisionWithComputedHousehold (from change request 36) "
+           "and Cp51Tests#coreCapsLevelByHousehold (from change request 51).",
+     how="Recomputed by the same parse as strict_pass, with the excluded tests dropped "
+         "from selected(c) at and after the change request they first appear. Reported "
+         "ALONGSIDE the raw rate, never instead of it, so the effect of the exclusion is "
+         "always visible.",
+     read="This is the fairer correctness line, because no run is marked down for a "
+          "question the specification never answered. Read it beside the raw strict "
+          "pass, not in place of it. The gap between the two is what the two ambiguous "
+          "tests cost each arm.",
+     caveat="Only two tests are removed, both documented. A high failure rate is NOT "
+            "grounds for removal, which would be non-compliance and exactly what the "
+            "experiment measures. Fifteen tests that fail on first appearance, including "
+            "the two highest failure rates, are kept.")
+
 _add("iso_pass",
      title="Isolated pass rate: did this rule itself work",
      group="outcome", direction="up",

@@ -213,15 +213,16 @@ def sec_correctness(data, latex):
     for l, _ in RUNS:
         for arm in ARMS:
             sm, ssd, n, scm = cell(data, l, arm, "strict_pass")
+            am, asd, _, _ = cell(data, l, arm, "strict_pass_adj")
             im, isd, _, _ = cell(data, l, arm, "iso_pass")
             bm, _, _, _ = cell(data, l, arm, "build_ok")
             at0 = sum(1 for x in scm if x == 0)
             hi = sum(1 for x in scm if x >= 0.8)
             if latex:
-                print(f"{l} & \\textsc{{{arm[:4]}}} & {sm:.3f} & {at0} & {hi} "
+                print(f"{l} & \\textsc{{{arm[:4]}}} & {sm:.3f} & {am:.3f} & {at0} & {hi} "
                       f"& {im:.3f} & {bm:.3f} \\\\")
             else:
-                print(f"  {l:16s} {arm:11s} strict={sm:.3f} at0={at0} >=0.8={hi} "
+                print(f"  {l:16s} {arm:11s} strict={sm:.3f} adj={am:.3f} at0={at0} >=0.8={hi} "
                       f"iso={im:.3f} build={bm:.3f}")
 
 

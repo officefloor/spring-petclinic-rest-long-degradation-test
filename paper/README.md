@@ -1,7 +1,7 @@
 # The paper
 
-Paper (v2): *Conserved amount, negotiable placement: external instruction moves
-one architecture's complexity distribution, and an AI reviewer moves the other's*
+Paper (v2): *Conserved amount, negotiable placement. Prompting perturbs one
+architecture, an AI reviewer both*
 
 > v2 adds a fifth condition (an AI reviewer), reports the four external-control
 > conditions separately from it, drops the borrowed whole-application erosion
@@ -15,13 +15,13 @@ one architecture's complexity distribution, and an AI reviewer moves the other's
 | `main.tex` | The paper. Self contained: no `.bib`, no `.bbl`, bibliography is a `thebibliography` environment. |
 | `figures/plasticity.png` | Figure 1. |
 | `figures/plasticity_dist.png` | Figure 2. |
-| `figures/strict_pass.png` | Figure 3. |
+| `figures/strict_pass_adj.png` | Figure 3 — strict pass with the two under-determined tests removed (the fair measure; the raw rate is the `strict` column of the correctness table). |
 | `results-README.txt` | The run key. A static, tracked, human-editable description of which run is which condition (the opaque `blind-*` ids the paper deliberately does not print). `build.sh` packs it into `arxiv.tar.gz` as `results/README`, beside the CSVs. Edit it here, the same as editing `main.tex`. |
 | `figures.sh` | Regenerates `figures/` from `../results/` and copies them in. `--check` reports drift without rendering, which `build.sh` runs on every build. |
 | `setup.sh` | Installs both engines and the LaTeX packages `main.tex` needs. Run once. |
 | `build.sh` | Builds the PDF. Uses `pdflatex` when present, else `tectonic` with a caveat (see below). |
 | `main.pdf` | The built paper, 23 pages. Written by `build.sh` and **gitignored**, for the same reason as `arxiv.tar.gz` below: it is derivable from `main.tex` and `figures/`. |
-| `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored** (derived). Holds `main.tex`, `figures/`, the raw per-checkpoint metrics `results/<run>/records.concat.csv` (one CSV per run), and the run key `results/README` (from `results-README.txt`), so a reader of the arXiv source has the data behind every table and figure and the key to which run is which. The derived per-metric PNGs and logs under `results/<run>/analysis/` are left out, to keep the source package small, and they regenerate from the CSVs. ~3 MB. |
+| `arxiv.tar.gz` | The arXiv submission bundle. Packed by `build.sh` on every build, and **gitignored** (derived). Holds `main.tex`, `figures/`, the raw per-checkpoint metrics `results/<run>/records.concat.csv` (one CSV per run), and the run key `results/README` (from `results-README.txt`), and the correctness-exclusions audit `CORRECTNESS_EXCLUSIONS.md`, so a reader of the arXiv source has the data behind every table and figure, the key to which run is which, and the basis for the `strict (adj)` measure. The derived per-metric PNGs and logs under `results/<run>/analysis/` are left out, to keep the source package small, and they regenerate from the CSVs. ~3 MB. |
 | `abstract.txt` | The abstract as plain text, for pasting into the arXiv abstract field and the Zenodo description. Written by `build.sh` on every build from `main.tex`'s `abstract` environment, and **gitignored** for the same reason as the two above. Each paragraph is **one unwrapped line**, blank-line separated, because both fields take text that way and 79-column source wrapping pastes into Zenodo as ragged mid-sentence breaks. The build prints the character count and warns past arXiv's 1920 limit. Regenerated before the compile and needs no TeX, so `./build.sh` refreshes it even with no LaTeX installed. |
 
 ## Build

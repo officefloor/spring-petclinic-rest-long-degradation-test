@@ -64,6 +64,9 @@ FIG_TOOL_plasticity_dist="tools.gallery.plasticity_dist"
 FIG_TOOL_strict_pass="tools.gallery.metric_gallery"
 FIG_ARGS_strict_pass="--only strict_pass"
 FIG_RFLAG_strict_pass="--results-dir"
+FIG_TOOL_strict_pass_adj="tools.gallery.metric_gallery"
+FIG_ARGS_strict_pass_adj="--only strict_pass_adj"
+FIG_RFLAG_strict_pass_adj="--results-dir"
 
 figures_in_paper() {
   sed -n 's/.*\\includegraphics\[[^]]*\]{figures\/\([^}]*\)\.png}.*/\1/p' main.tex
