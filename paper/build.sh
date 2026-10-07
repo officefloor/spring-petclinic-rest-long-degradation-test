@@ -25,13 +25,14 @@ cd "$(dirname "$0")"
 # the results CSVs are tracked in the run-data repository.
 #
 # The bundle also carries the RAW METRICS, the per-checkpoint records the whole
-# paper is computed from, one CSV per run under results/<run>/, plus the run key
-# results/README. The paper deliberately does NOT print the opaque run ids
-# (blind-YYYYMMDDHHMM); that mapping belongs with the data, not in the prose, so
-# it is kept here. Its source is the tracked, human-editable file
-# paper/results-README.txt, packed into the bundle under the name results/README
-# (staged through a temp dir so the archive path is clean and results/ is never
-# written to). Edit that file to change what ships, the same as editing main.tex.
+# paper is computed from, one CSV per run under anc/results/<run>/, plus the run
+# key anc/results/README. The paper deliberately does NOT print the opaque run
+# ids (blind-YYYYMMDDHHMM); that mapping belongs with the data, not in the prose,
+# so it is kept here. Its source is the tracked, human-editable file
+# paper/results-README.txt, packed into the bundle under the name
+# anc/results/README (staged through a temp dir so the archive path is clean and
+# results/ is never written to). Edit that file to change what ships, the same as
+# editing main.tex.
 #
 # A reader who downloads the arXiv source therefore gets the data behind every
 # table and figure AND the key to it, not only the typeset numbers. The CSVs, the
@@ -39,8 +40,10 @@ cd "$(dirname "$0")"
 # per-metric PNGs or the analysis
 # logs under results/<run>/analysis/: those are DERIVED from the CSVs by the
 # harness, and shipping them would bloat the source package toward arXiv's size
-# limit with figures a reader can regenerate. arXiv ignores non-TeX files for the
-# build and simply carries them as ancillary data.
+# limit with figures a reader can regenerate. These data files are packed under a
+# top-level anc/ directory, which is exactly where arXiv looks for ancillary
+# files: it ignores them for the build and lists them as named downloads on the
+# abstract page, rather than leaving them loose beside main.tex.
 pack() {
   local here; here="$(pwd)"
   local repo; repo="$(cd .. && pwd)"
@@ -59,8 +62,9 @@ pack() {
     echo "   ! paper/results-README.txt missing; bundle will have no run key" >&2
   fi
 
-  # The correctness-exclusions audit, carried at the bundle root beside the paper.
-  # It is the basis for the strict (adj) column and the fairness figure.
+  # The correctness-exclusions audit, carried under anc/ with the rest of the data
+  # (see the --transform rules below). It is the basis for the strict (adj) column
+  # and the fairness figure.
   local doc_member=()
   if [ -f "$repo/docs/CORRECTNESS_EXCLUSIONS.md" ]; then
     doc_member=(-C "$repo/docs" CORRECTNESS_EXCLUSIONS.md)
@@ -68,11 +72,21 @@ pack() {
     echo "   ! docs/CORRECTNESS_EXCLUSIONS.md missing; bundle will omit the audit" >&2
   fi
 
+  # The data files ship under anc/ so arXiv lists them as ancillary downloads
+  # rather than loose beside main.tex. These --transform rules rewrite only the
+  # data member names at pack time: results/... (the CSVs and the staged README)
+  # and the audit md. main.tex and figures/ do not match either rule, so they
+  # stay at the bundle root where the pdflatex build needs them. GNU tar, matching
+  # this script's existing mapfile/-C assumptions.
+  local xform=(
+    --transform='s,^results/,anc/results/,'
+    --transform='s,^CORRECTNESS_EXCLUSIONS\.md$,anc/CORRECTNESS_EXCLUSIONS.md,'
+  )
   if [ "${#csvs[@]}" -gt 0 ]; then
-    tar czf arxiv.tar.gz main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}" "${doc_member[@]}"
+    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}" "${doc_member[@]}"
   else
     echo "   ! no results/*/records.concat.csv found; packing paper only" >&2
-    tar czf arxiv.tar.gz main.tex figures/ "${readme_member[@]}" "${doc_member[@]}"
+    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ "${readme_member[@]}" "${doc_member[@]}"
   fi
   echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries, $(du -h arxiv.tar.gz | cut -f1))"
 }

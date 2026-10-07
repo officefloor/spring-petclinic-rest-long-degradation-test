@@ -55,12 +55,12 @@ an AI reviewer both}
 Tesler's conservation law holds that a problem carries an irreducible amount of
 complexity. Brooks separates that essential part from the accidental part a
 solution adds. If the essential part is fixed, architecture is placement rather
-than quantity, and the question becomes which levers can move placement. An AI
+than quantity, and the question is which levers move placement. An AI
 agent implements sixty accumulating change requests on one REST endpoint under
 two architectures, a mutative \sprg{} controller and an additive \offl{} pipeline,
 under five conditions, ten runs per cell, model fixed.
-Four conditions are \emph{external controls}, from a bare change request to the
-structural cost function disclosed in the prompt. The fifth is different in kind.
+Four are \emph{external controls}, from a bare change request to the
+disclosed structural cost function. The fifth is different in kind.
 A second agent reviews each change and reasons about cohesion itself.
 
 Amount is steady. Across all ten cells the finished complexity varies by 7\% to
@@ -74,7 +74,7 @@ untouched placement.
 
 The AI reviewer is the one lever that moves the additive arm, on one family only.
 It consolidates the pipeline, raising change- and mass-concentration on every such
-metric with an interval excluding zero, while leaving coupling, file count and
+metric, interval excluding zero, while leaving coupling, file count and
 per-node complexity untouched. The price is reported in full. Strict correctness
 fell in most comparisons though each rule was implemented correctly in over 99\%
 of checkpoints, and all three outcome measures favour the \emph{concentrated}
