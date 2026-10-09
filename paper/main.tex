@@ -1239,6 +1239,33 @@ sharpest evidence on this point. The additive arm did have somewhere to go, sinc
 the reviewer moved it there (Section~\ref{sec:aireview}), so ``no room'' cannot be
 the whole story.
 
+\paragraph{The additive arm is handed a guide that prescribes its style, and the
+mutative arm is not.} Each arm carries a fixed, human-authored project guide in its
+repository, restored to its base version after every turn, so it is identical at all
+sixty change requests and never becomes accumulating memory. The two guides are not
+symmetric. The Spring guide is one short paragraph asking for ordinary Spring
+conventions. The OfficeFloor guide is longer and prescriptive. It tells the agent to
+serve each endpoint as a pipeline of small function classes wired in YAML, to give
+each class one narrow responsibility, and not to write a Spring controller. On the
+additive arm the additive style is therefore instructed as well as architected, and
+this design cannot separate the two. The asymmetry is deliberate and was judged
+necessary for a fair test. Current agents are trained on a large body of Spring code
+and very little OfficeFloor code, so without the guide the OfficeFloor agent falls
+back on the mutative habits it knows and writes against the framework rather than
+with it. The guide offsets that training-data gap and is what makes the arm a test of
+OfficeFloor used as intended. The cost is a confound. Part of what this paper reads as
+a structure that will not concentrate under instruction may instead be a standing
+instruction that keeps asking for the distributed shape. The four-condition result is
+consistent with both readings, architecture and standing instruction, and this study
+cannot tell them apart. The reviewer result is less exposed, because the reviewer
+proposes rewrites of the composition that the guide never requests
+(Section~\ref{sec:disc}). The fix is to vary the guide rather than hold it fixed. A
+planned replication~\cite{nextexp} rewrites the default OfficeFloor guide to drop the prescriptive
+framing and let the agent compose the pipeline as it judges best. That replication
+also adds a third arm built on a framework the author neither created nor maintains,
+TanStack~\cite{tanstack}, which removes the ownership interest set out under Competing
+interests for that arm.
+
 \paragraph{One application, one endpoint, one model.} All results are from a
 single application, a single endpoint, and \texttt{claude-opus-4-8}. Whether the
 plasticity gap holds for other frameworks, other domains or other models is open.
@@ -1372,7 +1399,12 @@ the one most damaging to the author's position, and it has a subsection of its
 own rather than a footnote. None of that removes the interest. A reader who wants
 an independent check has the frozen plan and the five runs' raw metrics in the
 supplementary material, with the code and full run data described there, and a
-replication needs no cooperation from the author.
+replication needs no cooperation from the author. A planned replication goes past
+disclosure on this point. It adds a third arm built on a framework the author neither
+created nor maintains, TanStack, so that the central comparison no longer rests on an
+architecture the author owns, and it rewrites the pinned OfficeFloor guide so the
+additive style is composed by the agent rather than prescribed to it
+(Section~\ref{sec:threats}).
 
 \section*{Funding}
 
@@ -1504,6 +1536,12 @@ author was billed.
   in \emph{Proc. 18th European Conference on Pattern Languages of Programs
   (EuroPLoP)}, ACM, pp.~1--27, 2013. \url{https://doi.org/10.1145/2739011.2739013}
 
+\bibitem{nextexp} D.~Sagenschneider,
+  ``UI long degradation test,'' 2026.
+  The planned replication, with a rewritten framework guide and a third,
+  author-unaffiliated architecture:
+  \url{https://github.com/officefloor/ui-long-degradation-test}
+
 \bibitem{saltelli2008} A.~Saltelli, M.~Ratto, T.~Andres, F.~Campolongo,
   J.~Cariboni, D.~Gatelli, M.~Saisana and S.~Tarantola,
   \emph{Global Sensitivity Analysis: The Primer}. Wiley, 2008.
@@ -1514,12 +1552,16 @@ author was billed.
   in \emph{Proc. International Conference on Learning Representations (ICLR)},
   2024. arXiv:2310.11324.
 
-\bibitem{spring} Spring Framework, VMware.
+\bibitem{spring} Spring Framework, Broadcom (formerly VMware).
   \url{https://spring.io/projects/spring-framework}
 
 \bibitem{strathern1997} M.~Strathern,
   ```Improving ratings': audit in the British University system,''
   \emph{European Review}, vol.~5, no.~3, pp.~305--321, 1997.
+
+\bibitem{tanstack} TanStack,
+  ``The open source application stack for the web,'' T.~Linsley and contributors.
+  \url{https://tanstack.com}
 
 \bibitem{tesler1984} L.~Tesler,
   ``The Law of Conservation of Complexity,'' c.~1984.
