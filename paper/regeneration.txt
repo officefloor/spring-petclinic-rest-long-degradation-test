@@ -1,0 +1,109 @@
+How to regenerate every number in the paper
+  "Conserved amount, negotiable placement.
+   Prompting perturbs one architecture, an AI reviewer both"
+
+Every number the paper prints is produced by a script in tools/gallery/, read
+off the per-checkpoint CSVs shipped beside this file under anc/results/. No
+number is hand-entered. This file maps each table, figure and inline figure to
+the exact command that regenerates it, so a reader can recompute all of it and
+check it against the paper. If a command's output ever disagrees with the paper,
+the script is the authority, not the prose.
+
+The run ids and the condition each maps to are in anc/results/README.
+
+
+ENVIRONMENT
+
+The scripts need Python with numpy. From the repository root, either run
+./setup.sh once to build the .venv the commands below use, or install numpy into
+any Python and call that interpreter in place of ./.venv/bin/python.
+
+All bootstrap figures use a fixed seed of 0 and 20,000 resamples (10,000 in
+bootstrap_ratio, overridable with --n-boot), resampling CHAINS not checkpoints.
+Re-running reproduces the same numbers. "final phase" means the rows with
+phase == Final, change requests 49-60, aggregated chain-first (each chain's mean
+over its final-phase rows, then the mean over the ten chains, sample SD ddof=1).
+
+
+ALL NUMBERS AT ONCE
+
+  ./.venv/bin/python -m tools.gallery.paper_cells
+  ./.venv/bin/python -m tools.gallery.bootstrap_ratio --latex --conditions both
+  ./.venv/bin/python -m tools.gallery.floor_effect --conditions both
+  ./.venv/bin/python -m tools.gallery.plasticity_dist --conditions both --out /tmp/pd
+
+
+TABLES  (--latex emits the LaTeX cells; drop it for a readable form)
+
+  Table 1  amount              paper_cells --only amount
+  Table 2  added over base     paper_cells --only added
+  Table 3  erosion (two scopes) paper_cells --only erosion
+  Table 4  spread S and R      bootstrap_ratio --latex --conditions four
+  Table 5  AI-review S(offl)/R bootstrap_ratio --latex --conditions both
+                               (four-condition block, then five-condition block;
+                                Table 5 is the S(officefloor) and R columns of each)
+  Table 6  AI-review converge  paper_cells --only convergence   (section B)
+  Table 7  mutative converge   paper_cells --only convergence   (section A)
+  Table 8  correctness         paper_cells --only correctness
+  Table 9  outcome             paper_cells --only outcome
+  Table 10 room-normalised     floor_effect --conditions four   (CHECK B, R is the
+                                "Rwide" column, n taken as the arm's widest)
+
+
+FIGURES  (need the full harness and the analysed runs, so NOT part of build.sh)
+
+  Figure 1  plasticity         ./figures.sh --only plasticity
+  Figure 2  plasticity_dist    ./figures.sh --only plasticity_dist
+  Figure 3  strict_pass_adj    ./figures.sh --only strict_pass
+
+  The distribution counts in Figure 2's caption (n=200, R>=1, R<=1/2.9, R>=2.9,
+  the median, the per-family vote, and the four-to-five shift) are printed by
+  plasticity_dist --conditions both on stdout.
+
+
+INLINE NUMBERS IN THE TEXT
+
+  amount spreads 7/15/18/20 pct, added spreads 21-29 pct
+                               paper_cells --only amount  (spread line per metric)
+                               paper_cells --only added
+  base totals (cc, halstead, wmc, file counts 55/120)
+                               the BASE constant in paper_cells.py; the
+                               re-measurement command is in that file's docstring,
+                               and paper_cells --only prose prints the file counts
+  ck_lcom_mean by condition (29.6 to 17.3 under the formula, 26.0 under cohesion)
+                               paper_cells --only prose
+  isolated pass rate pooled over all checkpoints (over 99 pct)
+                               paper_cells --only prose
+  quality-gate firings (195 of 1,200 gated, 3 of 1,200 formula)
+                               paper_cells --only prose  (ig_refactors > 0)
+  additive-arm wiring and Java line ranges (base yaml 460, finish 536 to 582,
+    yaml added 76 to 122, java added 674 to 913)
+                               paper_cells --only prose
+  three September external conditions, dropping the August control
+    (placement R from 3.1 to 10.6, the run-date robustness check)
+                               bootstrap_ratio --conditions sep3
+  spread section ranges and counts (2.7 to 10.0, ten of eleven, 0.6 to 1.1,
+    five of six, total_cc R=0.6 [0.43,0.98] P=2 pct, propagation 2.7 [0.71,9.03])
+                               bootstrap_ratio --conditions four
+  the "lower bound above 2 and posterior 100 pct" count is read off Table 4's CI
+    and P(R>1) columns directly
+  AI-review ranges (3.4 to 10.0 down to 1.2 to 2.1, framework 3.1 to 4.2)
+                               bootstrap_ratio --latex --conditions both  (R columns)
+  distribution counts and family vote (142/200, 3, 60, median 1.38 to 1.29,
+    66 families, 50, 21, 1.48, 60 to 44)
+                               plasticity_dist --conditions both
+  escape / duplication / money (container_total means and SDs, dup_lines,
+    dup_density, per-run dollars, the 8,634 total)
+                               paper_cells --only paragraphs
+  floor-effect correlations (r and rho) and room consumption ranges
+                               floor_effect --conditions four  (CHECK A, CHECK B)
+  erosion decomposition (total/over-threshold/in-handler mass, 62 pct vs 0 pct)
+                               paper_cells --only erosion  (mass decomposition line)
+  rule-topic counts in the erosion mechanism (five E.164, three Luhn, two soundex)
+                               a topic reading of the frozen plan, not a mechanical
+                               count. The five E.164 rules are the telephone-* ids
+                               in checkpoints.yaml (telephone-normalize, -unique,
+                               -e164, -country-length, -display). Luhn: check-digit,
+                               global-id, member-id. soundex: soft-match,
+                               identity-key-v2. checkpoints.yaml is in the repo, not
+                               the archive.

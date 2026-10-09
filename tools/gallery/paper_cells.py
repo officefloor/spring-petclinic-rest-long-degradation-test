@@ -65,7 +65,7 @@ BASE = {
                     "java_loc": 1840},
     "officefloor": {"total_cc": 351.0, "halstead_volume": 152798.3,
                     "ck_wmc_total": 431.0, "total_files": 120, "total_fns": 256,
-                    "java_loc": 1579},
+                    "java_loc": 1579, "yaml_loc": 460},
 }
 
 AMOUNT = ["total_cc", "halstead_volume", "ck_wmc_total", "pmd_cognitive_total"]
@@ -333,6 +333,55 @@ def sec_erosion(data, latex):
               f"in_handler={hh:.1f} ({frac:.0f}% of over-threshold)")
 
 
+def sec_prose(data, latex):
+    """Inline prose numbers that are stated in the text but sit in no table, so
+    they would otherwise have no generator and could drift silently (which is how
+    the erosion CIs and the escape SD drifted before this section existed).
+
+    - ck_lcom_mean per condition per arm. The spread section notes that cohesion,
+      the thing the plain-language prompt asked for by name, separates the arms
+      least and improves most under the condition that never named it. The prose
+      cites the mutative arm's control, cohesion-prompt and formula-provided
+      values, so all five are printed for both arms.
+    - base-tree file count per arm, cited in the amount section ("404 ... across
+      55 files and the additive arm 351 across 120"). Read from BASE; the
+      re-measurement command is in the module docstring."""
+    print("\n## PROSE numbers stated in the text but not in any table")
+    print("\n# ck_lcom_mean by condition (final phase, mean over chains)")
+    for arm in ARMS:
+        cells = "  ".join(f"{l[:4]}={cell(data, l, arm, 'ck_lcom_mean')[0]:.1f}"
+                          for l, _ in RUNS)
+        print(f"  {arm:11s} {cells}")
+    print("\n# base-tree file count per arm (from BASE; re-measure per the docstring)")
+    for arm in ARMS:
+        print(f"  {arm:11s} total_files={BASE[arm]['total_files']}")
+
+    print("\n# isolated pass rate pooled over every checkpoint of every run")
+    ok = tot = 0
+    for l, _ in RUNS:
+        for r in data[l]:
+            v = _f(r.get("iso_pass"))
+            if v is not None:
+                tot += 1
+                ok += v == 1.0
+    print(f"  iso_pass = {ok}/{tot} = {100*ok/tot:.2f}% of checkpoints")
+
+    print("\n# quality gate firings (a checkpoint where ig_refactors > 0)")
+    for l in ("impact-gated", "formula-provided"):
+        rows = data[l]
+        fired = sum(1 for r in rows if (_f(r.get("ig_refactors")) or 0) > 0)
+        print(f"  {l:16s} {fired} of {len(rows)} checkpoints")
+
+    print("\n# additive-arm wiring and Java lines (officefloor), final phase")
+    byaml = BASE["officefloor"]["yaml_loc"]
+    bjava = BASE["officefloor"]["java_loc"]
+    yam = [cell(data, l, "officefloor", "yaml_loc")[0] for l, _ in RUNS]
+    jav = [cell(data, l, "officefloor", "java_loc")[0] for l, _ in RUNS]
+    print(f"  base yaml_loc={byaml}  finish yaml_loc {min(yam):.0f} to {max(yam):.0f}"
+          f"  -> yaml added {min(yam)-byaml:.0f} to {max(yam)-byaml:.0f}")
+    print(f"  base java_loc={bjava}  -> java added {min(jav)-bjava:.0f} to {max(jav)-bjava:.0f}")
+
+
 def _fmt(m, sd, field):
     if field == "halstead_volume":
         return f"{m:,.0f} ({sd:,.0f})"
@@ -343,14 +392,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=os.path.join(_REPO, "results"))
     ap.add_argument("--latex", action="store_true")
-    ap.add_argument("--only", default="", help="comma list: amount,added,correctness,outcome,paragraphs,convergence,erosion")
+    ap.add_argument("--only", default="", help="comma list: amount,added,correctness,outcome,paragraphs,convergence,erosion,prose")
     a = ap.parse_args(argv)
     data = load(a.results)
     want = set(a.only.split(",")) if a.only else None
     secs = [("amount", sec_amount), ("added", sec_added),
             ("correctness", sec_correctness), ("outcome", sec_outcome),
             ("paragraphs", sec_paragraphs), ("convergence", sec_convergence),
-            ("erosion", sec_erosion)]
+            ("erosion", sec_erosion), ("prose", sec_prose)]
     for name, fn in secs:
         if want is None or name in want:
             fn(data, a.latex)

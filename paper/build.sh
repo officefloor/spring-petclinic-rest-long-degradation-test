@@ -72,6 +72,16 @@ pack() {
     echo "   ! docs/CORRECTNESS_EXCLUSIONS.md missing; bundle will omit the audit" >&2
   fi
 
+  # The regeneration map: the command behind every table, figure and inline
+  # number, so a reader can recompute all of it from the CSVs. Ships as
+  # anc/REGENERATION. Tracked source is paper/regeneration.txt.
+  local regen_member=()
+  if [ -f "$here/regeneration.txt" ]; then
+    regen_member=(-C "$here" regeneration.txt)
+  else
+    echo "   ! paper/regeneration.txt missing; bundle will omit the regeneration map" >&2
+  fi
+
   # The data files ship under anc/ so arXiv lists them as ancillary downloads
   # rather than loose beside main.tex. These --transform rules rewrite only the
   # data member names at pack time: results/... (the CSVs and the staged README)
@@ -81,12 +91,13 @@ pack() {
   local xform=(
     --transform='s,^results/,anc/results/,'
     --transform='s,^CORRECTNESS_EXCLUSIONS\.md$,anc/CORRECTNESS_EXCLUSIONS.md,'
+    --transform='s,^regeneration\.txt$,anc/REGENERATION,'
   )
   if [ "${#csvs[@]}" -gt 0 ]; then
-    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}" "${doc_member[@]}"
+    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ -C "$repo" "${csvs[@]}" "${readme_member[@]}" "${doc_member[@]}" "${regen_member[@]}"
   else
     echo "   ! no results/*/records.concat.csv found; packing paper only" >&2
-    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ "${readme_member[@]}" "${doc_member[@]}"
+    tar czf arxiv.tar.gz "${xform[@]}" main.tex figures/ "${readme_member[@]}" "${doc_member[@]}" "${regen_member[@]}"
   fi
   echo "Packed arxiv.tar.gz ($(tar tzf arxiv.tar.gz | grep -c . ) entries, $(du -h arxiv.tar.gz | cut -f1))"
 }

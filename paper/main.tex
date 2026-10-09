@@ -559,18 +559,18 @@ difference is the mutative arm's own class eroding.}
 Condition & \sprg{} & \offl{} & 95\% CI for \offl{} $-$ \sprg{} & sep. \\
 \midrule
 \multicolumn{5}{l}{\emph{\texttt{erosion}: whole-application mass share above the threshold}}\\
-\texttt{just-solve}       & 0.087 (0.071) & 0.126 (0.042) & $[-0.010, +0.085]$ & no \\
-\texttt{cohesion-prompt}  & 0.048 (0.032) & 0.043 (0.021) & $[-0.028, +0.016]$ & no \\
+\texttt{just-solve}       & 0.087 (0.071) & 0.126 (0.042) & $[-0.011, +0.085]$ & no \\
+\texttt{cohesion-prompt}  & 0.048 (0.032) & 0.043 (0.021) & $[-0.029, +0.016]$ & no \\
 \texttt{impact-gated}     & 0.044 (0.030) & 0.058 (0.044) & $[-0.016, +0.046]$ & no \\
-\texttt{formula-provided} & 0.008 (0.013) & 0.023 (0.031) & $[-0.002, +0.037]$ & no \\
-\texttt{ai-reviewed}      & 0.042 (0.035) & 0.091 (0.039) & $[+0.018, +0.080]$ & \textbf{yes} \\
+\texttt{formula-provided} & 0.008 (0.013) & 0.023 (0.031) & $[-0.003, +0.037]$ & no \\
+\texttt{ai-reviewed}      & 0.042 (0.035) & 0.091 (0.039) & $[+0.018, +0.079]$ & \textbf{yes} \\
 \addlinespace
 \multicolumn{5}{l}{\emph{\texttt{erosion\_handler}: the same formula over the entry-handler class}}\\
-\texttt{just-solve}       & 0.204 (0.193) & 0.000 (0.000) & $[-0.319, -0.093]$ & \textbf{yes} \\
-\texttt{cohesion-prompt}  & 0.135 (0.218) & 0.000 (0.000) & $[-0.269, +0.000]$ & no \\
+\texttt{just-solve}       & 0.204 (0.193) & 0.000 (0.000) & $[-0.320, -0.093]$ & \textbf{yes} \\
+\texttt{cohesion-prompt}  & 0.135 (0.218) & 0.000 (0.000) & $[-0.273, +0.000]$ & no \\
 \texttt{impact-gated}     & 0.025 (0.064) & 0.000 (0.000) & $[-0.065, +0.000]$ & no \\
 \texttt{formula-provided} & 0.000 (0.000) & 0.000 (0.000) & $[+0.000, +0.000]$ & no \\
-\texttt{ai-reviewed}      & 0.074 (0.171) & 0.000 (0.000) & $[-0.191, +0.000]$ & no \\
+\texttt{ai-reviewed}      & 0.074 (0.171) & 0.000 (0.000) & $[-0.178, +0.000]$ & no \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -595,7 +595,7 @@ handler erodes, and under the control that difference separates cleanly. The sam
 instrument, pointed at the change surface instead of the whole application,
 recovers the result the placement metrics report.
 
-The mechanism is visible in the change request plan. Eight of the sixty rules
+The mechanism is visible in the change request plan. Five of the sixty rules
 concern E.164 phone normalisation, three concern Luhn checksums and two concern
 soundex matching. These are self-contained algorithms with genuinely high branch
 counts. Both arms must implement them, and neither architecture makes them
@@ -703,7 +703,7 @@ metric sits astride 1.
 The one placement metric to discount is \texttt{propagation\_cost}. Its $R$ of
 2.7 carries an interval of [0.71, 9.03] that straddles 1, at a posterior of
 93\% against the 100\% the other ten reach, so it is the weakest of the eleven
-and the conclusion does not rest on it. Nine of the eleven have a lower bound
+and the conclusion does not rest on it. Ten of the eleven have a lower bound
 above 2 and a posterior of 100\%.
 \texttt{cum\_change\_top1}'s interval spans [4.13, 30.35], which is the small
 denominator instability discussed in Section~\ref{sec:threats} made visible, and
@@ -1024,7 +1024,7 @@ two ambiguous tests, is the \texttt{strict} column of Table~\ref{tab:correctness
 \paragraph{Escape from the call graph.} Under the formula condition the
 mutative arm's count of container dispatched classes, meaning advice, aspects,
 filters and entity listeners, rose from 3.0 (SD 0) to 11.2 (SD 9.4) per run, and
-under the AI reviewer to 5.4 (SD 2.5). That is complexity leaving the call graph
+under the AI reviewer to 5.4 (SD 2.6). That is complexity leaving the call graph
 rather than leaving the codebase, and it is why no single call graph scoped metric
 is treated as decisive here. The additive arm's count is exactly 1.0 in all five
 conditions.
@@ -1397,7 +1397,7 @@ date are confounded, and a silent provider side change within that window cannot
 be ruled out from the data alone. The control ran three weeks before the external
 interventions, so recomputing $S$ and $R$ over the three September external
 conditions alone, dropping the August control, is a partial check. It leaves the
-four-condition result intact, the placement metrics giving $R$ from 2.9 to 10.6.
+four-condition result intact, the placement metrics giving $R$ from 3.1 to 10.6.
 Concurrent execution is the correct fix and the harness supports it.
 
 \paragraph{Two conditions optimise a score defined by this study.} The gated and

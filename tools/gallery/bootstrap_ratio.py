@@ -55,6 +55,11 @@ RUNS_FOUR = [("just-solve", "blind-202608100006"),
              ("formula-provided", "blind-202609010045")]
 RUNS_AIREVIEW = [("ai-reviewed", "blind-202609290948")]
 RUNS_FIVE = RUNS_FOUR + RUNS_AIREVIEW
+# The three external-control conditions that ran in September, i.e. RUNS_FOUR
+# without the August control. The threats section recomputes S/R over just these
+# to check that the control's three-week-earlier run date is not carrying the
+# result (the "drop the August control" robustness check).
+RUNS_SEP3 = RUNS_FOUR[1:]
 # Backward-compatible default for importers (e.g. floor_effect) and loaders: the
 # full five, so load() reads every run unless told otherwise.
 RUNS = RUNS_FIVE
@@ -66,6 +71,9 @@ def select_runs(which):
         return [("four external-control conditions", RUNS_FOUR)]
     if which == "five":
         return [("five conditions (adds ai-reviewed)", RUNS_FIVE)]
+    if which == "sep3":
+        return [("three September external conditions (drops the August control)",
+                 RUNS_SEP3)]
     return [("four external-control conditions", RUNS_FOUR),
             ("five conditions (adds ai-reviewed)", RUNS_FIVE)]
 
@@ -151,10 +159,12 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--latex", action="store_true",
                     help="emit the CI column as LaTeX table cells")
-    ap.add_argument("--conditions", choices=("four", "five", "both"),
+    ap.add_argument("--conditions", choices=("four", "five", "both", "sep3"),
                     default="both",
                     help="range S/R over the four external-control conditions, "
-                         "the five (adding ai-reviewed), or both (default)")
+                         "the five (adding ai-reviewed), both (default), or sep3 "
+                         "(the three September external conditions, dropping the "
+                         "August control, for the run-date robustness check)")
     a = ap.parse_args(argv)
     data = load(a.results)
 
