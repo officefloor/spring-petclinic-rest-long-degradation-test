@@ -300,6 +300,39 @@ def sec_convergence(data, latex):
               f"diff={d:+.4f} [{lo:+.4f},{hi:+.4f}] {verdict}")
 
 
+def sec_erosion(data, latex):
+    """The borrowed SlopCodeBench erosion measure at two scopes, final phase
+    (Table tab:erosion). The CI is OF - Spring (additive minus mutative), the sign
+    the paper table uses. For the whole-app `erosion` and the `erosion_hot_fns`
+    count, lower is better, so a POSITIVE interval is the additive arm scoring
+    worse. For `erosion_handler` the additive arm is identically zero, so a
+    NEGATIVE interval is the mutative arm's own handler class eroding. The
+    decomposition sentence in the subsection (total/over-threshold/in-handler
+    mass) is emitted too, from the control run."""
+    print("\n## EROSION (borrowed SlopCodeBench measure, final phase; CI = OF - Spring)")
+    for field in ("erosion", "erosion_handler", "erosion_hot_fns"):
+        print(f"\n# {field}")
+        for l, _ in RUNS:
+            sm, ssd, _, scm = cell(data, l, "spring", field)
+            om, osd, _, ocm = cell(data, l, "officefloor", field)
+            _, lo, hi = boot_diff(ocm, scm)
+            sep = "yes" if (lo > 0 or hi < 0) else "no"
+            if latex:
+                print(f"\\texttt{{{tex(l)}}} & {sm:.3f} ({ssd:.3f}) & {om:.3f} ({osd:.3f}) "
+                      f"& $[{lo:+.3f}, {hi:+.3f}]$ & {sep} \\\\")
+            else:
+                print(f"  {l:16s} sp={sm:.3f}({ssd:.3f}) of={om:.3f}({osd:.3f}) "
+                      f"OF-S=[{lo:+.3f},{hi:+.3f}] {sep}")
+    print("\n# mass decomposition, control run (just-solve), final phase")
+    for arm in ARMS:
+        hm, _, _, _ = cell(data, "just-solve", arm, "erosion_high_mass")
+        tm, _, _, _ = cell(data, "just-solve", arm, "erosion_total_mass")
+        hh, _, _, _ = cell(data, "just-solve", arm, "erosion_handler_high_mass")
+        frac = 100 * hh / hm if hm else 0.0
+        print(f"  {arm:11s} total_mass={tm:.0f} over_threshold={hm:.0f} "
+              f"in_handler={hh:.1f} ({frac:.0f}% of over-threshold)")
+
+
 def _fmt(m, sd, field):
     if field == "halstead_volume":
         return f"{m:,.0f} ({sd:,.0f})"
@@ -310,13 +343,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=os.path.join(_REPO, "results"))
     ap.add_argument("--latex", action="store_true")
-    ap.add_argument("--only", default="", help="comma list: amount,added,correctness,outcome,paragraphs,convergence")
+    ap.add_argument("--only", default="", help="comma list: amount,added,correctness,outcome,paragraphs,convergence,erosion")
     a = ap.parse_args(argv)
     data = load(a.results)
     want = set(a.only.split(",")) if a.only else None
     secs = [("amount", sec_amount), ("added", sec_added),
             ("correctness", sec_correctness), ("outcome", sec_outcome),
-            ("paragraphs", sec_paragraphs), ("convergence", sec_convergence)]
+            ("paragraphs", sec_paragraphs), ("convergence", sec_convergence),
+            ("erosion", sec_erosion)]
     for name, fn in secs:
         if want is None or name in want:
             fn(data, a.latex)
