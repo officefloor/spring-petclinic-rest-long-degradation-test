@@ -622,8 +622,13 @@ _CK_AGGREGATE = ["cbo", "rfc", "lcom", "lcom*", "tcc", "lcc", "dit", "fanin", "f
 
 def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
                java_bin: str = "java", handler_class: Optional[str] = None,
-               timeout: int = 900) -> Optional[dict]:
+               timeout: int = 900, fns: Optional[list[dict]] = None,
+               adj: Optional[dict] = None) -> Optional[dict]:
     """Per-class C&K metrics via the CK tool, aggregated to arm level.
+
+    With `fns` (records that went through `metrics._call_index`) and their call
+    adjacency `adj`, it also returns the `bk_*` columns: TCC and LCC as Bieman & Kang
+    define them, which CK's own `tcc`/`lcc` do not (see `bk_cohesion`).
 
     Returns None (never zeros) if CK did not run -- the "did not run reads as found
     nothing" failure mode that has already bitten the smell metric twice in this
@@ -641,14 +646,20 @@ def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
     import tempfile
     out_dir = tempfile.mkdtemp(prefix="ck_")
     rows: list[dict] = []
+    methods: list[dict] = []
+    fields: list[dict] = []
     try:
         for d in src_dirs:
             target = os.path.join(worktree, d)
             if not os.path.isdir(target):
                 continue
+            # Args: useJars, maxFilesPerPartition, variablesAndFields. The last MUST be true:
+            # CK only records per-method field use with it on, and tcc/lcc are built from that
+            # record, so with it off they read 0.0 for every class. CK counts DIRECT field
+            # access only, not access through a called method as Bieman & Kang define it.
             try:
                 proc = subprocess.run(
-                    [java_bin, "-jar", ck_jar, target, "false", "0", "false",
+                    [java_bin, "-jar", ck_jar, target, "false", "0", "true",
                      out_dir + os.sep],
                     capture_output=True, text=True, timeout=timeout)
             except (OSError, subprocess.TimeoutExpired):
@@ -658,6 +669,11 @@ def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
                 return None
             with open(cls_csv, encoding="utf-8", errors="replace") as fh:
                 rows.extend(list(_csv.DictReader(fh)))
+            for name, into in (("method.csv", methods), ("field.csv", fields)):
+                path = os.path.join(out_dir, name)
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        into.extend(list(_csv.DictReader(fh)))
             for leftover in ("class.csv", "method.csv", "field.csv", "variable.csv"):
                 try:
                     os.remove(os.path.join(out_dir, leftover))
@@ -709,6 +725,143 @@ def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
                     # (`v == v and v >= 0`) the aggregate `col()` already applies.
                     out[f"ck_handler_{key}"] = None if (v != v or v < 0) else round(v, 4)
                 break
+    if fns is not None and adj is not None:
+        out.update(bk_cohesion(worktree, methods, fields, fns, adj, handler_class))
+    return out
+
+
+def _bk_class_ratios(direct: dict, calls: dict, visible: list) -> Optional[tuple[float, float]]:
+    """(TCC, LCC) of one class, or None when it has fewer than two visible methods.
+
+    `direct` maps every method of the class (private ones too) to the fields it reads or
+    writes itself, `calls` maps it to the methods OF THE SAME CLASS it calls, and
+    `visible` lists the non-private, non-constructor methods. Bieman & Kang (1995): a
+    method uses a field if it accesses it directly OR through a method it calls, at any
+    depth; two visible methods are directly connected if they use a field in common;
+    TCC = NDC / NP and LCC = (NDC + NIC) / NP, where NIC counts pairs joined only
+    through a chain of direct connections and NP = n(n - 1) / 2."""
+    n = len(visible)
+    if n < 2:
+        return None
+    used: dict = {}
+    for m in visible:
+        seen, stack, acc = {m}, [m], set()
+        while stack:
+            u = stack.pop()
+            acc |= direct.get(u, set())
+            for c in calls.get(u, ()):
+                if c not in seen:
+                    seen.add(c)
+                    stack.append(c)
+        used[m] = acc
+    parent = {m: m for m in visible}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    ndc = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = visible[i], visible[j]
+            if used[a] & used[b]:
+                ndc += 1
+                parent[find(a)] = find(b)
+    groups = Counter(find(m) for m in visible).values()
+    connected = sum(g * (g - 1) // 2 for g in groups)
+    np_ = n * (n - 1) // 2
+    return ndc / np_, connected / np_
+
+
+def bk_cohesion(worktree: str, methods: list[dict], fields: list[dict], fns: list[dict],
+                adj: dict, handler_class: Optional[str] = None) -> dict:
+    """TCC and LCC as Bieman & Kang (1995) define them, per class, aggregated like CK's.
+
+    WHY NOT CK'S OWN. CK counts a method as using a field only when it touches the field
+    ITSELF, and it keeps constructors among the methods. Bieman & Kang count a field
+    reached through a called method of the same class, and leave constructors out. A
+    class that reads its state through small helpers therefore scores far lower in CK,
+    and a class of getters joined only by its constructor scores far higher. On
+    officehq-angular-spring's final `Invoice` (run 202610112340) CK gives TCC 0.05 /
+    LCC 0.41 and this gives 0.36 / 0.92.
+
+    HOW. Field use is CK's `field.csv` (parser-resolved, so a local that shadows a field
+    is not counted), with visibility and constructor flags from `method.csv`. Calls are
+    `call_adjacency`, the harness's one resolution rule, restricted to callees in the
+    same CK class; a same-class call always resolves under that rule, so its
+    conservative handling of cross-class names does not bite here. Overloaded callees
+    all count, as everywhere else. CK methods are matched to lizard records by file,
+    name and the nearest start line; a method lizard does not list (lambda bodies,
+    initialisers) keeps its direct field use and simply has no call edges.
+
+    CAVEAT to publish with it: an injected collaborator (a repository, an
+    EntityManager) is an instance field, so in a Spring service nearly every method
+    "shares" it and the service reads as highly cohesive.
+
+    Blank (None), never zero, when nothing could be computed."""
+    out = {"bk_classes": None, "bk_tcc_mean": None, "bk_tcc_max": None,
+             "bk_lcc_mean": None, "bk_lcc_max": None,
+             "bk_handler_tcc": None, "bk_handler_lcc": None}
+    if not methods:
+        return out
+    use: dict = defaultdict(set)
+    for f in fields:
+        use[(f.get("class", ""), f.get("method", ""))].add(f.get("variable", ""))
+    # lizard records by (real file path, method name), for the line match below
+    by_file_name: dict = defaultdict(list)
+    for f in fns:
+        if "_key" in f:
+            by_file_name[(os.path.realpath(os.path.join(worktree, f["file"])),
+                          f["_meth"])].append(f)
+    key_of: dict = {}            # (CK class, CK method) -> lizard node key
+    for m in methods:
+        name = m.get("method", "").split("/")[0]
+        try:
+            line = int(m.get("line", ""))
+        except ValueError:
+            continue
+        cands = by_file_name.get((os.path.realpath(m.get("file", "")), name), [])
+        if cands:
+            best = min(cands, key=lambda f: abs(int(f["start"]) - line))
+            if abs(int(best["start"]) - line) <= 5:
+                key_of[(m["class"], m["method"])] = best["_key"]
+    per_class: dict = defaultdict(list)
+    for m in methods:
+        per_class[m.get("class", "")].append(m)
+    stem = handler_class.removesuffix(".java") if handler_class else None
+    tccs: list[float] = []
+    lccs: list[float] = []
+    for cls, ms in per_class.items():
+        ids = [(cls, m["method"]) for m in ms]
+        direct = {i: use.get(i, set()) for i in ids}
+        node_to_id: dict = defaultdict(list)
+        for i in ids:
+            if i in key_of:
+                node_to_id[key_of[i]].append(i)
+        calls = {i: [c for callee in adj.get(key_of[i], ()) for c in node_to_id.get(callee, ())]
+                 for i in ids if i in key_of}
+        visible = []
+        for m in ms:
+            try:
+                mods = int(m.get("modifiers") or 0)
+            except ValueError:
+                mods = 0
+            if m.get("constructor") != "true" and not mods & 0x2:   # JDT Modifier.PRIVATE
+                visible.append((cls, m["method"]))
+        r = _bk_class_ratios(direct, calls, visible)
+        if r is None:
+            continue
+        tccs.append(r[0])
+        lccs.append(r[1])
+        if stem and cls.split(".")[-1] == stem:
+            out["bk_handler_tcc"], out["bk_handler_lcc"] = round(r[0], 4), round(r[1], 4)
+    if tccs:
+        out.update({"bk_classes": len(tccs),
+                      "bk_tcc_mean": round(sum(tccs) / len(tccs), 4),
+                      "bk_tcc_max": round(max(tccs), 4),
+                      "bk_lcc_mean": round(sum(lccs) / len(lccs), 4),
+                      "bk_lcc_max": round(max(lccs), 4)})
     return out
 
 

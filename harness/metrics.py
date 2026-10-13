@@ -1407,7 +1407,8 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
             plc.update(pm)
     if tools.get("ck"):
         ckm = placement.ck_metrics(worktree, src_dirs, tools["ck"],
-                                   tools.get("java", "java"), handler_class=handler_cls)
+                                   tools.get("java", "java"), handler_class=handler_cls,
+                                   fns=fns, adj=adj)
         if ckm:
             plc.update(ckm)
 

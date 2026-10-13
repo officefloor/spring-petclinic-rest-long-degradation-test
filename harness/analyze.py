@@ -1055,13 +1055,17 @@ PLACEMENT_METRICS = [
     ("ck_lcom_mean", "Lack of cohesion LCOM, mean (C&K 1994) — low is cohesive"),
     ("ck_lcom_max", "LCOM, worst class"),
     ("ck_lcom_star_mean", "LCOM* mean (Henderson-Sellers 1996)"),
-    ("ck_tcc_mean", "Tight class cohesion, mean (Bieman & Kang 1995) — HIGH is cohesive"),
-    ("ck_lcc_mean", "Loose class cohesion, mean"),
+    ("ck_tcc_mean", "Tight class cohesion, mean (CK: direct field access only) — HIGH is cohesive"),
+    ("ck_lcc_mean", "Loose class cohesion, mean (CK: direct field access only)"),
+    ("bk_tcc_mean", "Tight class cohesion, mean (Bieman & Kang 1995 as defined) — HIGH is cohesive"),
+    ("bk_lcc_mean", "Loose class cohesion, mean (Bieman & Kang 1995 as defined)"),
     ("ck_rfc_mean", "Response for a class, mean (C&K)"),
     ("ck_rfc_max", "Response for a class, worst"),
     ("ck_dit_mean", "Depth of inheritance tree, mean (C&K)"),
     ("ck_handler_lcom", "LCOM of the HANDLER class (like-for-like role)"),
     ("ck_handler_tcc", "TCC of the handler class"),
+    ("bk_handler_tcc", "TCC of the handler class (Bieman & Kang as defined)"),
+    ("bk_handler_lcc", "LCC of the handler class (Bieman & Kang as defined)"),
     ("ck_handler_rfc", "RFC of the handler class"),
     ("ck_handler_cbo", "CBO of the handler class"),
     ("ck_handler_wmc", "WMC of the handler class (CK cross-check on wmc_handler)"),
@@ -1099,7 +1103,7 @@ for _f2, _lab in PLACEMENT_METRICS:
         METRIC_GROUP[_f2] = "amount"
 for _f2 in [k for k in METRIC_GROUP if k.startswith(
         ("ccdist_", "wmcdist_", "cogdist_", "voldist_", "change_", "cum_change_",
-         "propagation_", "ck_lcom", "ck_tcc", "ck_lcc", "ck_rfc", "ck_handler_",
+         "propagation_", "ck_lcom", "ck_tcc", "ck_lcc", "ck_rfc", "ck_handler_", "bk_",
          "pmd_god", "pmd_data", "pmd_handler"))]:
     METRIC_GROUP[_f2] = "placement"
 for _f2 in ("wmc_handler", "wmc_max", "entry_cc", "node_cc_median", "node_cc_max",
@@ -1184,6 +1188,8 @@ METRIC_EXPECTATION = {
     "ck_handler_lcom": (+1, "both"), "ck_handler_rfc": (+1, "both"),
     "ck_handler_cbo": (+1, "level"), "ck_handler_wmc": (+1, "both"),
     "ck_handler_tcc": (-1, "level"),
+    "bk_tcc_mean": (-1, "level"), "bk_lcc_mean": (-1, "level"),
+    "bk_handler_tcc": (-1, "level"), "bk_handler_lcc": (-1, "level"),
     # published detectors (external thresholds)
     "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
     "pmd_data_classes": (0, "level"),

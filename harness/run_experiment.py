@@ -172,7 +172,13 @@ CSV_FIELDS = [
 ] + [f"ck_{m}_{agg}" for m in ("cbo", "rfc", "lcom", "lcom_star", "tcc", "lcc",
                                "dit", "fanin", "fanout") for agg in ("mean", "max")
 ] + [f"ck_handler_{m}" for m in ("cbo", "rfc", "lcom", "lcom_star", "tcc", "lcc",
-                                 "dit", "fanin", "fanout", "wmc")]
+                                 "dit", "fanin", "fanout", "wmc")
+] + [
+    # Bieman & Kang TCC/LCC as defined (field use through same-class calls counts,
+    # constructors excluded) -- CK's own tcc/lcc above count direct access only
+    "bk_classes", "bk_tcc_mean", "bk_tcc_max", "bk_lcc_mean", "bk_lcc_max",
+    "bk_handler_tcc", "bk_handler_lcc",
+]
 
 PHASES = ["Start", "Early", "Mid", "Late", "Final"]
 
