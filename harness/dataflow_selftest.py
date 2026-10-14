@@ -468,6 +468,24 @@ def run_reach() -> bool:
     return ok and good
 
 
+def run_tramp_chains() -> bool:
+    """Longest tramp chain through a cycle, in both visiting orders. B and C call each other;
+    X enters the cycle at C and A at B. The true chains are X-C-B-D-E (4) and A-B-D-E (3).
+    Caching C's depth while it was cut short at B (reached from A) gave X only 1."""
+    ok = True
+    edges = {"A": ["B"], "B": ["C", "D"], "C": ["B"], "D": ["E"], "X": ["C"]}
+    sig = {k: [("t", "T")] for k in "ABCDEX"}
+    want = {"A": 3, "B": 2, "C": 3, "D": 1, "X": 4}
+    for order in ("ABCDX", "XDCBA"):
+        tramp = {k: {"T"} for k in order}
+        got = {k: v for (k, _t), v in dataflow.tramp_chains(edges, sig, tramp).items()}
+        good = got == want
+        ok = ok and good
+        print(f"  [{'PASS' if good else 'FAIL'}] tramp chains, visiting {order}: {got} "
+              f"(expected {want})")
+    return ok
+
+
 def _check(out: dict, expected: dict) -> bool:
     ok = True
     for k, want in expected.items():
@@ -564,6 +582,7 @@ def main() -> int:
     ok = run_roles(tools.get("ck") or "", tools.get("java", "java")) and ok
     ok = run_collaborators(tools.get("ck") or "", tools.get("java", "java")) and ok
     ok = run_reach() and ok
+    ok = run_tramp_chains() and ok
     print(f"\nOVERALL: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

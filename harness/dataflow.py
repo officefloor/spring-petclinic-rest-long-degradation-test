@@ -505,6 +505,35 @@ def _type_travel(by_key: dict, dom: dict, edges: list) -> tuple[list, list]:
     return spans, jac
 
 
+def tramp_chains(adj: dict, sig: dict, tramp_types: dict) -> dict:
+    """Longest tramp chain from each (f, T) where f hands T on: (f, T) -> (g, T) when g is a
+    callee taking T, continuing while g hands T on too. A simple path (no (g, T) twice).
+
+    A depth found while a cycle was cut short depends on the path that reached it, so only
+    uncut depths are memoised; caching them made the result depend on set iteration order
+    (string hashing differs per process) and under-count chains entered from elsewhere."""
+    memo: dict = {}
+
+    def depth(k, typ, stack):
+        if (k, typ) in memo:
+            return memo[(k, typ)], False
+        best, cut = 0, False
+        for g in adj.get(k, ()):
+            if g == k or typ not in {t for _, t in sig.get(g, [])}:
+                continue
+            if (g, typ) in stack:
+                cut = True
+                continue
+            nxt, c = (depth(g, typ, stack | {(g, typ)}) if typ in tramp_types.get(g, ())
+                      else (0, False))
+            cut |= c
+            best = max(best, 1 + nxt)
+        if not cut:
+            memo[(k, typ)] = best
+        return best, cut
+    return {(k, t): depth(k, t, {(k, t)})[0] for k, ts in tramp_types.items() for t in ts}
+
+
 def dataflow_metrics(worktree: str, fns: list[dict], adj: dict,
                      collab: Optional[set] = None) -> dict:
     """Tramp data, type co-travel and data clumps over one checkpoint, over all
@@ -571,21 +600,7 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict,
             n_tramp_fns += 1
             tramp_types[k] = t
 
-    # longest tramp chain: (f, T) -> (g, T) when f hands T on, g is a callee taking T
-    memo: dict = {}
-
-    def depth(k, typ, stack):
-        if (k, typ) in memo:
-            return memo[(k, typ)]
-        best = 0
-        for g in adj.get(k, ()):
-            if g == k or (g, typ) in stack or typ not in {t for _, t in sig.get(g, [])}:
-                continue
-            nxt = depth(g, typ, stack | {(g, typ)}) if typ in tramp_types.get(g, ()) else 0
-            best = max(best, 1 + nxt)
-        memo[(k, typ)] = best
-        return best
-    chains = {(k, t): depth(k, t, {(k, t)}) for k, ts in tramp_types.items() for t in ts}
+    chains = tramp_chains(adj, sig, tramp_types)
     chain_max = max(chains.values(), default=0)
     chain_max_d = max((v for (_k, t), v in chains.items() if type_head(t) not in collab),
                       default=0)
