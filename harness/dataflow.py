@@ -267,6 +267,149 @@ def roles(worktree: str, fns: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# collaborators vs data
+# ---------------------------------------------------------------------------
+#
+# Both frameworks detach COLLABORATORS (services, repositories, mappers) from the call
+# graph: Spring injects them into fields, OfficeFloor passes them to `service` as
+# parameters. Counting them as data would credit Spring's fields as "implicit data" and
+# OfficeFloor's parameters as "data threaded". So every type is classed, the same way in
+# both arms, from the source at the checkpoint:
+#
+#   collaborator - a class declared with a bean annotation (BEAN_ANNOTATIONS), an
+#                  interface extending a Spring Data repository, every supertype of
+#                  those (so ClinicService and OwnerRepository count through their
+#                  @Service / @Repository implementations), and the framework services
+#                  in FRAMEWORK_COLLABORATORS.
+#   data         - everything else: entities, DTOs, ids, OfficeFloor's Out<T>/@Val values.
+#
+# A parameter or field is a collaborator when its OUTER type is (`ObjectResponse<X>` is
+# the response facility; `Out<Owner>` and `List<Owner>` are data).
+
+BEAN_ANNOTATIONS = frozenset(
+    "Service Repository Component Controller RestController Mapper Configuration "
+    "ControllerAdvice RestControllerAdvice".split())
+SPRING_DATA_REPOS = frozenset(
+    "Repository CrudRepository ListCrudRepository JpaRepository PagingAndSortingRepository "
+    "ListPagingAndSortingRepository".split())
+FRAMEWORK_COLLABORATORS = frozenset("""
+    ServerHttpConnection ObjectResponse EntityManager JdbcTemplate NamedParameterJdbcTemplate
+    JdbcClient DataSource ObjectMapper PasswordEncoder Clock ApplicationEventPublisher
+    Validator ConversionService RestTemplate RestClient WebClient TransactionTemplate
+    PlatformTransactionManager Environment MeterRegistry
+""".split())
+SOURCE_GLOB = "src/main/java/**/*.java"
+_DECL = re.compile(
+    r"((?:@[\w.]+(?:\s*\([^)]*\))?\s*)*)"
+    r"(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed|strictfp)\s+)*"
+    r"\b(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)([^{;]*)\{")
+_MODIFIERS = re.compile(
+    r"\b(public|protected|private|static|final|transient|volatile)\b")
+
+
+def _strip(text: str) -> str:
+    return _STRIP.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _sources(worktree: str) -> list[str]:
+    out = []
+    for path in sorted(glob.glob(os.path.join(worktree, SOURCE_GLOB), recursive=True)):
+        try:
+            out.append(_strip(open(path, encoding="utf-8", errors="replace").read()))
+        except OSError:
+            pass
+    return out
+
+
+def _no_generics(s: str) -> str:
+    prev = None
+    while prev != s:
+        prev, s = s, re.sub(r"<[^<>]*>", "", s)
+    return s
+
+
+def type_head(typ: str) -> str:
+    """The outer type's simple name: `java.util.List<Owner>` -> List, `Owner[]` -> Owner."""
+    t = _no_generics(typ).replace("...", "").replace("[]", "").strip()
+    return t.split(".")[-1]
+
+
+def collaborator_types(worktree: str, sources: Optional[list[str]] = None) -> set[str]:
+    """Simple names of the collaborator types at this checkpoint (see above)."""
+    supers: dict = defaultdict(set)
+    seeds: set = set()
+    for text in sources if sources is not None else _sources(worktree):
+        for m in _DECL.finditer(text):
+            annots = {a.split(".")[-1] for a in re.findall(r"@([\w.]+)", m.group(1))}
+            name, header = m.group(3), _no_generics(m.group(4))
+            sup = set()
+            for part in re.split(r"\b(?:extends|implements|permits)\b", header)[1:]:
+                sup |= {w.strip().split(".")[-1] for w in part.split(",") if w.strip()}
+            sup = {w for w in sup if re.fullmatch(r"[A-Za-z_$][\w$]*", w)}
+            supers[name] |= sup
+            if annots & BEAN_ANNOTATIONS or sup & SPRING_DATA_REPOS:
+                seeds.add(name)
+    out, stack = set(seeds), list(seeds)
+    while stack:
+        for s in supers.get(stack.pop(), ()):
+            if s not in out:
+                out.add(s)
+                stack.append(s)
+    return out | FRAMEWORK_COLLABORATORS
+
+
+def field_types(worktree: str, sources: Optional[list[str]] = None) -> dict:
+    """Top-level class simple name -> {instance field name: outer type}. Fields of nested
+    classes are not read (their fields count as data downstream)."""
+    out: dict = {}
+    for text in sources if sources is not None else _sources(worktree):
+        m = _DECL.search(text)
+        if not m:
+            continue
+        cls, body = m.group(3), text[m.end():]
+        fields: dict = {}
+        depth, seg, init = 0, [], False
+        for ch in body:
+            if ch == "{":
+                if depth == 0:
+                    # an initializer (`= { ... }`, `= new X() {`), not an annotation's `=`
+                    init = "=" in _ANNOT.sub(" ", "".join(seg))
+                depth += 1
+                continue
+            if ch == "}":
+                if depth == 0:
+                    break
+                depth -= 1
+                if depth == 0 and not init:
+                    seg = []                     # a method, nested class or init block ended
+                continue
+            if depth:
+                continue
+            if ch != ";":
+                seg.append(ch)
+                continue
+            decl, seg, init = "".join(seg), [], False
+            decl = _ANNOT.sub(" ", decl).split("=", 1)[0]
+            if "(" in decl or re.search(r"\bstatic\b", decl):
+                continue
+            decl = _MODIFIERS.sub(" ", decl).strip()
+            parts = _split_top(decl)
+            if not parts:
+                continue
+            first = re.match(r"(.*?)\s*([A-Za-z_$][\w$]*)\s*$", parts[0].strip(), re.S)
+            if not first or not first.group(1).strip():
+                continue
+            typ = type_head(first.group(1))
+            fields[first.group(2)] = typ
+            for extra in parts[1:]:
+                n = extra.split("=", 1)[0].strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", n):
+                    fields[n] = typ
+        out[cls] = fields
+    return out
+
+
+# ---------------------------------------------------------------------------
 # whole-checkpoint metrics
 # ---------------------------------------------------------------------------
 
@@ -296,41 +439,87 @@ def _components(nodes: set, edges: list[tuple]) -> list[int]:
     return list(sizes.values())
 
 
-def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
-    """Tramp data, type co-travel and data clumps over one checkpoint.
+def _type_travel(by_key: dict, dom: dict, edges: list) -> tuple[list, list]:
+    """Per domain type: the largest connected piece of the call subgraph of the
+    functions taking it (spans), and the Jaccard overlap of the types' edge sets."""
+    by_type: dict = defaultdict(set)
+    for k, ts in dom.items():
+        for t in ts:
+            by_type[t].add(k)
+    spans, type_edges = [], {}
+    for t, nodes in by_type.items():
+        if len(nodes) < 2:
+            continue
+        te = [(a, b) for a, b in edges if a in nodes and b in nodes]
+        spans.append(max(_components(nodes, te)))
+        if te:
+            type_edges[t] = frozenset(te)
+    jac = [len(x & y) / len(x | y) for x, y in combinations(type_edges.values(), 2)]
+    return spans, jac
+
+
+def dataflow_metrics(worktree: str, fns: list[dict], adj: dict,
+                     collab: Optional[set] = None) -> dict:
+    """Tramp data, type co-travel and data clumps over one checkpoint, over all
+    parameters (`df_*`) and again split into data (`dfdata_*`) and collaborator
+    (`dfcol_*`) parameters (see `collaborator_types`).
 
     `fns` must have been through metrics._call_index (each carries `_key`), and `adj`
     is metrics.call_adjacency over the same records."""
+    if collab is None:
+        collab = collaborator_types(worktree)
     cache: dict = {}
     by_key = {f["_key"]: f for f in fns if "_key" in f}
     role = roles(worktree, fns)
     r_params: dict = defaultdict(int)
     r_tramp: dict = defaultdict(int)
+    rd_params: dict = defaultdict(int)
+    rd_tramp: dict = defaultdict(int)
     sig: dict = {}                      # key -> [(name, type)]
     dom: dict = {}                      # key -> domain types across all params
+    dom_d: dict = {}                    # key -> domain types across data params
     tramp_types: dict = {}              # key -> set of full types that are tramp here
     passes: dict = {}                   # key -> {callee name: parameters passed to it}
+    passes_d: dict = {}                 # the same, data parameters only
+    passes_c: dict = {}                 # the same, collaborator parameters only
     n_params = n_tramp = n_unused = n_with = n_tramp_fns = 0
+    nd = nd_tramp = nc = nc_tramp = 0
     for k, f in by_key.items():
         ps = params(f["long_name"])
         sig[k] = ps
+        is_c = {n: type_head(t) in collab for n, t in ps}
         dom[k] = set().union(*(domain_types(t) for _, t in ps)) if ps else set()
+        dom_d[k] = set().union(*(domain_types(t) for n, t in ps if not is_c[n])) if ps else set()
         if not ps:
             continue
         flow = param_flow(_source(worktree, f, cache), f["long_name"])
         cls = {n: kind for n, (kind, _c) in flow.items()}
         cnt: dict = defaultdict(int)
-        for _n, (_k, callees) in flow.items():
+        cnt_d: dict = defaultdict(int)
+        cnt_c: dict = defaultdict(int)
+        for n, (_k, callees) in flow.items():
             for c in callees:
                 cnt[c] += 1
-        passes[k] = cnt
+                (cnt_c if is_c.get(n) else cnt_d)[c] += 1
+        passes[k], passes_d[k], passes_c[k] = cnt, cnt_d, cnt_c
         n_with += 1
         n_params += len(ps)
         t = {typ for name, typ in ps if cls.get(name) == "tramp"}
-        n_tramp += sum(1 for v in cls.values() if v == "tramp")
-        r_params[role.get(k, "other")] += len(ps)
-        r_tramp[role.get(k, "other")] += sum(1 for v in cls.values() if v == "tramp")
+        tramps = sum(1 for v in cls.values() if v == "tramp")
+        n_tramp += tramps
+        ro = role.get(k, "other")
+        r_params[ro] += len(ps)
+        r_tramp[ro] += tramps
         n_unused += sum(1 for v in cls.values() if v == "unused")
+        for n, _t in ps:
+            if is_c[n]:
+                nc += 1
+                nc_tramp += cls.get(n) == "tramp"
+            else:
+                nd += 1
+                nd_tramp += cls.get(n) == "tramp"
+                rd_params[ro] += 1
+                rd_tramp[ro] += cls.get(n) == "tramp"
         if t:
             n_tramp_fns += 1
             tramp_types[k] = t
@@ -349,42 +538,48 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
             best = max(best, 1 + nxt)
         memo[(k, typ)] = best
         return best
-    chain_max = max((depth(k, t, {(k, t)}) for k, ts in tramp_types.items() for t in ts),
-                    default=0)
+    chains = {(k, t): depth(k, t, {(k, t)}) for k, ts in tramp_types.items() for t in ts}
+    chain_max = max(chains.values(), default=0)
+    chain_max_d = max((v for (_k, t), v in chains.items() if type_head(t) not in collab),
+                      default=0)
 
     # type co-travel on call edges
     edges = [(a, b) for a, bs in adj.items() for b in bs if a != b and a in by_key and b in by_key]
     shared = [len(dom[a] & dom[b]) for a, b in edges]
-    # an edge CARRIES data when the caller passes one of its own parameters to the callee
-    carried = [passes.get(a, {}).get(by_key[b].get("_meth", ""), 0) for a, b in edges]
-    by_type: dict = defaultdict(set)
-    for k, ts in dom.items():
-        for t in ts:
-            by_type[t].add(k)
-    spans, type_edges = [], {}
-    for t, nodes in by_type.items():
-        if len(nodes) < 2:
-            continue
-        te = [(a, b) for a, b in edges if a in nodes and b in nodes]
-        spans.append(max(_components(nodes, te)))
-        if te:
-            type_edges[t] = frozenset(te)
-    jac = [len(x & y) / len(x | y) for x, y in combinations(type_edges.values(), 2)]
+
+    def carried_by(p):
+        # an edge CARRIES data when the caller passes one of its own parameters to the callee
+        return [p.get(a, {}).get(by_key[b].get("_meth", ""), 0) for a, b in edges]
+    carried, carried_d, carried_c = carried_by(passes), carried_by(passes_d), carried_by(passes_c)
+    spans, jac = _type_travel(by_key, dom, edges)
+    spans_d, jac_d = _type_travel(by_key, dom_d, edges)
+    n_types = len(set().union(*dom.values())) if dom else 0
 
     # data clumps: >=3 (name, type) parameters shared by >=2 signatures
-    psets = [frozenset(ps) for ps in sig.values() if len(ps) >= 3]
-    clumps = {a & b for a, b in combinations(psets, 2) if len(a & b) >= 3}
+    def clumps(sigs):
+        psets = [frozenset(ps) for ps in sigs if len(ps) >= 3]
+        return len({a & b for a, b in combinations(psets, 2) if len(a & b) >= 3})
+    n_clumps = clumps(sig.values())
+    n_clumps_d = clumps([[(n, t) for n, t in ps if type_head(t) not in collab]
+                         for ps in sig.values()])
 
     def r(x, n=4):
         return None if x is None else round(x, n)
+
+    def share(xs):
+        return r(sum(1 for c in xs if c) / len(xs)) if xs else None
+
+    def mean(xs):
+        return r(sum(xs) / len(xs)) if xs else None
     split = {}
     for ro in ROLES:
         ce = [c for (a, _b), c in zip(edges, carried) if role.get(a, "other") == ro]
         split[f"df_fns_{ro}"] = sum(1 for k in by_key if role.get(k, "other") == ro)
         split[f"df_params_{ro}"] = r_params[ro]
         split[f"df_tramp_ratio_{ro}"] = r(r_tramp[ro] / r_params[ro]) if r_params[ro] else None
-        split[f"df_edge_carry_share_{ro}"] = (r(sum(1 for c in ce if c) / len(ce))
-                                             if ce else None)
+        split[f"df_edge_carry_share_{ro}"] = share(ce)
+        split[f"dfdata_tramp_ratio_{ro}"] = (r(rd_tramp[ro] / rd_params[ro])
+                                             if rd_params[ro] else None)
     return split | {
         "df_params": n_params,
         "df_tramp_params": n_tramp,
@@ -393,16 +588,30 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
         "df_unused_params": n_unused,
         "df_tramp_chain_max": chain_max,
         "df_edges": len(edges),
-        "df_edge_carry_share": r(sum(1 for c in carried if c) / len(carried)) if carried else None,
-        "df_edge_carry_mean": r(sum(carried) / len(carried)) if carried else None,
-        "df_edge_shared_share": r(sum(1 for s in shared if s) / len(shared)) if shared else None,
-        "df_edge_shared_mean": r(sum(shared) / len(shared)) if shared else None,
-        "df_types": len(by_type),
+        "df_edge_carry_share": share(carried),
+        "df_edge_carry_mean": mean(carried),
+        "df_edge_shared_share": share(shared),
+        "df_edge_shared_mean": mean(shared),
+        "df_types": n_types,
         "df_type_span_max": max(spans, default=None),
-        "df_type_span_mean": r(sum(spans) / len(spans)) if spans else None,
-        "df_type_overlap_mean": r(sum(jac) / len(jac)) if jac else None,
+        "df_type_span_mean": mean(spans),
+        "df_type_overlap_mean": mean(jac),
         "df_type_overlap_max": r(max(jac)) if jac else None,
-        "df_data_clumps": len(clumps),
+        "df_data_clumps": n_clumps,
+        # data vs collaborator parameters
+        "df_collab_types": len(collab - FRAMEWORK_COLLABORATORS),
+        "dfdata_params": nd,
+        "dfcol_params": nc,
+        "dfdata_tramp_ratio": r(nd_tramp / nd) if nd else None,
+        "dfcol_tramp_ratio": r(nc_tramp / nc) if nc else None,
+        "dfdata_tramp_chain_max": chain_max_d,
+        "dfdata_edge_carry_share": share(carried_d),
+        "dfdata_edge_carry_mean": mean(carried_d),
+        "dfcol_edge_carry_share": share(carried_c),
+        "dfdata_type_span_max": max(spans_d, default=None),
+        "dfdata_type_span_mean": mean(spans_d),
+        "dfdata_type_overlap_mean": mean(jac_d),
+        "dfdata_clumps": n_clumps_d,
     }
 
 
@@ -472,10 +681,39 @@ def signature_churn(worktree: str, prev_ref: str, cur_ref: str,
 _CONSTANT = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
+# JDT modifier flags, as CK reports them in method.csv
+_ABSTRACT, _BODY_IN_INTERFACE = 0x400, 0x2 | 0x8 | 0x10000     # private, static, default
+
+
+def _bodyless(m: dict, class_type: str) -> bool:
+    """An abstract method, or an interface method that is not default/static/private:
+    it has no body, so no data reaches it."""
+    try:
+        mods = int(m.get("modifiers") or 0)
+    except ValueError:
+        mods = 0
+    return bool(mods & _ABSTRACT) or (class_type == "interface"
+                                      and not mods & _BODY_IN_INTERFACE)
+
+
+DR_COLUMNS = (
+    "dr_methods", "dr_explicit_mean", "dr_reached_mean", "dr_ambient_mean",
+    "dr_implicit_share", "dr_field_span_max", "dr_field_span_mean",
+    *(f"dr_implicit_share_{ro}" for ro in ROLES),
+    "drdata_implicit_share", *(f"drdata_implicit_share_{ro}" for ro in ROLES),
+    "drdata_reached_mean", "drcol_reached_mean",
+    "drdata_field_span_max", "drcol_field_span_max",
+    "dep_scope_mean", "dep_used_mean", "dep_surplus_mean", "dep_surplus_share",
+    *(f"dep_surplus_share_{ro}" for ro in ROLES),
+)
+
+
 def data_reach(worktree: str, classes: list[dict], methods: list[dict],
-               fields: list[dict], fns: list[dict], adj: dict) -> dict:
+               fields: list[dict], fns: list[dict], adj: dict,
+               collab: Optional[set] = None) -> dict:
     """How much of a method's data arrives implicitly, through its class's fields,
-    rather than explicitly as parameters.
+    rather than explicitly as parameters; and how many collaborators a method has in
+    scope that it does not use.
 
     In a Spring service the data a new rule needs is mostly already in scope: the
     injected repositories and collaborators are instance fields, so a new method reaches
@@ -493,20 +731,39 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
     `dr_implicit_share` = sum(reached) / sum(reached + explicit) over all methods.
     `dr_field_span_*` = methods that reach one field: how many functions one piece of
     ambient data ties together. Constructors are left out (they set fields, they do not
-    receive data through them). Blank when CK gave no methods."""
+    receive data through them), and so are methods without a body (abstract and
+    interface methods). Blank when CK gave no methods.
+
+    DATA vs COLLABORATORS (see `collaborator_types`). Both frameworks inject
+    collaborators; they differ in SCOPE. Spring injects per class, so every method has
+    all of its class's collaborators in scope; OfficeFloor injects per function, so a
+    function has exactly the ones it declares. Each field is classed by its declared
+    type (`field_types`) and each parameter by its type (lizard's signature, through
+    `ck_key_map`; a method CK lists but lizard does not counts its parameters as data):
+
+      drdata_* / drcol_* - the reach measures over data fields and parameters only, and
+                 collaborator fields reached.
+      dep_scope    - collaborators in scope: the class's collaborator-typed instance
+                     fields plus collaborator parameters.
+      dep_used     - those reached (fields, by the closure above) or referenced
+                     (parameters: read or handed on).
+      dep_surplus  - scope - used: collaborators a method could reach but does not.
+                     `dep_surplus_share` = sum(surplus) / sum(scope)."""
     from .placement import ck_key_map
-    keys = ("dr_methods", "dr_explicit_mean", "dr_reached_mean", "dr_ambient_mean",
-            "dr_implicit_share", "dr_field_span_max", "dr_field_span_mean",
-            *(f"dr_implicit_share_{ro}" for ro in ROLES))
-    out: dict = {k: None for k in keys}
+    out: dict = {k: None for k in DR_COLUMNS}
     if not methods:
         return out
+    srcs = _sources(worktree)
+    if collab is None:
+        collab = collaborator_types(worktree, srcs)
+    ftypes = field_types(worktree, srcs)
     use: dict = defaultdict(set)
     for f in fields:
         v = f.get("variable", "")
         if v and not _CONSTANT.match(v):
             use[(f.get("class", ""), f.get("method", ""))].add(v)
     ambient: dict = {}
+    kind = {c.get("class", ""): c.get("type", "") for c in classes}
     for c in classes:
         try:
             ambient[c.get("class", "")] = (int(float(c.get("totalFieldsQty") or 0))
@@ -514,16 +771,26 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
         except ValueError:
             pass
     key_of = ck_key_map(worktree, methods, fns)
+    by_key = {f["_key"]: f for f in fns if "_key" in f}
     role = roles(worktree, fns)
+    cache: dict = {}
     per_class: dict = defaultdict(list)
     for m in methods:
         per_class[m.get("class", "")].append(m)
     tot_reach = tot_expl = 0
     r_reach: dict = defaultdict(int)
     r_expl: dict = defaultdict(int)
+    d_reach: dict = defaultdict(int)       # role -> data fields reached
+    d_expl: dict = defaultdict(int)        # role -> data parameters
+    sc: dict = defaultdict(int)            # role -> collaborators in scope
+    su: dict = defaultdict(int)            # role -> collaborator surplus
     reach_n, expl_n, amb_n, n = [], [], [], 0
+    reach_d_n, reach_c_n, scope_n, used_n = [], [], [], []
     span: dict = defaultdict(int)
     for cls, ms in per_class.items():
+        simple = cls.split(".")[-1].split("$")[-1]
+        ft = ftypes.get(simple, {}) if "$" not in cls else {}
+        col_fields = {v for v, t in ft.items() if t in collab}
         ids = [(cls, m["method"]) for m in ms]
         node_to_id: dict = defaultdict(list)
         for i in ids:
@@ -532,7 +799,7 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
         calls = {i: [c for callee in adj.get(key_of[i], ()) for c in node_to_id.get(callee, ())]
                  for i in ids if i in key_of}
         for m in ms:
-            if m.get("constructor") == "true":
+            if m.get("constructor") == "true" or _bodyless(m, kind.get(cls, "")):
                 continue
             i = (cls, m["method"])
             seen, stack, acc = {i}, [i], set()
@@ -547,15 +814,36 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
                 expl = int(float(m.get("parametersQty") or 0))
             except ValueError:
                 expl = 0
+            fn = by_key.get(key_of.get(i))
+            if fn is not None:
+                ps = params(fn["long_name"])
+                cps = [nm for nm, t in ps if type_head(t) in collab]
+                flow = param_flow(_source(worktree, fn, cache), fn["long_name"]) if cps else {}
+                c_used = sum(1 for nm in cps if flow.get(nm, ("used",))[0] != "unused")
+                expl_d = len(ps) - len(cps)
+            else:
+                cps, c_used, expl_d = [], 0, expl
+            acc_c = acc & col_fields
+            acc_d = acc - col_fields
             ro = role.get(key_of.get(i), "other")
+            scope = len(col_fields) + len(cps)
+            used = len(acc_c) + c_used
             n += 1
             tot_reach += len(acc)
             tot_expl += expl
             r_reach[ro] += len(acc)
             r_expl[ro] += expl
+            d_reach[ro] += len(acc_d)
+            d_expl[ro] += expl_d
+            sc[ro] += scope
+            su[ro] += scope - used
             reach_n.append(len(acc))
             expl_n.append(expl)
             amb_n.append(ambient.get(cls, 0))
+            reach_d_n.append(len(acc_d))
+            reach_c_n.append(len(acc_c))
+            scope_n.append(scope)
+            used_n.append(used)
             for v in acc:
                 span[(cls, v)] += 1
     if not n:
@@ -563,18 +851,36 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
 
     def r(x):
         return round(x, 4)
+
+    def ratio(a, b):
+        return r(a / b) if b else None
+    spans_c = {k: v for k, v in span.items()
+               if k[1] in {f for f, t in ftypes.get(k[0].split(".")[-1], {}).items()
+                           if t in collab} and "$" not in k[0]}
+    spans_d = {k: v for k, v in span.items() if k not in spans_c}
+    dr, de = sum(d_reach.values()), sum(d_expl.values())
     out.update({
         "dr_methods": n,
         "dr_explicit_mean": r(sum(expl_n) / n),
         "dr_reached_mean": r(sum(reach_n) / n),
         "dr_ambient_mean": r(sum(amb_n) / n),
-        "dr_implicit_share": r(tot_reach / (tot_reach + tot_expl)) if tot_reach + tot_expl else None,
+        "dr_implicit_share": ratio(tot_reach, tot_reach + tot_expl),
         "dr_field_span_max": max(span.values(), default=0),
         "dr_field_span_mean": r(sum(span.values()) / len(span)) if span else None,
+        "drdata_implicit_share": ratio(dr, dr + de),
+        "drdata_reached_mean": r(sum(reach_d_n) / n),
+        "drcol_reached_mean": r(sum(reach_c_n) / n),
+        "drdata_field_span_max": max(spans_d.values(), default=0),
+        "drcol_field_span_max": max(spans_c.values(), default=0),
+        "dep_scope_mean": r(sum(scope_n) / n),
+        "dep_used_mean": r(sum(used_n) / n),
+        "dep_surplus_mean": r((sum(scope_n) - sum(used_n)) / n),
+        "dep_surplus_share": ratio(sum(scope_n) - sum(used_n), sum(scope_n)),
     })
     for ro in ROLES:
-        d = r_reach[ro] + r_expl[ro]
-        out[f"dr_implicit_share_{ro}"] = r(r_reach[ro] / d) if d else None
+        out[f"dr_implicit_share_{ro}"] = ratio(r_reach[ro], r_reach[ro] + r_expl[ro])
+        out[f"drdata_implicit_share_{ro}"] = ratio(d_reach[ro], d_reach[ro] + d_expl[ro])
+        out[f"dep_surplus_share_{ro}"] = ratio(su[ro], sc[ro])
     return out
 
 
@@ -588,9 +894,12 @@ DATAFLOW_COLUMNS = [
     "sig_churn_share",
     *(f"df_{m}_{ro}" for m in ("fns", "params", "tramp_ratio", "edge_carry_share")
       for ro in ROLES),
-    "dr_methods", "dr_explicit_mean", "dr_reached_mean", "dr_ambient_mean",
-    "dr_implicit_share", "dr_field_span_max", "dr_field_span_mean",
-    *(f"dr_implicit_share_{ro}" for ro in ROLES),
+    "df_collab_types", "dfdata_params", "dfcol_params", "dfdata_tramp_ratio",
+    "dfcol_tramp_ratio", "dfdata_tramp_chain_max", "dfdata_edge_carry_share",
+    "dfdata_edge_carry_mean", "dfcol_edge_carry_share", "dfdata_type_span_max",
+    "dfdata_type_span_mean", "dfdata_type_overlap_mean", "dfdata_clumps",
+    *(f"dfdata_tramp_ratio_{ro}" for ro in ROLES),
+    *DR_COLUMNS,
 ]
 
 

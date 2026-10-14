@@ -39,6 +39,40 @@ Second scenario, ROLES and IMPLICIT DATA REACH (the classes in ROLE_SRC):
     and find have 1, the rest 0: mean 3/7. Field span: svc reached by get and fmt (2),
     prefix by find (1): max 2, mean 1.5.
 
+Third scenario, COLLABORATORS vs DATA and DEPENDENCY SURPLUS (the classes in DEP_SRC):
+
+  * Collaborators: Store (@Service), Clock2 and MailNotifier (@Component), Notifier
+    (an interface MailNotifier implements), Ctl (@RestController). Owner is data. Fn is
+    an OfficeFloor function wired by fn.yml. Ctl injects store, clock and notifier as
+    @Autowired fields and has one data field, region.
+  * Functions: Store.put(o), Clock2.now(), MailNotifier.send(o) [other]; Ctl.create(o),
+    Ctl.stamp(), Fn.service(o, store, notifier) [entry]; Ctl.save(o, s), Ctl.tag(),
+    Fn.keep(o, store, notifier) [helper].
+  * Data parameters: the six Owner o's. create, save, service and keep only hand o on:
+    tramp 4/6. By role: entry create, service 2/2; helper save, keep 2/2; other 0/2.
+  * Collaborator parameters: save.s, service.store, service.notifier, keep.store,
+    keep.notifier = 5. service hands both on (tramp); keep reads store, never mentions
+    notifier: tramp 2/5.
+  * Call edges: create->save, save->put, stamp->now, stamp->tag, service->keep,
+    keep->put = 6. Four hand a data parameter on (all but stamp's): share and mean 4/6.
+    Only service->keep hands a collaborator on: 1/6.
+  * Tramp chain of data: Owner is tramp in create and save and taken by put, 2 edges.
+  * Data clumps: service and keep share (o, store, notifier), one clump in all; minus
+    the collaborators only o is left, no data clump. Types: Owner's call subgraph is
+    create-save-put-service-keep (5); Owner is the only data type, so there is no data
+    overlap (blank). Over all types the overlap is 0.5 (Owner/Store 1/4, Owner/Notifier
+    1/4, Store/Notifier 1).
+  * Reach (CK): create reaches store; stamp reaches clock, and region through tag; tag
+    reaches region. Data fields reached 2 (stamp, tag), collaborators 2 (create, stamp),
+    over 9 methods. Data implicit share 2 / (2 + 6) = 0.25; by role entry 1 / (1 + 2),
+    helper 1 / (1 + 2), other 0 / (0 + 2). Field spans: region 2 (data), store 1 and
+    clock 1 (collaborators).
+  * Surplus. Ctl's methods have its 3 collaborator fields in scope: create uses 1
+    (surplus 2), save also has s and uses only s (4 in scope, surplus 3), stamp uses
+    clock (2), tag none (3). Fn.service has store and notifier and hands both on
+    (surplus 0); keep uses store, not notifier (1). Scope 17, used 6, surplus 11, over
+    9 methods. By role: entry 4/8, helper 7/9, other no scope (blank).
+
 Run standalone (the data-reach checks need CK, located through config.yaml):
 
     python -m harness.dataflow_selftest --config config.yaml
@@ -116,6 +150,10 @@ EXPECTED = {
     "df_data_clumps": 1,
     "sig_changed_fns": 1, "sig_new_fns": 1, "sig_params_added": 1,
     "sig_churn_share": 0.5,
+    # no collaborators here, so the data-only measures equal the totals
+    "dfdata_params": 11, "dfcol_params": 0, "dfdata_tramp_ratio": round(4 / 11, 4),
+    "dfdata_tramp_chain_max": 2, "dfdata_edge_carry_share": 1.0, "dfdata_clumps": 1,
+    "dfdata_type_span_max": 3,
 }
 
 
@@ -168,6 +206,84 @@ REACH_EXPECTED = {
 }
 
 
+DEP_SRC = {
+    "Store": """package t;
+@Service
+public class Store {
+    public void put(Owner o) { String s = o.toString(); }
+}
+""",
+    "Clock2": """package t;
+@Component
+public class Clock2 {
+    public int now() { return 1; }
+}
+""",
+    "Notifier": """package t;
+public interface Notifier {
+    void send(Owner o);
+}
+""",
+    "MailNotifier": """package t;
+@Component
+public class MailNotifier implements Notifier {
+    public void send(Owner o) { String s = o.getName(); }
+}
+""",
+    "Ctl": """package t;
+@RestController
+public class Ctl {
+    @Autowired
+    private Store store;
+    @Autowired
+    private Clock2 clock;
+    @Autowired
+    private Notifier notifier;
+    private String region = "x";
+    public void create(Owner o) { save(o, store); }
+    private void save(Owner o, Store s) { s.put(o); }
+    public int stamp() { return clock.now() + tag(); }
+    private int tag() { return region.length(); }
+}
+""",
+    "Fn": """package t;
+public class Fn {
+    public void service(@Val Owner o, Store store, Notifier notifier) { keep(o, store, notifier); }
+    private void keep(Owner o, Store store, Notifier notifier) { store.put(o); }
+}
+""",
+}
+DEP_WIRING = """fn:
+  class: t.Fn
+"""
+DEP_EXPECTED = {
+    "df_collab_types": 5,
+    "dfdata_params": 6, "dfcol_params": 5,
+    "dfdata_tramp_ratio": round(4 / 6, 4), "dfcol_tramp_ratio": 0.4,
+    "dfdata_tramp_ratio_entry": 1.0, "dfdata_tramp_ratio_helper": 1.0,
+    "dfdata_tramp_ratio_other": 0.0,
+    "df_edges": 6,
+    "dfdata_edge_carry_share": round(4 / 6, 4), "dfdata_edge_carry_mean": round(4 / 6, 4),
+    "dfcol_edge_carry_share": round(1 / 6, 4),
+    "dfdata_tramp_chain_max": 2,
+    "df_data_clumps": 1, "dfdata_clumps": 0,
+    "dfdata_type_span_max": 5, "df_type_overlap_mean": 0.5, "dfdata_type_overlap_mean": None,
+}
+DEP_REACH_EXPECTED = {
+    "dr_methods": 9,
+    "drdata_implicit_share": 0.25,
+    "drdata_implicit_share_entry": round(1 / 3, 4),
+    "drdata_implicit_share_helper": round(1 / 3, 4),
+    "drdata_implicit_share_other": 0.0,
+    "drdata_reached_mean": round(2 / 9, 4), "drcol_reached_mean": round(2 / 9, 4),
+    "drdata_field_span_max": 2, "drcol_field_span_max": 1,
+    "dep_scope_mean": round(17 / 9, 4), "dep_used_mean": round(6 / 9, 4),
+    "dep_surplus_mean": round(11 / 9, 4), "dep_surplus_share": round(11 / 17, 4),
+    "dep_surplus_share_entry": 0.5, "dep_surplus_share_helper": round(7 / 9, 4),
+    "dep_surplus_share_other": None,
+}
+
+
 def _check(out: dict, expected: dict) -> bool:
     ok = True
     for k, want in expected.items():
@@ -178,23 +294,24 @@ def _check(out: dict, expected: dict) -> bool:
     return ok
 
 
-def run_roles(ck_jar: str, java_bin: str) -> bool:
-    root = tempfile.mkdtemp(prefix="dataflow_roles_")
+def _run_ck_scenario(title: str, sources: dict, wiring: tuple[str, str], expected: dict,
+                     reach_expected: dict, ck_jar: str, java_bin: str) -> bool:
+    root = tempfile.mkdtemp(prefix="dataflow_ck_")
     try:
         src = os.path.join(root, "src", "main", "java", "t")
         os.makedirs(src)
-        for name, body in ROLE_SRC.items():
+        for name, body in sources.items():
             with open(os.path.join(src, f"{name}.java"), "w") as fh:
                 fh.write(body)
-        wiring = os.path.join(root, "src", "main", "resources", "officefloor")
-        os.makedirs(wiring)
-        with open(os.path.join(wiring, "step.yml"), "w") as fh:
-            fh.write(ROLE_WIRING)
+        wdir = os.path.join(root, "src", "main", "resources", "officefloor")
+        os.makedirs(wdir)
+        with open(os.path.join(wdir, wiring[0]), "w") as fh:
+            fh.write(wiring[1])
         fns = functions(root, ["src/main/java/**/*.java"])
         adj = call_adjacency(*_call_index(root, fns))
-        print("  -- roles and the split by role")
-        ok = _check(dataflow.dataflow_metrics(root, fns, adj), ROLE_EXPECTED)
-        print("  -- implicit data reach (CK)")
+        print(f"  -- {title}")
+        ok = _check(dataflow.dataflow_metrics(root, fns, adj), expected)
+        print(f"  -- {title}: field reach (CK)")
         if not ck_jar or not os.path.isfile(ck_jar):
             print(f"  [FAIL] CK not found ({ck_jar!r}): pass --config config.yaml")
             return False
@@ -202,9 +319,21 @@ def run_roles(ck_jar: str, java_bin: str) -> bool:
         if out is None:
             print("  [FAIL] CK did not run")
             return False
-        return _check(out, REACH_EXPECTED) and ok
+        return _check(out, reach_expected) and ok
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def run_roles(ck_jar: str, java_bin: str) -> bool:
+    return _run_ck_scenario("roles and the split by role", ROLE_SRC,
+                            ("step.yml", ROLE_WIRING), ROLE_EXPECTED, REACH_EXPECTED,
+                            ck_jar, java_bin)
+
+
+def run_collaborators(ck_jar: str, java_bin: str) -> bool:
+    return _run_ck_scenario("collaborators vs data, dependency surplus", DEP_SRC,
+                            ("fn.yml", DEP_WIRING), DEP_EXPECTED, DEP_REACH_EXPECTED,
+                            ck_jar, java_bin)
 
 
 def _git(root, *args):
@@ -246,9 +375,10 @@ def main() -> int:
         with open(args.config) as fh:
             tools = (yaml.safe_load(fh) or {}).get("tools") or {}
     print("Data-flow coupling self-test (tramp data, co-travel, clumps, signature churn,\n"
-          "roles, implicit data reach)\n")
+          "roles, implicit data reach, collaborators vs data, dependency surplus)\n")
     ok = run()
     ok = run_roles(tools.get("ck") or "", tools.get("java", "java")) and ok
+    ok = run_collaborators(tools.get("ck") or "", tools.get("java", "java")) and ok
     print(f"\nOVERALL: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

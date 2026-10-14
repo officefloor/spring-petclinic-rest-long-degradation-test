@@ -1137,6 +1137,38 @@ DATAFLOW_METRICS = [
     ("dr_ambient_mean", "Instance fields in scope of a method, mean"),
     ("dr_field_span_max", "Most methods tied to one field"),
     ("dr_field_span_mean", "Methods tied to one field, mean"),
+    # data vs collaborators (dataflow.collaborator_types): both frameworks inject
+    # collaborators, so the request data is measured apart from them
+    ("df_collab_types", "Collaborator types (beans, repositories and their supertypes)"),
+    ("dfdata_tramp_ratio", "Tramp data — data parameters only"),
+    ("dfcol_tramp_ratio", "Tramp — collaborator parameters only"),
+    ("dfdata_tramp_chain_max", "Longest call chain a data type is handed down as tramp"),
+    ("dfdata_edge_carry_share", "Call edges carrying a data parameter to the callee"),
+    ("dfdata_edge_carry_mean", "Data parameters carried per call edge, mean"),
+    ("dfcol_edge_carry_share", "Call edges carrying a collaborator parameter"),
+    ("dfdata_type_span_max", "Largest call subgraph one data type travels"),
+    ("dfdata_type_span_mean", "Call subgraph a data type travels, mean"),
+    ("dfdata_type_overlap_mean", "Overlap of data types' call subgraphs, mean Jaccard"),
+    ("dfdata_clumps", "Data clumps of data parameters only"),
+    ("dfdata_tramp_ratio_entry", "Data tramp ratio — entry functions"),
+    ("dfdata_tramp_ratio_helper", "Data tramp ratio — helpers inside entry classes"),
+    ("dfdata_tramp_ratio_other", "Data tramp ratio — other code"),
+    ("drdata_implicit_share", "Share of a method's data reached through data fields"),
+    ("drdata_implicit_share_entry", "Implicit data share (data fields) — entry functions"),
+    ("drdata_implicit_share_helper", "Implicit data share (data fields) — helpers"),
+    ("drdata_implicit_share_other", "Implicit data share (data fields) — other code"),
+    ("drdata_reached_mean", "Data fields a method reaches, mean"),
+    ("drcol_reached_mean", "Collaborator fields a method reaches, mean"),
+    ("drdata_field_span_max", "Most methods tied to one data field"),
+    ("drcol_field_span_max", "Most methods tied to one collaborator field"),
+    # injection scope: Spring per class, OfficeFloor per function
+    ("dep_scope_mean", "Collaborators in scope of a method (fields + parameters), mean"),
+    ("dep_used_mean", "Collaborators a method uses, mean"),
+    ("dep_surplus_mean", "Collaborators in scope but unused, per method"),
+    ("dep_surplus_share", "Dependency surplus: unused share of collaborators in scope"),
+    ("dep_surplus_share_entry", "Dependency surplus — entry functions"),
+    ("dep_surplus_share_helper", "Dependency surplus — helpers inside entry classes"),
+    ("dep_surplus_share_other", "Dependency surplus — other code"),
 ]
 METRICS_TO_PLOT += DATAFLOW_METRICS
 
@@ -1270,6 +1302,18 @@ METRIC_EXPECTATION = {
     "dr_implicit_share": (+1, "both"), "dr_implicit_share_entry": (+1, "level"),
     "dr_reached_mean": (+1, "both"), "dr_ambient_mean": (+1, "both"),
     "dr_field_span_max": (+1, "both"), "dr_field_span_mean": (+1, "both"),
+    # data vs collaborators (declared 2026-10-14 after the full-run unsplit results and a
+    # chain0-tip preview of the split, before any run was analysed with it). The data-
+    # only measures inherit the data-flow prediction; injection SCOPE predicts Spring's
+    # surplus higher and growing. Collaborator-only and role-split columns: no prediction.
+    "dfdata_tramp_ratio": (+1, "both"), "dfdata_tramp_chain_max": (+1, "both"),
+    "dfdata_edge_carry_share": (+1, "both"), "dfdata_edge_carry_mean": (+1, "both"),
+    "dfdata_type_span_max": (+1, "both"), "dfdata_type_span_mean": (+1, "both"),
+    "dfdata_type_overlap_mean": (+1, "both"), "dfdata_clumps": (+1, "both"),
+    "drdata_implicit_share": (+1, "both"), "drdata_reached_mean": (+1, "both"),
+    "drdata_field_span_max": (+1, "both"),
+    "dep_scope_mean": (+1, "both"), "dep_surplus_mean": (+1, "both"),
+    "dep_surplus_share": (+1, "both"),
     # published detectors (external thresholds)
     "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
     "pmd_data_classes": (0, "level"),
