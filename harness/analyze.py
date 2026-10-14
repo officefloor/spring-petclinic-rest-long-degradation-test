@@ -22,6 +22,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from typing import Optional
@@ -31,6 +32,24 @@ import yaml
 
 from . import class_shape, correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
 from .run_experiment import CSV_FIELDS, PHASES, phase_for
+
+# Progress for the analysis that follows the recompute. That part runs for minutes
+# (thousands of bootstrap replicates, then a chart per metric) and used to print almost
+# nothing, so a run piped through `tee` looked hung. Every line is flushed.
+_STAGE_T0: list[float] = []
+
+
+def _stage(msg: str) -> None:
+    if not _STAGE_T0:
+        _STAGE_T0.append(time.time())
+    el = time.time() - _STAGE_T0[0]
+    print(f"  [analysis {time.strftime('%H:%M:%S')} +{el:4.0f}s] {msg}", flush=True)
+
+
+def _progress(label: str, i: int, n: int) -> None:
+    """A stage line at roughly every 10% of a loop of n items (i is 1-based)."""
+    if n and (i == n or i % max(1, n // 10) == 0):
+        _stage(f"{label} {i}/{n}")
 
 try:
     import matplotlib
@@ -1565,6 +1584,9 @@ def main() -> int:
                          "Results from a subset are NOT publishable: the chain-cluster "
                          "bootstrap needs the full set, and the summary says so.")
     args = ap.parse_args()
+    # Line-buffer stdout so the summary's own messages reach a `| tee` log as they
+    # happen, not in one block at exit.
+    sys.stdout.reconfigure(line_buffering=True)
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
 
@@ -1622,6 +1644,7 @@ def main() -> int:
     if not rows:
         raise SystemExit(f"no checkpoint commits found for run_id {run_id!r}")
     print(f"run_id {run_id}: recomputed {len(rows)} rows from checkpoint commits")
+    _stage("writing records.concat.csv, then the summary statistics")
 
     # Analysis outputs are local, derived, and gitignored (never committed to the
     # harness repo). A concatenated CSV is written for transparency.
@@ -1718,8 +1741,11 @@ def main() -> int:
     # maintained separately and a metric added to one but not the other silently got
     # a plot with no slope, or a slope with no plot.
     slope_fields = [f for f, _ in METRICS_TO_PLOT]
-    for gk, grp in sorted(groups.items()):
-        for field in slope_fields:
+    _stage(f"degradation slopes: {len(groups)} arm/strategy group(s) x "
+           f"{len(slope_fields)} metrics (bootstrap)")
+    for i_g, (gk, grp) in enumerate(sorted(groups.items()), 1):
+        for i_f, field in enumerate(slope_fields, 1):
+            _progress(f"  slopes {gk[0]}/{gk[1]} ({i_g}/{len(groups)})", i_f, len(slope_fields))
             cs = series_by_chain(grp, field)
             if not cs:
                 continue
@@ -1892,7 +1918,10 @@ def main() -> int:
             lines.append(f"| {strat} | {a1}−{a2} | _expectations not judged_ | | | | | | | | | "
                          f"only {n_chains} chain(s) — bootstrap degenerate |")
         rows_out = []
-        for field in slope_fields:
+        _stage(f"arm differences {a1} - {a2} ({strat}): slope and level bootstrap "
+               f"for {len(slope_fields)} metrics")
+        for i_f, field in enumerate(slope_fields, 1):
+            _progress(f"  {strat} differences", i_f, len(slope_fields))
             d, lo, hi, reps = bootstrap_diff_slope(ra, rb, field)
             ld, llo, lhi, lreps = bootstrap_diff_level(ra, rb, field)
             # Skip only a metric absent on BOTH dimensions. A field with a valid LEVEL
@@ -1973,6 +2002,7 @@ def main() -> int:
         lines.append(f"**{n_bang} contradicted, {len(counter_signals) - n_bang} predicted-but-absent.**\n")
 
     # Impact-metric external validation — does per-checkpoint impact predict independent pain?
+    _stage("impact-metric validation")
     lines.append("## Impact-metric validation (Spearman ρ of `impact_composite` vs independent outcomes)\n")
     lines.append("Within-arm correlation with signals measured *independently* of the git-diff impact "
                  "computation (agent cost/time, comprehension, unintended breakage); 95% CI by chain-cluster "
@@ -2022,7 +2052,10 @@ def main() -> int:
     lines.append("| group | metric | " + " | ".join(n for _, n in OUTCOMES) + " |")
     lines.append("|---|---|" + "---:|" * len(OUTCOMES))
     _summary: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    for field, _lab in METRICS_TO_PLOT:
+    _stage(f"outcome-prediction matrix: {len(METRICS_TO_PLOT)} metrics x "
+           f"{len(OUTCOMES)} outcomes (bootstrap)")
+    for i_m, (field, _lab) in enumerate(METRICS_TO_PLOT, 1):
+        _progress("  outcome matrix", i_m, len(METRICS_TO_PLOT))
         grp_name = METRIC_GROUP.get(field)
         if grp_name is None:
             continue
@@ -2086,6 +2119,7 @@ def main() -> int:
     lines.append("")
 
     # Phase means
+    _stage("phase means, correctness, verbosity and spread tables")
     lines.append("## Phase-binned means\n")
     for field in ["erosion", "erosion_handler", "impact_mutation", "impact_godclass",
                   "verbosity", "cost_usd", "strict_pass"]:
@@ -2387,6 +2421,7 @@ def main() -> int:
     # buckets a CC sum structurally cannot contain (orphan / opaque). Failing it must
     # not lose the analysis that already succeeded, so it is best-effort: the summary
     # says the audit is missing rather than silently omitting the section.
+    _stage("cumulative change audit (base -> tip, every chain)")
     try:
         audit = cumulative_impact.run_audit(eff_cfg, run_id)
         lines += cumulative_impact.markdown_section(audit)
@@ -2405,6 +2440,7 @@ def main() -> int:
     # procedural utilities without the code getting better. Nothing above would show
     # that; this counts what KIND of class each new rule landed in. Best-effort for
     # the same reason as the cumulative audit.
+    _stage("class-shape audit")
     try:
         shape = class_shape.run_audit(eff_cfg, run_id)
         lines += class_shape.markdown_section(shape)
@@ -2418,7 +2454,9 @@ def main() -> int:
         lines.append(f"NOT AVAILABLE — the audit failed with: `{exc}`\n")
 
     # Plots
-    for field, title in METRICS_TO_PLOT:
+    _stage(f"charts: {len(METRICS_TO_PLOT)} metric plots, then the purpose-built figures")
+    for i_p, (field, title) in enumerate(METRICS_TO_PLOT, 1):
+        _progress("  charts", i_p, len(METRICS_TO_PLOT))
         out_png = os.path.join(out_dir, f"{field}.png")
         plot_metric(groups, field, title, out_png)
     # Purpose-built figures. The per-metric trajectory plot renders ONE field at a
