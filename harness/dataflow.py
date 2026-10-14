@@ -44,6 +44,8 @@ LIMITS, all symmetric across arms:
 """
 from __future__ import annotations
 
+import glob
+import os
 import re
 import subprocess
 from collections import defaultdict
@@ -207,6 +209,64 @@ def classify_params(source: str, long_name: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# function roles: where in the architecture a function sits
+# ---------------------------------------------------------------------------
+#
+#   entry  - a function the framework calls with the request's data: an OfficeFloor
+#            function's wired method (`service` of a class named in the YAML wiring),
+#            or a public method of a Spring @RestController / @Controller.
+#   helper - any other method of those same classes (code the entry calls in plain Java).
+#   other  - everything else: services, repositories, mappers, models, utilities.
+#
+# The split exists because the parameter measures mean different things in each place.
+# Between OfficeFloor functions, the data is matched by type and the wiring decides the
+# order, so nothing is threaded. Inside one, the agent writes ordinary Java and can thread
+# data like anywhere else. Splitting by role says which of the two a number comes from.
+
+ROLES = ("entry", "helper", "other")
+WIRING_GLOB = "src/main/resources/officefloor/**/*.yml"
+WIRED_METHOD = "service"
+_WIRED_CLASS = re.compile(r"class:\s*([\w.]+)")
+_CONTROLLER = re.compile(r"@(Rest)?Controller\b")
+
+
+def roles(worktree: str, fns: list[dict]) -> dict:
+    """node key -> 'entry' | 'helper' | 'other' (see above). `fns` must have been
+    through metrics._call_index."""
+    wired: set[str] = set()
+    for path in glob.glob(os.path.join(worktree, WIRING_GLOB), recursive=True):
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        wired |= {c.split(".")[-1] for c in _WIRED_CLASS.findall(text)}
+    controller_files: dict[str, bool] = {}
+    lines: dict[str, list[str]] = {}
+    out = {}
+    for f in fns:
+        if "_key" not in f:
+            continue
+        path = os.path.join(worktree, f["file"])
+        if f["_cls"] in wired:
+            out[f["_key"]] = "entry" if f["_meth"] == WIRED_METHOD else "helper"
+            continue
+        if path not in controller_files:
+            try:
+                text = open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                text = ""
+            controller_files[path] = bool(_CONTROLLER.search(text))
+            lines[path] = text.splitlines()
+        if controller_files[path]:
+            # the modifiers sit on the signature's own line (lizard's start line)
+            sig_line = lines[path][f["start"] - 1] if f["start"] <= len(lines[path]) else ""
+            out[f["_key"]] = "entry" if re.search(r"\bpublic\b", sig_line) else "helper"
+        else:
+            out[f["_key"]] = "other"
+    return out
+
+
+# ---------------------------------------------------------------------------
 # whole-checkpoint metrics
 # ---------------------------------------------------------------------------
 
@@ -243,6 +303,9 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
     is metrics.call_adjacency over the same records."""
     cache: dict = {}
     by_key = {f["_key"]: f for f in fns if "_key" in f}
+    role = roles(worktree, fns)
+    r_params: dict = defaultdict(int)
+    r_tramp: dict = defaultdict(int)
     sig: dict = {}                      # key -> [(name, type)]
     dom: dict = {}                      # key -> domain types across all params
     tramp_types: dict = {}              # key -> set of full types that are tramp here
@@ -265,6 +328,8 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
         n_params += len(ps)
         t = {typ for name, typ in ps if cls.get(name) == "tramp"}
         n_tramp += sum(1 for v in cls.values() if v == "tramp")
+        r_params[role.get(k, "other")] += len(ps)
+        r_tramp[role.get(k, "other")] += sum(1 for v in cls.values() if v == "tramp")
         n_unused += sum(1 for v in cls.values() if v == "unused")
         if t:
             n_tramp_fns += 1
@@ -312,7 +377,15 @@ def dataflow_metrics(worktree: str, fns: list[dict], adj: dict) -> dict:
 
     def r(x, n=4):
         return None if x is None else round(x, n)
-    return {
+    split = {}
+    for ro in ROLES:
+        ce = [c for (a, _b), c in zip(edges, carried) if role.get(a, "other") == ro]
+        split[f"df_fns_{ro}"] = sum(1 for k in by_key if role.get(k, "other") == ro)
+        split[f"df_params_{ro}"] = r_params[ro]
+        split[f"df_tramp_ratio_{ro}"] = r(r_tramp[ro] / r_params[ro]) if r_params[ro] else None
+        split[f"df_edge_carry_share_{ro}"] = (r(sum(1 for c in ce if c) / len(ce))
+                                             if ce else None)
+    return split | {
         "df_params": n_params,
         "df_tramp_params": n_tramp,
         "df_tramp_ratio": r(n_tramp / n_params) if n_params else None,
@@ -392,6 +465,119 @@ def signature_churn(worktree: str, prev_ref: str, cur_ref: str,
     }
 
 
+# ---------------------------------------------------------------------------
+# implicit data reach: data a method gets WITHOUT a parameter
+# ---------------------------------------------------------------------------
+
+_CONSTANT = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def data_reach(worktree: str, classes: list[dict], methods: list[dict],
+               fields: list[dict], fns: list[dict], adj: dict) -> dict:
+    """How much of a method's data arrives implicitly, through its class's fields,
+    rather than explicitly as parameters.
+
+    In a Spring service the data a new rule needs is mostly already in scope: the
+    injected repositories and collaborators are instance fields, so a new method reaches
+    them without any signature saying so. An OfficeFloor function declares everything as
+    a parameter. The parameter measures above cannot see the first kind, so this counts
+    it from CK's per-method field use (`field.csv`):
+
+      reached  - fields a method uses directly or through methods of its own class it
+                 calls (the Bieman & Kang closure; `call_adjacency` restricted to the
+                 class). Constants by naming convention (ALL_CAPS) are not data.
+      explicit - its parameters (CK `parametersQty`).
+      ambient  - instance fields of its class (CK totalFieldsQty - staticFieldsQty),
+                 whether used or not: what a new method there would have in scope.
+
+    `dr_implicit_share` = sum(reached) / sum(reached + explicit) over all methods.
+    `dr_field_span_*` = methods that reach one field: how many functions one piece of
+    ambient data ties together. Constructors are left out (they set fields, they do not
+    receive data through them). Blank when CK gave no methods."""
+    from .placement import ck_key_map
+    keys = ("dr_methods", "dr_explicit_mean", "dr_reached_mean", "dr_ambient_mean",
+            "dr_implicit_share", "dr_field_span_max", "dr_field_span_mean",
+            *(f"dr_implicit_share_{ro}" for ro in ROLES))
+    out: dict = {k: None for k in keys}
+    if not methods:
+        return out
+    use: dict = defaultdict(set)
+    for f in fields:
+        v = f.get("variable", "")
+        if v and not _CONSTANT.match(v):
+            use[(f.get("class", ""), f.get("method", ""))].add(v)
+    ambient: dict = {}
+    for c in classes:
+        try:
+            ambient[c.get("class", "")] = (int(float(c.get("totalFieldsQty") or 0))
+                                           - int(float(c.get("staticFieldsQty") or 0)))
+        except ValueError:
+            pass
+    key_of = ck_key_map(worktree, methods, fns)
+    role = roles(worktree, fns)
+    per_class: dict = defaultdict(list)
+    for m in methods:
+        per_class[m.get("class", "")].append(m)
+    tot_reach = tot_expl = 0
+    r_reach: dict = defaultdict(int)
+    r_expl: dict = defaultdict(int)
+    reach_n, expl_n, amb_n, n = [], [], [], 0
+    span: dict = defaultdict(int)
+    for cls, ms in per_class.items():
+        ids = [(cls, m["method"]) for m in ms]
+        node_to_id: dict = defaultdict(list)
+        for i in ids:
+            if i in key_of:
+                node_to_id[key_of[i]].append(i)
+        calls = {i: [c for callee in adj.get(key_of[i], ()) for c in node_to_id.get(callee, ())]
+                 for i in ids if i in key_of}
+        for m in ms:
+            if m.get("constructor") == "true":
+                continue
+            i = (cls, m["method"])
+            seen, stack, acc = {i}, [i], set()
+            while stack:
+                u = stack.pop()
+                acc |= use.get(u, set())
+                for c in calls.get(u, ()):
+                    if c not in seen:
+                        seen.add(c)
+                        stack.append(c)
+            try:
+                expl = int(float(m.get("parametersQty") or 0))
+            except ValueError:
+                expl = 0
+            ro = role.get(key_of.get(i), "other")
+            n += 1
+            tot_reach += len(acc)
+            tot_expl += expl
+            r_reach[ro] += len(acc)
+            r_expl[ro] += expl
+            reach_n.append(len(acc))
+            expl_n.append(expl)
+            amb_n.append(ambient.get(cls, 0))
+            for v in acc:
+                span[(cls, v)] += 1
+    if not n:
+        return out
+
+    def r(x):
+        return round(x, 4)
+    out.update({
+        "dr_methods": n,
+        "dr_explicit_mean": r(sum(expl_n) / n),
+        "dr_reached_mean": r(sum(reach_n) / n),
+        "dr_ambient_mean": r(sum(amb_n) / n),
+        "dr_implicit_share": r(tot_reach / (tot_reach + tot_expl)) if tot_reach + tot_expl else None,
+        "dr_field_span_max": max(span.values(), default=0),
+        "dr_field_span_mean": r(sum(span.values()) / len(span)) if span else None,
+    })
+    for ro in ROLES:
+        d = r_reach[ro] + r_expl[ro]
+        out[f"dr_implicit_share_{ro}"] = r(r_reach[ro] / d) if d else None
+    return out
+
+
 DATAFLOW_COLUMNS = [
     "df_params", "df_tramp_params", "df_tramp_ratio", "df_tramp_fn_share",
     "df_unused_params", "df_tramp_chain_max", "df_edges", "df_edge_carry_share",
@@ -400,6 +586,11 @@ DATAFLOW_COLUMNS = [
     "df_type_overlap_mean", "df_type_overlap_max", "df_data_clumps",
     "sig_changed_fns", "sig_new_fns", "sig_params_added", "sig_params_removed",
     "sig_churn_share",
+    *(f"df_{m}_{ro}" for m in ("fns", "params", "tramp_ratio", "edge_carry_share")
+      for ro in ROLES),
+    "dr_methods", "dr_explicit_mean", "dr_reached_mean", "dr_ambient_mean",
+    "dr_implicit_share", "dr_field_span_max", "dr_field_span_mean",
+    *(f"dr_implicit_share_{ro}" for ro in ROLES),
 ]
 
 

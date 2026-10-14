@@ -727,6 +727,8 @@ def ck_metrics(worktree: str, src_dirs: list[str], ck_jar: str,
                 break
     if fns is not None and adj is not None:
         out.update(bk_cohesion(worktree, methods, fields, fns, adj, handler_class))
+        from .dataflow import data_reach
+        out.update(data_reach(worktree, rows, methods, fields, fns, adj))
     return out
 
 
@@ -774,6 +776,30 @@ def _bk_class_ratios(direct: dict, calls: dict, visible: list) -> Optional[tuple
     return ndc / np_, connected / np_
 
 
+def ck_key_map(worktree: str, methods: list[dict], fns: list[dict]) -> dict:
+    """(CK class, CK method) -> lizard node key, matched by real file path, method name
+    and the nearest start line (within 5 lines). A CK method lizard does not list
+    (lambda bodies, initialisers) has no entry."""
+    by_file_name: dict = defaultdict(list)
+    for f in fns:
+        if "_key" in f:
+            by_file_name[(os.path.realpath(os.path.join(worktree, f["file"])),
+                          f["_meth"])].append(f)
+    key_of: dict = {}
+    for m in methods:
+        name = m.get("method", "").split("/")[0]
+        try:
+            line = int(m.get("line", ""))
+        except ValueError:
+            continue
+        cands = by_file_name.get((os.path.realpath(m.get("file", "")), name), [])
+        if cands:
+            best = min(cands, key=lambda f: abs(int(f["start"]) - line))
+            if abs(int(best["start"]) - line) <= 5:
+                key_of[(m["class"], m["method"])] = best["_key"]
+    return key_of
+
+
 def bk_cohesion(worktree: str, methods: list[dict], fields: list[dict], fns: list[dict],
                 adj: dict, handler_class: Optional[str] = None) -> dict:
     """TCC and LCC as Bieman & Kang (1995) define them, per class, aggregated like CK's.
@@ -808,24 +834,7 @@ def bk_cohesion(worktree: str, methods: list[dict], fields: list[dict], fns: lis
     use: dict = defaultdict(set)
     for f in fields:
         use[(f.get("class", ""), f.get("method", ""))].add(f.get("variable", ""))
-    # lizard records by (real file path, method name), for the line match below
-    by_file_name: dict = defaultdict(list)
-    for f in fns:
-        if "_key" in f:
-            by_file_name[(os.path.realpath(os.path.join(worktree, f["file"])),
-                          f["_meth"])].append(f)
-    key_of: dict = {}            # (CK class, CK method) -> lizard node key
-    for m in methods:
-        name = m.get("method", "").split("/")[0]
-        try:
-            line = int(m.get("line", ""))
-        except ValueError:
-            continue
-        cands = by_file_name.get((os.path.realpath(m.get("file", "")), name), [])
-        if cands:
-            best = min(cands, key=lambda f: abs(int(f["start"]) - line))
-            if abs(int(best["start"]) - line) <= 5:
-                key_of[(m["class"], m["method"])] = best["_key"]
+    key_of = ck_key_map(worktree, methods, fns)
     per_class: dict = defaultdict(list)
     for m in methods:
         per_class[m.get("class", "")].append(m)

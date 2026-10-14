@@ -21,19 +21,40 @@ worked by hand from the source below.
   * Signature churn, prev -> cur: Repo.repo gains `int id` (changed, 1 parameter
     added), Repo.extra is new, Repo.keep unchanged. Share 1 / (1 + 1) = 0.5.
 
-Run standalone:
+Second scenario, ROLES and IMPLICIT DATA REACH (the classes in ROLE_SRC):
 
-    python -m harness.dataflow_selftest
+  * Roles. Web is a @RestController: its public get() is entry, its private fmt() a
+    helper. Step is named in the OfficeFloor wiring: service() is entry, check() and
+    log() helpers. Svc and Repo are other.
+  * Tramp by role. entry: get(id) hands id to fmt; service(o, repo) hands o to check
+    and save and reads repo, so 2 tramp of 3 parameters. helper: fmt(id) hands id to
+    svc.find; check(o) reads o, so 1 of 2. other: find(id) and save(o) read theirs, 0 of 2.
+  * Carried edges by caller role. entry: get->fmt, service->check, service->save carry,
+    service->log does not, 3 of 4. helper: fmt->find carries, 1 of 1.
+  * Data reach (needs CK). Methods, constructors excluded: get, fmt, service, check,
+    log, find, save = 7, with 1+1+2+1+0+1+1 = 7 parameters. Fields reached: fmt reads
+    svc (MAX is a constant and does not count), get reaches svc through fmt, find reads
+    prefix: 3. Implicit share 3 / (3 + 7) = 0.3. By role: entry 1 / (1 + 3) = 0.25,
+    helper 1 / (1 + 2), other 1 / (1 + 2). Ambient instance fields per method: get, fmt
+    and find have 1, the rest 0: mean 3/7. Field span: svc reached by get and fmt (2),
+    prefix by find (1): max 2, mean 1.5.
+
+Run standalone (the data-reach checks need CK, located through config.yaml):
+
+    python -m harness.dataflow_selftest --config config.yaml
 """
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 
-from . import dataflow
+import yaml
+
+from . import dataflow, placement
 from .metrics import _call_index, _is_prod_java, call_adjacency, functions
 
 CUR = {
@@ -98,6 +119,94 @@ EXPECTED = {
 }
 
 
+ROLE_SRC = {
+    "Web": """package t;
+@RestController
+public class Web {
+    @Autowired
+    private Svc svc;
+    private static final int MAX = 3;
+    public String get(int id) { return fmt(id); }
+    private String fmt(int id) { return svc.find(id) + MAX; }
+}
+""",
+    "Step": """package t;
+public class Step {
+    public void service(Owner o, Repo repo) { check(o); log(); repo.save(o); }
+    private void check(Owner o) { if (o == null) { throw new IllegalStateException(); } }
+    private void log() { System.out.println("step"); }
+}
+""",
+    "Svc": """package t;
+public class Svc {
+    private String prefix = "x";
+    public String find(int id) { return prefix + id; }
+}
+""",
+    "Repo": """package t;
+public class Repo {
+    public void save(Owner o) { String s = o.toString(); }
+}
+""",
+}
+ROLE_WIRING = """step:
+  class: t.Step
+"""
+ROLE_EXPECTED = {
+    "df_fns_entry": 2, "df_fns_helper": 3, "df_fns_other": 2,
+    "df_tramp_ratio_entry": round(2 / 3, 4), "df_tramp_ratio_helper": 0.5,
+    "df_tramp_ratio_other": 0.0,
+    "df_edge_carry_share_entry": 0.75, "df_edge_carry_share_helper": 1.0,
+    "df_edge_carry_share_other": None,
+}
+REACH_EXPECTED = {
+    "dr_methods": 7, "dr_explicit_mean": 1.0, "dr_reached_mean": round(3 / 7, 4),
+    "dr_ambient_mean": round(3 / 7, 4), "dr_implicit_share": 0.3,
+    "dr_implicit_share_entry": 0.25, "dr_implicit_share_helper": round(1 / 3, 4),
+    "dr_implicit_share_other": round(1 / 3, 4),
+    "dr_field_span_max": 2, "dr_field_span_mean": 1.5,
+}
+
+
+def _check(out: dict, expected: dict) -> bool:
+    ok = True
+    for k, want in expected.items():
+        got = out.get(k)
+        good = got == want
+        ok = ok and good
+        print(f"  [{'PASS' if good else 'FAIL'}] {k}: {got} (expected {want})")
+    return ok
+
+
+def run_roles(ck_jar: str, java_bin: str) -> bool:
+    root = tempfile.mkdtemp(prefix="dataflow_roles_")
+    try:
+        src = os.path.join(root, "src", "main", "java", "t")
+        os.makedirs(src)
+        for name, body in ROLE_SRC.items():
+            with open(os.path.join(src, f"{name}.java"), "w") as fh:
+                fh.write(body)
+        wiring = os.path.join(root, "src", "main", "resources", "officefloor")
+        os.makedirs(wiring)
+        with open(os.path.join(wiring, "step.yml"), "w") as fh:
+            fh.write(ROLE_WIRING)
+        fns = functions(root, ["src/main/java/**/*.java"])
+        adj = call_adjacency(*_call_index(root, fns))
+        print("  -- roles and the split by role")
+        ok = _check(dataflow.dataflow_metrics(root, fns, adj), ROLE_EXPECTED)
+        print("  -- implicit data reach (CK)")
+        if not ck_jar or not os.path.isfile(ck_jar):
+            print(f"  [FAIL] CK not found ({ck_jar!r}): pass --config config.yaml")
+            return False
+        out = placement.ck_metrics(root, ["src/main/java"], ck_jar, java_bin, fns=fns, adj=adj)
+        if out is None:
+            print("  [FAIL] CK did not run")
+            return False
+        return _check(out, REACH_EXPECTED) and ok
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _git(root, *args):
     subprocess.run(["git", "-C", root, *args], check=True, capture_output=True)
 
@@ -122,20 +231,24 @@ def run() -> bool:
         fns = functions(root, ["src/main/java/**/*.java"])
         adj = call_adjacency(*_call_index(root, fns))
         out = dataflow.dataflow_all(root, fns, adj, "HEAD~1", "HEAD", _is_prod_java)
-        ok = True
-        for k, want in EXPECTED.items():
-            got = out.get(k)
-            good = got == want
-            ok = ok and good
-            print(f"  [{'PASS' if good else 'FAIL'}] {k}: {got} (expected {want})")
-        return ok
+        print("  -- tramp data, call edges, co-travel, clumps, signature churn")
+        return _check(out, EXPECTED)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
 def main() -> int:
-    print("Data-flow coupling self-test (tramp data, co-travel, clumps, signature churn)\n")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", default="config.yaml", help="config.yaml, for tools.ck")
+    args = ap.parse_args()
+    tools = {}
+    if os.path.isfile(args.config):
+        with open(args.config) as fh:
+            tools = (yaml.safe_load(fh) or {}).get("tools") or {}
+    print("Data-flow coupling self-test (tramp data, co-travel, clumps, signature churn,\n"
+          "roles, implicit data reach)\n")
     ok = run()
+    ok = run_roles(tools.get("ck") or "", tools.get("java", "java")) and ok
     print(f"\nOVERALL: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

@@ -1119,6 +1119,24 @@ DATAFLOW_METRICS = [
     ("sig_churn_share", "Signature churn: changed signatures / (changed + new functions)"),
     ("sig_changed_fns", "Existing functions whose parameter types this rule changed"),
     ("sig_params_added", "Parameters added to existing functions by this rule"),
+    # where the data flow sits: entry (OfficeFloor `service` / Spring controller method),
+    # helper (other methods of those classes) and other code (see dataflow.roles)
+    ("df_tramp_ratio_entry", "Tramp ratio — entry functions"),
+    ("df_tramp_ratio_helper", "Tramp ratio — helpers inside entry classes"),
+    ("df_tramp_ratio_other", "Tramp ratio — other code"),
+    ("df_edge_carry_share_entry", "Call edges carrying a parameter — from entry functions"),
+    ("df_edge_carry_share_helper", "Call edges carrying a parameter — from helpers"),
+    ("df_edge_carry_share_other", "Call edges carrying a parameter — from other code"),
+    # implicit data reach: data a method gets through its class's fields, no parameter
+    ("dr_implicit_share", "Share of a method's data reached through fields, not parameters"),
+    ("dr_implicit_share_entry", "Implicit data share — entry functions"),
+    ("dr_implicit_share_helper", "Implicit data share — helpers inside entry classes"),
+    ("dr_implicit_share_other", "Implicit data share — other code"),
+    ("dr_reached_mean", "Fields a method reaches (directly or via own-class calls), mean"),
+    ("dr_explicit_mean", "Parameters per method, mean"),
+    ("dr_ambient_mean", "Instance fields in scope of a method, mean"),
+    ("dr_field_span_max", "Most methods tied to one field"),
+    ("dr_field_span_mean", "Methods tied to one field, mean"),
 ]
 METRICS_TO_PLOT += DATAFLOW_METRICS
 
@@ -1246,6 +1264,12 @@ METRIC_EXPECTATION = {
     "df_type_overlap_max": (+1, "both"), "df_data_clumps": (+1, "both"),
     "sig_churn_share": (+1, "level"), "sig_changed_fns": (+1, "level"),
     "sig_params_added": (+1, "level"),
+    # implicit data reach (declared 2026-10-14, before any run was analysed with it):
+    # Spring's data arrives through fields, OfficeFloor's through declared parameters.
+    # The role-split columns are descriptive and carry no prediction.
+    "dr_implicit_share": (+1, "both"), "dr_implicit_share_entry": (+1, "level"),
+    "dr_reached_mean": (+1, "both"), "dr_ambient_mean": (+1, "both"),
+    "dr_field_span_max": (+1, "both"), "dr_field_span_mean": (+1, "both"),
     # published detectors (external thresholds)
     "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
     "pmd_data_classes": (0, "level"),
