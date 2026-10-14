@@ -1078,6 +1078,31 @@ PLACEMENT_METRICS = [
 ]
 METRICS_TO_PLOT += PLACEMENT_METRICS
 
+# DATA FLOW vs CONTROL FLOW (harness/dataflow.py) -- the "two graphs, not one" claim.
+# Prediction: the concentrated (Spring) arm threads its data along its call graph and
+# does so more with every change; OfficeFloor's composition keeps the two apart by
+# construction (its YAML wiring is architecture, not measured). Own claim group, so the
+# outcome-prediction matrix sets it beside amount, tax and placement.
+DATAFLOW_METRICS = [
+    ("df_tramp_ratio", "Tramp data: share of parameters only handed on (Stevens et al. 1974)"),
+    ("df_tramp_fn_share", "Share of functions with a tramp parameter"),
+    ("df_tramp_chain_max", "Longest call chain a type is handed down as tramp data"),
+    ("df_unused_params", "Parameters never referenced"),
+    ("df_edge_carry_share", "Share of call edges carrying a caller's parameter to the callee"),
+    ("df_edge_carry_mean", "Caller parameters carried per call edge, mean"),
+    ("df_edge_shared_share", "Share of call edges whose ends share a domain parameter type"),
+    ("df_edge_shared_mean", "Domain parameter types shared per call edge, mean"),
+    ("df_type_span_max", "Largest call subgraph one parameter type travels"),
+    ("df_type_span_mean", "Call subgraph a parameter type travels, mean"),
+    ("df_type_overlap_mean", "Overlap of different types' call subgraphs, mean Jaccard"),
+    ("df_type_overlap_max", "Overlap of two types' call subgraphs, worst pair"),
+    ("df_data_clumps", "Data clumps: >=3 parameters recurring in >=2 signatures (Fowler)"),
+    ("sig_churn_share", "Signature churn: changed signatures / (changed + new functions)"),
+    ("sig_changed_fns", "Existing functions whose parameter types this rule changed"),
+    ("sig_params_added", "Parameters added to existing functions by this rule"),
+]
+METRICS_TO_PLOT += DATAFLOW_METRICS
+
 # Which CLAIM each metric belongs to, for the outcome-correlation summary. The whole
 # point of that analysis is that the three groups should behave DIFFERENTLY against
 # maintenance outcomes: if amount predicts nothing and placement predicts cost and
@@ -1123,6 +1148,8 @@ for _f2 in UNGROUPED_METRICS:
     METRIC_GROUP.pop(_f2, None)
 for _f2 in _TAX_METRICS:
     METRIC_GROUP[_f2] = "tax"
+for _f2, _lab in DATAFLOW_METRICS:
+    METRIC_GROUP[_f2] = "dataflow"
 
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1217,16 @@ METRIC_EXPECTATION = {
     "ck_handler_tcc": (-1, "level"),
     "bk_tcc_mean": (-1, "level"), "bk_lcc_mean": (-1, "level"),
     "bk_handler_tcc": (-1, "level"), "bk_handler_lcc": (-1, "level"),
+    # data flow coupled to control flow: Spring higher, and growing (declared 2026-10-14,
+    # before any run was analysed with these columns)
+    "df_tramp_ratio": (+1, "both"), "df_tramp_fn_share": (+1, "both"),
+    "df_tramp_chain_max": (+1, "both"), "df_edge_carry_share": (+1, "both"),
+    "df_edge_carry_mean": (+1, "both"), "df_edge_shared_share": (+1, "both"),
+    "df_edge_shared_mean": (+1, "both"), "df_type_span_max": (+1, "both"),
+    "df_type_span_mean": (+1, "both"), "df_type_overlap_mean": (+1, "both"),
+    "df_type_overlap_max": (+1, "both"), "df_data_clumps": (+1, "both"),
+    "sig_churn_share": (+1, "level"), "sig_changed_fns": (+1, "level"),
+    "sig_params_added": (+1, "level"),
     # published detectors (external thresholds)
     "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
     "pmd_data_classes": (0, "level"),
@@ -2023,7 +2060,7 @@ def main() -> int:
     lines.append("### Mean |ρ| by claim group — the headline of this section\n")
     lines.append("| group | " + " | ".join(n for _, n in OUTCOMES) + " |")
     lines.append("|---|" + "---:|" * len(OUTCOMES))
-    for grp_name in ("amount", "tax", "placement"):
+    for grp_name in ("amount", "tax", "placement", "dataflow"):
         cells = []
         for ofield, _note in OUTCOMES:
             vals = _summary.get(grp_name, {}).get(ofield, [])

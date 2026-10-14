@@ -24,7 +24,7 @@ import subprocess
 from collections import Counter, defaultdict
 from typing import Optional
 
-from . import placement
+from . import dataflow, placement
 
 import lizard
 
@@ -1412,6 +1412,10 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         if ckm:
             plc.update(ckm)
 
+    # DATA FLOW vs CONTROL FLOW: tramp data, type co-travel on call edges, data clumps,
+    # and signature churn (see harness/dataflow.py). Same records and call adjacency.
+    dfl = dataflow.dataflow_all(worktree, fns, adj, prev_ref, cur_ref, _is_prod_java)
+
     row = {
         "erosion": ed["erosion"],
         "erosion_high_mass": ed["high_mass"],
@@ -1446,6 +1450,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     row.update(reedit_lines)
     row.update(imp)
     row.update(plc)
+    row.update(dfl)
 
     details = {
         "erosion": ed,
@@ -1466,6 +1471,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "reedit": reedit,
         "impact": imp,
         "placement": plc,
+        "dataflow": dfl,
         "functions": [{**f, "mass": round(_mass(f), 4)} for f in fns],
     }
     return row, details

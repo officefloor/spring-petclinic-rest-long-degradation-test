@@ -178,6 +178,15 @@ CSV_FIELDS = [
     # constructors excluded) -- CK's own tcc/lcc above count direct access only
     "bk_classes", "bk_tcc_mean", "bk_tcc_max", "bk_lcc_mean", "bk_lcc_max",
     "bk_handler_tcc", "bk_handler_lcc",
+    # data flow vs control flow (harness/dataflow.py): tramp data, type co-travel on
+    # call edges, data clumps, signature churn
+    "df_params", "df_tramp_params", "df_tramp_ratio", "df_tramp_fn_share",
+    "df_unused_params", "df_tramp_chain_max", "df_edges", "df_edge_carry_share",
+    "df_edge_carry_mean", "df_edge_shared_share",
+    "df_edge_shared_mean", "df_types", "df_type_span_max", "df_type_span_mean",
+    "df_type_overlap_mean", "df_type_overlap_max", "df_data_clumps",
+    "sig_changed_fns", "sig_new_fns", "sig_params_added", "sig_params_removed",
+    "sig_churn_share",
 ]
 
 PHASES = ["Start", "Early", "Mid", "Late", "Final"]

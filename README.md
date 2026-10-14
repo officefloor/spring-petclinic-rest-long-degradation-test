@@ -559,6 +559,7 @@ days):
 python harness/landlock_selftest.py                                   # OVERALL: PASS
 python -m harness.parser_selftest --config config.yaml                # OVERALL: PASS
 python -m harness.cohesion_selftest --config config.yaml              # OVERALL: PASS
+python -m harness.dataflow_selftest                                   # OVERALL: PASS
 python -m harness.run_experiment --config config.yaml --test-mode blind \
     --strategy impact_gated --dry-run    # line reads: block p95 vs baseline officefloor.json (K=0)
 ```
