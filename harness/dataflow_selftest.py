@@ -95,11 +95,16 @@ Fourth scenario, REACH and SHORTCUT UPTAKE (REACH_SRC, then two changes):
     calls t.tick() (Ticker: a new type, explicit; Ticker is newly available to name).
     3 new uses, 2 shortcuts; collaborators 1/1 (Repo), data 1/2 (Visit, not Ticker).
     Ticker.tick is a new method in a new class and uses nothing.
-  * Change 2: name also declares `Visit v = repo.visit(id)`: Visit, available since the
+    Ctl also gains a field `Mailer mailer` it does not use yet: Mailer arrives in Ctl's
+    ambient reach (1 arrival) and is newly available to name and count (with Ticker for
+    name, 3 newly available).
+  * Change 2: count calls mailer.send(): Mailer, in reach since change 1, used one
+    checkpoint later (shortcut, latency 1; the arrival is used, lag 1). name also declares `Visit v = repo.visit(id)`: Visit, available since the
     first state, used two checkpoints later (shortcut, latency 2). A new helper
     Ctl.first() calls repo.find: Repo and Owner, both in Ctl's reach since the first
-    state (shortcuts, latency 2). 3 new uses, all shortcuts; collaborators 1/1 (Repo),
-    data 2/2; new methods 2/2.
+    state (shortcuts, latency 2). 4 new uses, all shortcuts, latency (1+2+2+2)/4;
+    collaborators 1/1 (Repo), data 3/3; new methods 2/2. Over the chain: 1 arrival,
+    used later, median lag 1.
 
 Run standalone (the data-reach checks need CK, located through config.yaml):
 
@@ -357,11 +362,17 @@ public class Ticker {
     public void tick() { }
 }
 """,
+    "Mailer": """package t;
+public class Mailer {
+    public void send() { }
+}
+""",
     "Ctl": """package t;
 @RestController
 public class Ctl {
     @Autowired
     private Repo repo;
+    private Mailer mailer;
     public String name(int id, Ticker t) { t.tick(); return repo.find(id).getPet().getName(); }
     public int count(int id) { Audit.log("x"); return repo.visit(id) == null ? 0 : id; }
 }
@@ -373,12 +384,17 @@ REACH_CHANGE2 = {
 public class Ctl {
     @Autowired
     private Repo repo;
+    private Mailer mailer;
     public String name(int id, Ticker t) {
         t.tick();
         Visit v = repo.visit(id);
         return repo.find(id).getPet().getName();
     }
-    public int count(int id) { Audit.log("x"); return repo.visit(id) == null ? 0 : id; }
+    public int count(int id) {
+        Audit.log("x");
+        mailer.send();
+        return repo.visit(id) == null ? 0 : id;
+    }
     private Owner first() { return repo.find(1); }
 }
 """,
@@ -397,17 +413,19 @@ UPTAKE_EXPECTED = [
         "reach_new_uses": None, "reach_shortcut_share": None,
     },
     {
-        "reach_types": 7,
-        "reach_new_avail": 1, "reach_new_uses": 3,
+        "reach_types": 8,
+        "reach_new_avail": 3, "reach_new_uses": 3,
+        "reach_class_arrivals": 1, "reach_arrived_uses": 0, "reach_arrival_lag_mean": None,
         "reach_shortcut_share": round(2 / 3, 4), "reach_shortcut_share_col": 1.0,
         "reach_shortcut_share_data": 0.5, "reach_shortcut_latency_mean": 1.0,
         "reach_shortcut_share_newfns": None,
     },
     {
-        "reach_new_avail": 0, "reach_new_uses": 3, "reach_shortcut_share": 1.0,
+        "reach_new_avail": 0, "reach_new_uses": 4, "reach_shortcut_share": 1.0,
         "reach_shortcut_share_newfns": 1.0,
         "reach_shortcut_share_col": 1.0, "reach_shortcut_share_data": 1.0,
-        "reach_shortcut_latency_mean": 2.0,
+        "reach_shortcut_latency_mean": 1.75,
+        "reach_class_arrivals": 0, "reach_arrived_uses": 1, "reach_arrival_lag_mean": 1.0,
     },
 ]
 
@@ -433,9 +451,21 @@ def run_reach() -> bool:
             prev = sets
             print(f"  -- reach, state {k}")
             ok = _check(out, expected) and ok
+        print("  -- reach, end of chain")
+        summ = dataflow.reach_chain_summary(since)
+        ok = _check(summ, {"arrivals": 1, "used_same": 0, "used_later": 1, "never_used": 0,
+                           "later_lag_median": 1}) and ok
     finally:
         shutil.rmtree(root, ignore_errors=True)
-    return ok
+    # Lead-lag on a known series: s is a moved one checkpoint later, so a leads s at
+    # lag 1 exactly (rho 1.0) and s does not lead a.
+    a = [3, 0, 0, 1, 0, 0, 2, 0, 0, 0]
+    s = [0] + a[:-1]
+    fwd, rev = dataflow.lead_lag(a, s, (1,))[1]
+    good = fwd == 1.0 and rev is not None and rev < fwd
+    print(f"  [{'PASS' if good else 'FAIL'}] lead-lag: reach->use {fwd}, use->reach {rev} "
+          f"(expected 1.0 and lower)")
+    return ok and good
 
 
 def _check(out: dict, expected: dict) -> bool:

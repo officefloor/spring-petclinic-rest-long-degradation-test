@@ -376,6 +376,10 @@ def _heartbeat_val(row: dict, field: str) -> str:
     return "-" if v is None or v == "" else str(v)
 
 
+# One entry per recomputed chain: dataflow.reach_chain_summary, for the reach section.
+REACH_CHAINS: list[dict] = []
+
+
 def recompute_rows(cfg: dict, run_id: str, work_root: str,
                    exclude: str | None = None,
                    chains: set[int] | None = None) -> list[dict]:
@@ -438,7 +442,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         # Reach uptake follows each method along the chain (dataflow.reach_uptake): the
         # previous checkpoint's reach sets, and since when each type has been in reach.
         prev_reach = None
-        reach_since: dict = {}
+        reach_state: dict = {}
         n_noop = 0
         n_invalid = 0             # gates that aborted -> correctness is missing, not failed
         pending_mutated: list[int] = []   # `mutates` of skipped checkpoints, owed to the next scored one
@@ -476,7 +480,7 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                                                      base_commit, prev, "HEAD", exclude=exclude)
                     row.update(mrow)
                     cur_reach = mdet.get("reach_sets") or {}
-                    row.update(dataflow.reach_uptake(prev_reach, cur_reach, reach_since, i_cp))
+                    row.update(dataflow.reach_uptake(prev_reach, cur_reach, reach_state, i_cp))
                     prev_reach = cur_reach
                 else:
                     print(f"    ! worktree add failed for {branch} cp{k:02d}: "
@@ -659,6 +663,8 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                     "review_fix_cost_usd": fix_cost,
                 })
             rows.append(row)
+        REACH_CHAINS.append({"arm": arm, "strategy": strat, "chain": chain,
+                             "summary": dataflow.reach_chain_summary(reach_state)})
         print(f"  recomputed {branch}: {n} checkpoints"
               + (f" ({n_noop} no-op)" if n_noop else "")
               + (f"  ! {n_invalid} INVALID GATE(S) — correctness excluded" if n_invalid else "")
@@ -1201,6 +1207,9 @@ DATAFLOW_METRICS = [
     ("reach_shortcut_share_col", "Shortcut uptake — collaborator types"),
     ("reach_shortcut_share_data", "Shortcut uptake — data types"),
     ("reach_shortcut_latency_mean", "Checkpoints a type sat in reach before first use, mean"),
+    ("reach_class_arrivals", "Types arriving in a class's ambient reach, this checkpoint"),
+    ("reach_arrived_uses", "Arrived types first used, this checkpoint"),
+    ("reach_arrival_lag_mean", "Checkpoints from arrival in reach to first use, mean"),
 ]
 METRICS_TO_PLOT += DATAFLOW_METRICS
 
@@ -2559,6 +2568,16 @@ def main() -> int:
         print(f"  (class-shape audit failed: {exc})")
         lines.append("## Class shape (what kind of class holds a new rule)\n")
         lines.append(f"NOT AVAILABLE — the audit failed with: `{exc}`\n")
+
+    # Reach: does a class's reach arrive before it is used? Per-chain ledger kept by
+    # dataflow.reach_uptake during the recompute.
+    _stage("reach: arrival before use, lead-lag")
+    if REACH_CHAINS:
+        lines += dataflow.reach_markdown(REACH_CHAINS)
+        reach_json = os.path.join(out_dir, "reach_arrivals.json")
+        with open(reach_json, "w") as fh:
+            json.dump({"run_id": run_id, "chains": REACH_CHAINS}, fh, indent=2)
+        print(f"Wrote {reach_json}")
 
     # Plots
     _stage(f"charts: {len(METRICS_TO_PLOT)} metric plots, then the purpose-built figures")

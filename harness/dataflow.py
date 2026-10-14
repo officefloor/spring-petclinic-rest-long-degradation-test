@@ -1006,6 +1006,7 @@ REACH_COLUMNS = (
 UPTAKE_COLUMNS = (
     "reach_new_avail", "reach_new_uses", "reach_shortcut_share", "reach_shortcut_share_newfns",
     "reach_shortcut_share_col", "reach_shortcut_share_data", "reach_shortcut_latency_mean",
+    "reach_class_arrivals", "reach_arrived_uses", "reach_arrival_lag_mean",
 )
 
 
@@ -1120,19 +1121,34 @@ def reach_metrics(worktree: str, fns: list[dict], adj: dict, table: dict,
     return out, {"sets": sets, "classes": cls_avail, "collab": frozenset(col_t)}
 
 
-def reach_uptake(prev: Optional[dict], cur: dict, since: dict, k: int) -> dict:
-    """Shortcut vs explicit uptake between two checkpoints of one chain.
+def reach_uptake(prev: Optional[dict], cur: dict, state: dict, k: int) -> dict:
+    """Shortcut vs explicit uptake between two checkpoints of one chain, and the
+    arrival of reach before use.
 
-    A type a method newly uses is a SHORTCUT when it was already in that method's reach
-    at the previous checkpoint. A method that did not exist then is compared with its
-    class's reach then (fields, own-method returns, supertypes, navigated): a helper
-    added to a class starts with everything the class already reaches. A method in a
-    new class has nothing in reach before, so all its uses are explicit.
+    SHORTCUTS. A type a method newly uses is a shortcut when it was already in that
+    method's reach at the previous checkpoint. A method that did not exist then is
+    compared with its class's reach then (fields, own-method returns, supertypes,
+    navigated): a helper added to a class starts with everything the class already
+    reaches. A method in a new class has nothing in reach before, so all its uses are
+    explicit.
+
+    ARRIVAL BEFORE USE. A class's own reach (the same set, without any method's
+    parameters: what is ambient in the class) grows during a chain as fields and
+    collaborators are added. Each (class, type) that comes into it after the chain's
+    first checkpoint, and that the class did not already use, is an ARRIVAL; its first
+    use by any method of the class ends it, with lag = checkpoints between. Lag 0 is a
+    type brought in to be used at once; a positive lag is reach that sat there first.
+    Parameters are not ambient, so a type that only ever comes in as a parameter never
+    arrives: it is declared where it is used.
 
     `prev`/`cur` are `reach_metrics`' second result at the previous and this
-    checkpoint (prev None at the chain's first). `since` maps (method id or class key,
-    type) to the checkpoint index from which the type has been continuously in reach;
-    it is updated in place. `k` is this checkpoint's index along the chain."""
+    checkpoint (prev None at the chain's first). `state` carries the chain's ledger
+    from one call to the next and is updated in place; `reach_chain_summary` reads it
+    at the end. `k` is this checkpoint's index along the chain."""
+    since = state.setdefault("since", {})
+    arrivals = state.setdefault("arrivals", {})       # (class key, type) -> k arrived
+    first_use = state.setdefault("first_use", {})     # (class key, type) -> k first used
+    series = state.setdefault("series", [])           # (k, arrivals, shortcut uses)
     out: dict = {c: None for c in UPTAKE_COLUMNS}
     cur_sets = cur.get("sets", {})
     cur_cls = cur.get("classes", {})
@@ -1173,6 +1189,28 @@ def reach_uptake(prev: Optional[dict], cur: dict, since: dict, k: int) -> dict:
             del since[key]
     for key in live:
         since.setdefault(key, k)
+
+    # arrivals into a class's ambient reach, and their first use
+    def class_used(sets):
+        used: dict = defaultdict(set)
+        for mid, (_a, u) in sets.items():
+            used[mid[:2]] |= u
+        return used
+    cur_used = class_used(cur_sets)
+    n_arr = 0
+    if prev is not None:
+        prev_used = class_used(prev_sets)
+        for ck, a in cur_cls.items():
+            for t in a - prev_cls.get(ck, frozenset()):
+                if (ck, t) not in arrivals and t not in prev_used.get(ck, ()):
+                    arrivals[(ck, t)] = k
+                    n_arr += 1
+    lags = []
+    for key, k0 in arrivals.items():
+        if key not in first_use and key[1] in cur_used.get(key[0], ()):
+            first_use[key] = k
+            lags.append(k - k0)
+    series.append((k, n_arr, short))
     if prev is None:
         return out
 
@@ -1186,8 +1224,111 @@ def reach_uptake(prev: Optional[dict], cur: dict, since: dict, k: int) -> dict:
         "reach_shortcut_share_col": ratio(sc, nc),
         "reach_shortcut_share_data": ratio(sd, nd),
         "reach_shortcut_latency_mean": round(sum(lat) / len(lat), 4) if lat else None,
+        "reach_class_arrivals": n_arr,
+        "reach_arrived_uses": len(lags),
+        "reach_arrival_lag_mean": round(sum(lags) / len(lags), 4) if lags else None,
     })
     return out
+
+
+def _ranks(x: list) -> list:
+    order = sorted(range(len(x)), key=lambda i: x[i])
+    r = [0.0] * len(x)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and x[order[j + 1]] == x[order[i]]:
+            j += 1
+        for q in range(i, j + 1):
+            r[order[q]] = (i + j) / 2
+        i = j + 1
+    return r
+
+
+def spearman(x: list, y: list) -> Optional[float]:
+    """Spearman's rho with tie-averaged ranks; None when either side is constant."""
+    if len(x) < 3:
+        return None
+    rx, ry = _ranks(x), _ranks(y)
+    mx, my = sum(rx) / len(rx), sum(ry) / len(ry)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    sxx = sum((a - mx) ** 2 for a in rx)
+    syy = sum((b - my) ** 2 for b in ry)
+    return round(sxy / (sxx * syy) ** 0.5, 4) if sxx and syy else None
+
+
+LEAD_LAGS = (1, 2, 3, 5, 10)
+
+
+def lead_lag(a: list, s: list, lags=LEAD_LAGS) -> dict:
+    """lag -> (rho(a now, s lag later), rho(s now, a lag later)). Reach leading use
+    shows as the first beating the second."""
+    out = {}
+    for L in lags:
+        if len(a) - L < 3:
+            continue
+        out[L] = (spearman(a[:-L], s[L:]), spearman(s[:-L], a[L:]))
+    return out
+
+
+def reach_chain_summary(state: dict) -> dict:
+    """End of chain: what became of every arrival, and the lead-lag of arrivals
+    against shortcut uses."""
+    arrivals, first_use = state.get("arrivals", {}), state.get("first_use", {})
+    same = [k for k, k0 in arrivals.items() if first_use.get(k) == k0]
+    later = [first_use[k] - k0 for k, k0 in arrivals.items()
+             if k in first_use and first_use[k] > k0]
+    series = state.get("series", [])
+    a = [x[1] for x in series]
+    sh = [x[2] for x in series]
+    later.sort()
+    return {
+        "arrivals": len(arrivals),
+        "used_same": len(same),
+        "used_later": len(later),
+        "never_used": len(arrivals) - len(same) - len(later),
+        "later_lag_median": later[len(later) // 2] if later else None,
+        "later_lag_mean": round(sum(later) / len(later), 2) if later else None,
+        "lead_lag": {str(L): v for L, v in lead_lag(a, sh).items()},
+    }
+
+
+def reach_markdown(chains: list[dict]) -> list[str]:
+    """The summary section: per arm/strategy, pooled over chains."""
+    lines = ["## Reach: does it arrive before it is used?\n",
+             "A class's ambient reach (fields, own-method returns, supertypes, navigated; no "
+             "parameters) grows during a chain. Each (class, type) arriving after the first "
+             "checkpoint, not already used by the class, is followed to its first use. "
+             "*Same* = used at the checkpoint it arrived (brought in to be used); *later* = "
+             "it sat in reach first; *never* = still unused at the tip. Lead-lag: Spearman "
+             "rho, per chain then averaged, of class arrivals at checkpoint k against "
+             "shortcut uses at k+L (reach leads) and of shortcut uses at k against arrivals at "
+             "k+L (use leads). See `harness/dataflow.py` (`reach_uptake`).\n",
+             "| arm/strategy | chains | arrivals | used same | used later | never | "
+             "median lag (later) | " + " | ".join(f"lead {L}: reach→use / use→reach"
+                                                   for L in LEAD_LAGS) + " |",
+             "|---|---:|---:|---:|---:|---:|---:|" + "---:|" * len(LEAD_LAGS)]
+    groups: dict = defaultdict(list)
+    for c in chains:
+        groups[f"{c['arm']}/{c['strategy']}"].append(c["summary"])
+    for g, ss in sorted(groups.items()):
+        n = sum(x["arrivals"] for x in ss)
+
+        def pct(key):
+            return f"{100 * sum(x[key] for x in ss) / n:.0f}%" if n else "—"
+        lagged = sorted(x["later_lag_median"] for x in ss if x["later_lag_median"] is not None)
+        med = lagged[len(lagged) // 2] if lagged else "—"
+        cells = []
+        for L in LEAD_LAGS:
+            f = [x["lead_lag"].get(str(L), (None, None))[0] for x in ss]
+            r = [x["lead_lag"].get(str(L), (None, None))[1] for x in ss]
+            f = [v for v in f if v is not None]
+            r = [v for v in r if v is not None]
+            cells.append(f"{sum(f) / len(f):+.2f} / {sum(r) / len(r):+.2f}" if f and r else "—")
+        lines.append(f"| {g} | {len(ss)} | {n} | {pct('used_same')} | {pct('used_later')} | "
+                     f"{pct('never_used')} | {med} | " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
 
 
 DATAFLOW_COLUMNS = [
