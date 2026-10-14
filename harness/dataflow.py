@@ -334,10 +334,55 @@ def type_head(typ: str) -> str:
     return t.split(".")[-1]
 
 
-def collaborator_types(worktree: str, sources: Optional[list[str]] = None) -> set[str]:
-    """Simple names of the collaborator types at this checkpoint (see above)."""
-    supers: dict = defaultdict(set)
-    seeds: set = set()
+def _block_end(text: str, i: int) -> int:
+    """Index just past the `}` closing the block whose `{` is at i - 1."""
+    depth = 1
+    while i < len(text) and depth:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    return i
+
+
+def _members(body: str):
+    """(kind, declaration) for each member declared directly in a type body: 'field'
+    or 'method'. Nested types, initializer blocks and method bodies are skipped."""
+    depth, seg, init = 0, [], False
+    for ch in body:
+        if ch == "{":
+            if depth == 0:
+                decl = _ANNOT.sub(" ", "".join(seg))
+                # an initializer (`= { ... }`, `= new X() {`), not an annotation's `=`
+                init = "=" in decl
+                if not init and "(" in decl:
+                    yield "method", decl
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0 and not init:
+                seg = []                     # a method, nested type or init block ended
+            continue
+        if depth:
+            continue
+        if ch != ";":
+            seg.append(ch)
+            continue
+        decl, seg, init = _ANNOT.sub(" ", "".join(seg)), [], False
+        head = decl.split("=", 1)[0]
+        yield ("method" if "(" in head else "field"), decl
+
+
+_METHOD_SIG = re.compile(r"(.*?)\b([A-Za-z_$][\w$]*)\s*\(", re.S)
+
+
+def type_table(worktree: str, sources: Optional[list[str]] = None) -> dict:
+    """Every type declared in the production source, nested ones included:
+    name -> {annots, supers, fields: {name: (type, static, private)},
+    methods: [(name, return type, static, private)]}. Lexical, like the rest."""
+    out: dict = {}
     for text in sources if sources is not None else _sources(worktree):
         for m in _DECL.finditer(text):
             annots = {a.split(".")[-1] for a in re.findall(r"@([\w.]+)", m.group(1))}
@@ -346,67 +391,69 @@ def collaborator_types(worktree: str, sources: Optional[list[str]] = None) -> se
             for part in re.split(r"\b(?:extends|implements|permits)\b", header)[1:]:
                 sup |= {w.strip().split(".")[-1] for w in part.split(",") if w.strip()}
             sup = {w for w in sup if re.fullmatch(r"[A-Za-z_$][\w$]*", w)}
-            supers[name] |= sup
-            if annots & BEAN_ANNOTATIONS or sup & SPRING_DATA_REPOS:
-                seeds.add(name)
+            body = text[m.end():_block_end(text, m.end()) - 1]
+            iface = m.group(2) == "interface"
+            fields: dict = {}
+            methods: list = []
+            for kind, decl in _members(body):
+                static = bool(re.search(r"\bstatic\b", decl))
+                private = bool(re.search(r"\bprivate\b", decl))
+                if kind == "method":
+                    sm = _METHOD_SIG.match(decl)
+                    if not sm:
+                        continue
+                    ret = _MODIFIERS.sub(" ", sm.group(1))
+                    ret = re.sub(r"\b(abstract|default|synchronized|native|strictfp)\b", " ", ret)
+                    # drop a generic method's own type parameters: `<T> T find(`
+                    ret = re.sub(r"^\s*<[^()]*>\s*", "", re.sub(r"\s+", " ", ret)).strip()
+                    if not ret:                  # a constructor
+                        continue
+                    methods.append((sm.group(2), ret, static, private and not iface))
+                    continue
+                parts = _split_top(_MODIFIERS.sub(" ", decl.split("=", 1)[0]).strip())
+                if not parts:
+                    continue
+                first = re.match(r"(.*?)\s*([A-Za-z_$][\w$]*)\s*$", parts[0].strip(), re.S)
+                if not first or not first.group(1).strip():
+                    continue
+                typ = first.group(1).strip()
+                fields[first.group(2)] = (typ, static or iface, private)
+                for extra in parts[1:]:
+                    n = extra.split("=", 1)[0].strip()
+                    if re.fullmatch(r"[A-Za-z_$][\w$]*", n):
+                        fields[n] = (typ, static or iface, private)
+            t = out.setdefault(name, {"annots": set(), "supers": set(), "fields": {},
+                                      "methods": []})
+            t["annots"] |= annots
+            t["supers"] |= sup
+            t["fields"].update(fields)
+            t["methods"] += methods
+    return out
+
+
+def collaborator_types(worktree: str, sources: Optional[list[str]] = None,
+                       table: Optional[dict] = None) -> set[str]:
+    """Simple names of the collaborator types at this checkpoint (see above)."""
+    if table is None:
+        table = type_table(worktree, sources)
+    seeds = {n for n, t in table.items()
+             if t["annots"] & BEAN_ANNOTATIONS or t["supers"] & SPRING_DATA_REPOS}
     out, stack = set(seeds), list(seeds)
     while stack:
-        for s in supers.get(stack.pop(), ()):
+        for s in table.get(stack.pop(), {}).get("supers", ()):
             if s not in out:
                 out.add(s)
                 stack.append(s)
     return out | FRAMEWORK_COLLABORATORS
 
 
-def field_types(worktree: str, sources: Optional[list[str]] = None) -> dict:
-    """Top-level class simple name -> {instance field name: outer type}. Fields of nested
-    classes are not read (their fields count as data downstream)."""
-    out: dict = {}
-    for text in sources if sources is not None else _sources(worktree):
-        m = _DECL.search(text)
-        if not m:
-            continue
-        cls, body = m.group(3), text[m.end():]
-        fields: dict = {}
-        depth, seg, init = 0, [], False
-        for ch in body:
-            if ch == "{":
-                if depth == 0:
-                    # an initializer (`= { ... }`, `= new X() {`), not an annotation's `=`
-                    init = "=" in _ANNOT.sub(" ", "".join(seg))
-                depth += 1
-                continue
-            if ch == "}":
-                if depth == 0:
-                    break
-                depth -= 1
-                if depth == 0 and not init:
-                    seg = []                     # a method, nested class or init block ended
-                continue
-            if depth:
-                continue
-            if ch != ";":
-                seg.append(ch)
-                continue
-            decl, seg, init = "".join(seg), [], False
-            decl = _ANNOT.sub(" ", decl).split("=", 1)[0]
-            if "(" in decl or re.search(r"\bstatic\b", decl):
-                continue
-            decl = _MODIFIERS.sub(" ", decl).strip()
-            parts = _split_top(decl)
-            if not parts:
-                continue
-            first = re.match(r"(.*?)\s*([A-Za-z_$][\w$]*)\s*$", parts[0].strip(), re.S)
-            if not first or not first.group(1).strip():
-                continue
-            typ = type_head(first.group(1))
-            fields[first.group(2)] = typ
-            for extra in parts[1:]:
-                n = extra.split("=", 1)[0].strip()
-                if re.fullmatch(r"[A-Za-z_$][\w$]*", n):
-                    fields[n] = typ
-        out[cls] = fields
-    return out
+def field_types(worktree: str, sources: Optional[list[str]] = None,
+                table: Optional[dict] = None) -> dict:
+    """Class simple name -> {instance field name: outer type}."""
+    if table is None:
+        table = type_table(worktree, sources)
+    return {n: {f: type_head(typ) for f, (typ, static, _p) in t["fields"].items() if not static}
+            for n, t in table.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +931,265 @@ def data_reach(worktree: str, classes: list[dict], methods: list[dict],
     return out
 
 
+# ---------------------------------------------------------------------------
+# reach: what a method COULD connect to, against what it does
+# ---------------------------------------------------------------------------
+#
+# The shortest-path hypothesis: a developer or an agent connects to whatever is already
+# in reach, so as reach grows, use follows, and the code tangles. Over the system's own
+# types T (declared in the production source; String, collections and library types
+# are not counted):
+#
+#   A(m), available - the types m reaches without changing its signature or class: its
+#         parameter types, its class's field types and its class's method return
+#         types, then everything reachable from those by navigation (a type's
+#         non-private field types and method return types, and its supertypes),
+#         transitively. Generic arguments count: List<Owner> reaches Owner.
+#   U(m), used - the types m actually touches: system type names in its body (`new X`,
+#         `X.call()`, casts, declarations), the types of the parameters and own-class
+#         fields it references, and for every call the harness resolves, the callee's
+#         class and return type.
+#
+# m's own class is left out of both. This is Miller's (2006) authority vs exercised
+# permission at method level; the Principle of Least Authority asks A to stay near U.
+#
+# Per checkpoint: `reach_avail_share` (|A|/|T|), `reach_used_share` (|U|/|T|),
+# `reach_use_of_avail` (|U & A| / |A|), `reach_outside_share` (sum |U - A| / sum |U|:
+# types pulled in from outside reach), means over methods, overall, by role, and over
+# collaborator and data types separately. ACROSS checkpoints (`reach_uptake`, run by
+# analyze along each chain): every type a method newly uses is a SHORTCUT when it was
+# already in reach at the previous checkpoint (for a method added to an existing class:
+# in the class's reach), and EXPLICIT otherwise (the change brought it into reach: a
+# new parameter, field, class or `new`). Latency is how many checkpoints it had been in
+# reach before first use.
+
+
+def _closure(table: dict, systypes: set) -> dict:
+    """type -> every system type reachable from it by navigation (itself excluded)."""
+    nav: dict = {}
+    for n, t in table.items():
+        out = set(t["supers"]) & systypes
+        for _f, (typ, _st, priv) in t["fields"].items():
+            if not priv:
+                out |= domain_types(typ) & systypes
+        for _m, ret, _st, priv in t["methods"]:
+            if not priv:
+                out |= domain_types(ret) & systypes
+        nav[n] = out
+    memo: dict = {}
+    for n in nav:
+        seen, stack = set(), list(nav[n])
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            stack.extend(nav.get(x, ()))
+        memo[n] = seen - {n}
+    return memo
+
+
+def _method_id(f: dict, overloaded: set) -> tuple:
+    """Identity of a method ACROSS checkpoints: file, class and name, so a method that
+    gains a parameter is still the same method. Overloads fall back to the signature."""
+    base = (f["file"], f.get("_cls", ""), f.get("_meth", ""))
+    return base + ((f["long_name"],) if base in overloaded else ())
+
+
+REACH_COLUMNS = (
+    "reach_types", "reach_methods",
+    "reach_avail_share", "reach_used_share", "reach_use_of_avail", "reach_outside_share",
+    "reach_avail_share_col", "reach_used_share_col",
+    "reach_avail_share_data", "reach_used_share_data",
+    *(f"reach_{m}_{ro}" for m in ("avail_share", "use_of_avail") for ro in ROLES),
+)
+UPTAKE_COLUMNS = (
+    "reach_new_avail", "reach_new_uses", "reach_shortcut_share", "reach_shortcut_share_newfns",
+    "reach_shortcut_share_col", "reach_shortcut_share_data", "reach_shortcut_latency_mean",
+)
+
+
+def reach_metrics(worktree: str, fns: list[dict], adj: dict, table: dict,
+                  collab: set) -> tuple[dict, dict]:
+    """The per-checkpoint reach columns, and {method id: (A, U)} for `reach_uptake`."""
+    out: dict = {k: None for k in REACH_COLUMNS}
+    systypes = set(table)
+    if not systypes:
+        return out, {}
+    close = _closure(table, systypes)
+    returns: dict = defaultdict(set)          # (class, method) -> system types returned
+    for n, t in table.items():
+        for mname, ret, _st, _p in t["methods"]:
+            returns[(n, mname)] |= domain_types(ret) & systypes
+    by_key = {f["_key"]: f for f in fns if "_key" in f}
+    role = roles(worktree, fns)
+    seen_base: dict = defaultdict(int)
+    for f in by_key.values():
+        seen_base[(f["file"], f.get("_cls", ""), f.get("_meth", ""))] += 1
+    overloaded = {b for b, c in seen_base.items() if c > 1}
+    cache: dict = {}
+    sets: dict = {}
+    cls_avail: dict = {}
+    col_t = systypes & collab
+    data_t = systypes - collab
+    acc: dict = defaultdict(list)
+    sum_u = sum_out = 0
+    for k, f in by_key.items():
+        cls = f.get("_cls", "")
+        own = table.get(cls, {"supers": set(), "fields": {}, "methods": []})
+        ps = params(f["long_name"])
+        seeds = set(own["supers"]) & systypes
+        for _n, typ in ps:
+            seeds |= domain_types(typ) & systypes
+        for _f, (typ, _st, _p) in own["fields"].items():
+            seeds |= domain_types(typ) & systypes
+        for _m, ret, _st, _p in own["methods"]:
+            seeds |= domain_types(ret) & systypes
+        avail = set(seeds)
+        for s_ in seeds:
+            avail |= close.get(s_, set())
+        avail.discard(cls)
+        src = _source(worktree, f, cache)
+        body = _strip(_body_after_signature(src))
+        used = {w for w in re.findall(r"(?<![\w$])[A-Z][\w$]*", body)} & systypes
+        flow = param_flow(src, f["long_name"]) if ps else {}
+        for n, typ in ps:
+            if flow.get(n, ("unused",))[0] != "unused":
+                used |= domain_types(typ) & systypes
+        for fname, (typ, _st, _p) in own["fields"].items():
+            if re.search(rf"(?<![\w$.]){re.escape(fname)}(?![\w$])|\bthis\.{re.escape(fname)}\b",
+                         body):
+                used |= domain_types(typ) & systypes
+        for g in adj.get(k, ()):
+            cf = by_key.get(g)
+            if cf is None or g == k:
+                continue
+            if cf.get("_cls") in systypes:
+                used.add(cf["_cls"])
+            used |= returns.get((cf.get("_cls"), cf.get("_meth")), set())
+        used.discard(cls)
+        sets[_method_id(f, overloaded)] = (frozenset(avail), frozenset(used))
+        ckey = (f["file"], cls)
+        if ckey not in cls_avail:
+            # what any method of this class reaches before its own parameters: the reach
+            # a NEW method added here starts with
+            base = set(own["supers"]) & systypes
+            for _f, (typ, _st, _p) in own["fields"].items():
+                base |= domain_types(typ) & systypes
+            for _m, ret, _st, _p in own["methods"]:
+                base |= domain_types(ret) & systypes
+            ca = set(base)
+            for s_ in base:
+                ca |= close.get(s_, set())
+            ca.discard(cls)
+            cls_avail[ckey] = frozenset(ca)
+        ro = role.get(k, "other")
+        nt = len(systypes)
+        acc["avail"].append(len(avail) / nt)
+        acc["used"].append(len(used) / nt)
+        acc[f"avail_{ro}"].append(len(avail) / nt)
+        if col_t:
+            acc["avail_col"].append(len(avail & col_t) / len(col_t))
+            acc["used_col"].append(len(used & col_t) / len(col_t))
+        if data_t:
+            acc["avail_data"].append(len(avail & data_t) / len(data_t))
+            acc["used_data"].append(len(used & data_t) / len(data_t))
+        if avail:
+            acc["uoa"].append(len(used & avail) / len(avail))
+            acc[f"uoa_{ro}"].append(len(used & avail) / len(avail))
+        sum_u += len(used)
+        sum_out += len(used - avail)
+
+    def mean(xs):
+        return round(sum(xs) / len(xs), 4) if xs else None
+    out.update({
+        "reach_types": len(systypes),
+        "reach_methods": len(sets),
+        "reach_avail_share": mean(acc["avail"]),
+        "reach_used_share": mean(acc["used"]),
+        "reach_use_of_avail": mean(acc["uoa"]),
+        "reach_outside_share": round(sum_out / sum_u, 4) if sum_u else None,
+        "reach_avail_share_col": mean(acc["avail_col"]),
+        "reach_used_share_col": mean(acc["used_col"]),
+        "reach_avail_share_data": mean(acc["avail_data"]),
+        "reach_used_share_data": mean(acc["used_data"]),
+    })
+    for ro in ROLES:
+        out[f"reach_avail_share_{ro}"] = mean(acc[f"avail_{ro}"])
+        out[f"reach_use_of_avail_{ro}"] = mean(acc[f"uoa_{ro}"])
+    return out, {"sets": sets, "classes": cls_avail, "collab": frozenset(col_t)}
+
+
+def reach_uptake(prev: Optional[dict], cur: dict, since: dict, k: int) -> dict:
+    """Shortcut vs explicit uptake between two checkpoints of one chain.
+
+    A type a method newly uses is a SHORTCUT when it was already in that method's reach
+    at the previous checkpoint. A method that did not exist then is compared with its
+    class's reach then (fields, own-method returns, supertypes, navigated): a helper
+    added to a class starts with everything the class already reaches. A method in a
+    new class has nothing in reach before, so all its uses are explicit.
+
+    `prev`/`cur` are `reach_metrics`' second result at the previous and this
+    checkpoint (prev None at the chain's first). `since` maps (method id or class key,
+    type) to the checkpoint index from which the type has been continuously in reach;
+    it is updated in place. `k` is this checkpoint's index along the chain."""
+    out: dict = {c: None for c in UPTAKE_COLUMNS}
+    cur_sets = cur.get("sets", {})
+    cur_cls = cur.get("classes", {})
+    col = cur.get("collab", frozenset())
+    prev_sets = (prev or {}).get("sets", {})
+    prev_cls = (prev or {}).get("classes", {})
+    new_avail = new_uses = short = 0
+    sc = sd = nc = nd = nf = nf_short = 0
+    lat: list = []
+    for mid, (a, u) in cur_sets.items():
+        if mid in prev_sets:
+            pa, pu = prev_sets[mid]
+            new_avail += len(a - pa)
+            origin = mid
+        else:
+            ckey = mid[:2]
+            pa, pu = prev_cls.get(ckey, frozenset()), frozenset()
+            origin = ckey
+        fresh = mid not in prev_sets
+        for t in u - pu:
+            new_uses += 1
+            nf += fresh
+            is_col = t in col
+            nc += is_col
+            nd += not is_col
+            if t in pa:
+                short += 1
+                nf_short += fresh
+                sc += is_col
+                sd += not is_col
+                if (origin, t) in since:
+                    lat.append(k - since[(origin, t)])
+    # keep `since` to what is in reach now, starting the clock for anything new
+    live = {(mid, t) for mid, (a, _u) in cur_sets.items() for t in a}
+    live |= {(ck, t) for ck, a in cur_cls.items() for t in a}
+    for key in list(since):
+        if key not in live:
+            del since[key]
+    for key in live:
+        since.setdefault(key, k)
+    if prev is None:
+        return out
+
+    def ratio(x, n):
+        return round(x / n, 4) if n else None
+    out.update({
+        "reach_new_avail": new_avail,
+        "reach_new_uses": new_uses,
+        "reach_shortcut_share": ratio(short, new_uses),
+        "reach_shortcut_share_newfns": ratio(nf_short, nf),
+        "reach_shortcut_share_col": ratio(sc, nc),
+        "reach_shortcut_share_data": ratio(sd, nd),
+        "reach_shortcut_latency_mean": round(sum(lat) / len(lat), 4) if lat else None,
+    })
+    return out
+
+
 DATAFLOW_COLUMNS = [
     "df_params", "df_tramp_params", "df_tramp_ratio", "df_tramp_fn_share",
     "df_unused_params", "df_tramp_chain_max", "df_edges", "df_edge_carry_share",
@@ -900,12 +1206,23 @@ DATAFLOW_COLUMNS = [
     "dfdata_type_span_mean", "dfdata_type_overlap_mean", "dfdata_clumps",
     *(f"dfdata_tramp_ratio_{ro}" for ro in ROLES),
     *DR_COLUMNS,
+    *REACH_COLUMNS,
+    *UPTAKE_COLUMNS,
 ]
 
 
 def dataflow_all(worktree: str, fns: list[dict], adj: dict, prev_ref: Optional[str],
                  cur_ref: str, prod: callable) -> dict:
-    out = dataflow_metrics(worktree, fns, adj)
+    """All the data-flow columns for one checkpoint. The reach sets that
+    `reach_uptake` needs from the previous checkpoint come back under `_reach`, for
+    the caller to pop: they are not a column."""
+    srcs = _sources(worktree)
+    table = type_table(worktree, srcs)
+    collab = collaborator_types(worktree, table=table)
+    out = dataflow_metrics(worktree, fns, adj, collab)
     if prev_ref:
         out.update(signature_churn(worktree, prev_ref, cur_ref, prod))
+    reach, sets = reach_metrics(worktree, fns, adj, table, collab)
+    out.update(reach)
+    out["_reach"] = sets
     return out

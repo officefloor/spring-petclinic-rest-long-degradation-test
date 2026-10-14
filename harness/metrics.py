@@ -1415,6 +1415,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
     # DATA FLOW vs CONTROL FLOW: tramp data, type co-travel on call edges, data clumps,
     # and signature churn (see harness/dataflow.py). Same records and call adjacency.
     dfl = dataflow.dataflow_all(worktree, fns, adj, prev_ref, cur_ref, _is_prod_java)
+    reach_sets = dfl.pop("_reach", {})   # per-method sets for dataflow.reach_uptake
 
     row = {
         "erosion": ed["erosion"],
@@ -1472,6 +1473,7 @@ def compute_all(worktree: str, arm_cfg: dict, tools: dict, base_commit: str,
         "impact": imp,
         "placement": plc,
         "dataflow": dfl,
+        "reach_sets": reach_sets,
         "functions": [{**f, "mass": round(_mass(f), 4)} for f in fns],
     }
     return row, details

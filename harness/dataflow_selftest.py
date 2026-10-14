@@ -73,6 +73,34 @@ Third scenario, COLLABORATORS vs DATA and DEPENDENCY SURPLUS (the classes in DEP
     (surplus 0); keep uses store, not notifier (1). Scope 17, used 6, surplus 11, over
     9 methods. By role: entry 4/8, helper 7/9, other no scope (blank).
 
+Fourth scenario, REACH and SHORTCUT UPTAKE (REACH_SRC, then two changes):
+
+  * System types: Owner, Pet, Visit, Audit, Repo (@Repository), Ctl (@RestController)
+    = 6; collaborators Repo and Ctl, data the other 4. Navigation: Owner -> Pet
+    (getPet), Repo -> Owner, Visit (find, visit), so Repo reaches Owner, Pet, Visit.
+    Private fields do not navigate.
+  * Available / used, own class left out: getPet {Pet} / {Pet} (the field it
+    returns); getName, log {} / {}; find, visit {Owner, Visit, Pet} / {} (they return
+    null); name {Repo, Owner, Pet, Visit} / {Repo, Owner, Pet} (the field, then find,
+    getPet, getName resolved); count same available / {Audit} (a static call: from
+    outside reach).
+  * Shares over 7 methods, |T| = 6: available (1+0+0+3+3+4+4)/6/7 = 15/42; used
+    (1+0+0+0+0+3+1)/6/7 = 5/42; use of available over the 5 with something available
+    (1 + 0 + 0 + 3/4 + 0)/5 = 0.35; outside 1 of 5 used. Collaborators (2): available
+    (1/2 + 1/2)/7, used (1/2)/7. Data (4): available (1+3+3+3+3)/4/7 = 13/28, used
+    (1+2+1)/4/7 = 1/7. Entry (name, count): available 4/6, use of available 3/8;
+    other: available 7/30, use of available 1/3.
+  * Change 1: count starts calling repo.visit (Repo and Visit, both available since the
+    first state: 2 shortcuts, latency 1 each); name gains a parameter `Ticker t` and
+    calls t.tick() (Ticker: a new type, explicit; Ticker is newly available to name).
+    3 new uses, 2 shortcuts; collaborators 1/1 (Repo), data 1/2 (Visit, not Ticker).
+    Ticker.tick is a new method in a new class and uses nothing.
+  * Change 2: name also declares `Visit v = repo.visit(id)`: Visit, available since the
+    first state, used two checkpoints later (shortcut, latency 2). A new helper
+    Ctl.first() calls repo.find: Repo and Owner, both in Ctl's reach since the first
+    state (shortcuts, latency 2). 3 new uses, all shortcuts; collaborators 1/1 (Repo),
+    data 2/2; new methods 2/2.
+
 Run standalone (the data-reach checks need CK, located through config.yaml):
 
     python -m harness.dataflow_selftest --config config.yaml
@@ -284,6 +312,132 @@ DEP_REACH_EXPECTED = {
 }
 
 
+REACH_SRC = {
+    "Owner": """package t;
+public class Owner {
+    private Pet pet;
+    public Pet getPet() { return pet; }
+}
+""",
+    "Pet": """package t;
+public class Pet {
+    private String name;
+    public String getName() { return name; }
+}
+""",
+    "Visit": """package t;
+public class Visit {
+}
+""",
+    "Audit": """package t;
+public class Audit {
+    public static void log(String s) { }
+}
+""",
+    "Repo": """package t;
+@Repository
+public class Repo {
+    public Owner find(int id) { return null; }
+    public Visit visit(int id) { return null; }
+}
+""",
+    "Ctl": """package t;
+@RestController
+public class Ctl {
+    @Autowired
+    private Repo repo;
+    public String name(int id) { return repo.find(id).getPet().getName(); }
+    public int count(int id) { Audit.log("x"); return id; }
+}
+""",
+}
+REACH_CHANGE1 = {
+    "Ticker": """package t;
+public class Ticker {
+    public void tick() { }
+}
+""",
+    "Ctl": """package t;
+@RestController
+public class Ctl {
+    @Autowired
+    private Repo repo;
+    public String name(int id, Ticker t) { t.tick(); return repo.find(id).getPet().getName(); }
+    public int count(int id) { Audit.log("x"); return repo.visit(id) == null ? 0 : id; }
+}
+""",
+}
+REACH_CHANGE2 = {
+    "Ctl": """package t;
+@RestController
+public class Ctl {
+    @Autowired
+    private Repo repo;
+    public String name(int id, Ticker t) {
+        t.tick();
+        Visit v = repo.visit(id);
+        return repo.find(id).getPet().getName();
+    }
+    public int count(int id) { Audit.log("x"); return repo.visit(id) == null ? 0 : id; }
+    private Owner first() { return repo.find(1); }
+}
+""",
+}
+UPTAKE_EXPECTED = [
+    {   # the first state: no previous checkpoint, so no uptake
+        "reach_types": 6, "reach_methods": 7,
+        "reach_avail_share": round(15 / 42, 4), "reach_used_share": round(5 / 42, 4),
+        "reach_use_of_avail": 0.35, "reach_outside_share": 0.2,
+        "reach_avail_share_col": round(1 / 7, 4), "reach_used_share_col": round(0.5 / 7, 4),
+        "reach_avail_share_data": round(13 / 28, 4), "reach_used_share_data": round(1 / 7, 4),
+        "reach_avail_share_entry": round(4 / 6, 4), "reach_use_of_avail_entry": 0.375,
+        "reach_avail_share_other": round(7 / 30, 4),
+        "reach_use_of_avail_other": round(1 / 3, 4),
+        "reach_avail_share_helper": None,
+        "reach_new_uses": None, "reach_shortcut_share": None,
+    },
+    {
+        "reach_types": 7,
+        "reach_new_avail": 1, "reach_new_uses": 3,
+        "reach_shortcut_share": round(2 / 3, 4), "reach_shortcut_share_col": 1.0,
+        "reach_shortcut_share_data": 0.5, "reach_shortcut_latency_mean": 1.0,
+        "reach_shortcut_share_newfns": None,
+    },
+    {
+        "reach_new_avail": 0, "reach_new_uses": 3, "reach_shortcut_share": 1.0,
+        "reach_shortcut_share_newfns": 1.0,
+        "reach_shortcut_share_col": 1.0, "reach_shortcut_share_data": 1.0,
+        "reach_shortcut_latency_mean": 2.0,
+    },
+]
+
+
+def run_reach() -> bool:
+    root = tempfile.mkdtemp(prefix="dataflow_reach_")
+    ok = True
+    try:
+        src = os.path.join(root, "src", "main", "java", "t")
+        os.makedirs(src)
+        prev, since = None, {}
+        for k, (change, expected) in enumerate(
+                zip((REACH_SRC, REACH_CHANGE1, REACH_CHANGE2), UPTAKE_EXPECTED), 1):
+            for name, body in change.items():
+                with open(os.path.join(src, f"{name}.java"), "w") as fh:
+                    fh.write(body)
+            fns = functions(root, ["src/main/java/**/*.java"])
+            adj = call_adjacency(*_call_index(root, fns))
+            table = dataflow.type_table(root)
+            collab = dataflow.collaborator_types(root, table=table)
+            out, sets = dataflow.reach_metrics(root, fns, adj, table, collab)
+            out.update(dataflow.reach_uptake(prev, sets, since, k))
+            prev = sets
+            print(f"  -- reach, state {k}")
+            ok = _check(out, expected) and ok
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return ok
+
+
 def _check(out: dict, expected: dict) -> bool:
     ok = True
     for k, want in expected.items():
@@ -375,10 +529,11 @@ def main() -> int:
         with open(args.config) as fh:
             tools = (yaml.safe_load(fh) or {}).get("tools") or {}
     print("Data-flow coupling self-test (tramp data, co-travel, clumps, signature churn,\n"
-          "roles, implicit data reach, collaborators vs data, dependency surplus)\n")
+          "roles, implicit data reach, collaborators vs data, dependency surplus, reach)\n")
     ok = run()
     ok = run_roles(tools.get("ck") or "", tools.get("java", "java")) and ok
     ok = run_collaborators(tools.get("ck") or "", tools.get("java", "java")) and ok
+    ok = run_reach() and ok
     print(f"\nOVERALL: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

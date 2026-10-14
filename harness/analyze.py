@@ -30,7 +30,7 @@ from typing import Optional
 import numpy as np
 import yaml
 
-from . import class_shape, correctness, cumulative_impact, expand_path, git_out, metrics, parser_selftest
+from . import class_shape, correctness, cumulative_impact, dataflow, expand_path, git_out, metrics, parser_selftest
 from .run_experiment import CSV_FIELDS, PHASES, phase_for
 
 # Progress for the analysis that follows the recompute. That part runs for minutes
@@ -435,6 +435,10 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
         # same reason prior_passing is.
         prior_selected: set[str] | None = None
         prev_tree = base_commit   # tree of the previous checkpoint (base before cp01)
+        # Reach uptake follows each method along the chain (dataflow.reach_uptake): the
+        # previous checkpoint's reach sets, and since when each type has been in reach.
+        prev_reach = None
+        reach_since: dict = {}
         n_noop = 0
         n_invalid = 0             # gates that aborted -> correctness is missing, not failed
         pending_mutated: list[int] = []   # `mutates` of skipped checkpoints, owed to the next scored one
@@ -468,9 +472,12 @@ def recompute_rows(cfg: dict, run_id: str, work_root: str,
                                  capture_output=True, text=True)
             try:
                 if add.returncode == 0:
-                    mrow, _ = metrics.compute_all(wt, arm_cfg, cfg["tools"],
-                                                  base_commit, prev, "HEAD", exclude=exclude)
+                    mrow, mdet = metrics.compute_all(wt, arm_cfg, cfg["tools"],
+                                                     base_commit, prev, "HEAD", exclude=exclude)
                     row.update(mrow)
+                    cur_reach = mdet.get("reach_sets") or {}
+                    row.update(dataflow.reach_uptake(prev_reach, cur_reach, reach_since, i_cp))
+                    prev_reach = cur_reach
                 else:
                     print(f"    ! worktree add failed for {branch} cp{k:02d}: "
                           f"{add.stderr.strip()[:120]}")
@@ -1169,6 +1176,31 @@ DATAFLOW_METRICS = [
     ("dep_surplus_share_entry", "Dependency surplus — entry functions"),
     ("dep_surplus_share_helper", "Dependency surplus — helpers inside entry classes"),
     ("dep_surplus_share_other", "Dependency surplus — other code"),
+    # reach (dataflow.reach_metrics): the system types a method could connect to (its
+    # authority) against those it does; and, along each chain, whether new uses come
+    # from what was already in reach (shortcuts) or were brought in explicitly
+    ("reach_types", "System types declared in the production source"),
+    ("reach_avail_share", "Share of system types a method can reach, mean"),
+    ("reach_used_share", "Share of system types a method uses, mean"),
+    ("reach_use_of_avail", "Share of what a method can reach that it uses, mean"),
+    ("reach_outside_share", "Types used from outside reach (new / static), share of uses"),
+    ("reach_avail_share_col", "Share of collaborator types a method can reach, mean"),
+    ("reach_used_share_col", "Share of collaborator types a method uses, mean"),
+    ("reach_avail_share_data", "Share of data types a method can reach, mean"),
+    ("reach_used_share_data", "Share of data types a method uses, mean"),
+    ("reach_avail_share_entry", "Reach — entry functions"),
+    ("reach_avail_share_helper", "Reach — helpers inside entry classes"),
+    ("reach_avail_share_other", "Reach — other code"),
+    ("reach_use_of_avail_entry", "Use of reach — entry functions"),
+    ("reach_use_of_avail_helper", "Use of reach — helpers inside entry classes"),
+    ("reach_use_of_avail_other", "Use of reach — other code"),
+    ("reach_new_avail", "Types newly in reach of existing methods, this checkpoint"),
+    ("reach_new_uses", "Types newly used by existing methods, this checkpoint"),
+    ("reach_shortcut_share", "Shortcut uptake: new uses already in reach before"),
+    ("reach_shortcut_share_newfns", "Shortcut uptake — methods added to existing classes"),
+    ("reach_shortcut_share_col", "Shortcut uptake — collaborator types"),
+    ("reach_shortcut_share_data", "Shortcut uptake — data types"),
+    ("reach_shortcut_latency_mean", "Checkpoints a type sat in reach before first use, mean"),
 ]
 METRICS_TO_PLOT += DATAFLOW_METRICS
 
@@ -1314,6 +1346,13 @@ METRIC_EXPECTATION = {
     "drdata_field_span_max": (+1, "both"),
     "dep_scope_mean": (+1, "both"), "dep_surplus_mean": (+1, "both"),
     "dep_surplus_share": (+1, "both"),
+    # reach (declared 2026-10-14, before any run was analysed with it): Spring's
+    # per-class injection puts more of the system in a method's reach, more of it goes
+    # unused, and new uses come from what was already there and increasingly so. In
+    # OfficeFloor a new collaborator has to be declared, so its uptake is explicit.
+    "reach_avail_share": (+1, "both"), "reach_avail_share_col": (+1, "both"),
+    "reach_use_of_avail": (-1, "level"),
+    "reach_shortcut_share": (+1, "both"), "reach_shortcut_share_col": (+1, "both"),
     # published detectors (external thresholds)
     "pmd_god_classes": (+1, "level"), "pmd_handler_is_god_class": (+1, "level"),
     "pmd_data_classes": (0, "level"),
